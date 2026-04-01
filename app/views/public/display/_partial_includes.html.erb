@@ -1,0 +1,165 @@
+
+<%= javascript_include_tag 'helpers' %>
+<%= javascript_include_tag 'configure_view' %>
+<%= javascript_include_tag 'device_detection' %>
+<%= javascript_include_tag 'deeplink_process' %>
+
+<%= stylesheet_link_tag 'deeplink' %>
+
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700&display=swap" rel="stylesheet">
+
+<% if @project && @project.domain.google_tracking_id.present? %>
+  <script async src="https://www.googletagmanager.com/gtag/js?id=<%= @project.domain.google_tracking_id %>"></script>
+<script>
+  // Initialize dataLayer immediately
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){ dataLayer.push(arguments); }
+  
+  // Wait for GA to load before configuring
+  function initializeGA() {
+    gtag('js', new Date());
+
+    // Build UTM (URL first, then Ruby fallbacks)
+    const urlParams   = new URLSearchParams(window.location.search);
+    const utmKeys     = ['utm_source','utm_medium','utm_campaign','utm_term','utm_content'];
+    const utmData     = {};
+    const fallbackUTM = <%= json_escape({
+      utm_source:   @tracking_source,
+      utm_medium:   @tracking_medium,
+      utm_campaign: @tracking_campaign
+    }.compact.to_json).html_safe %>;
+
+    utmKeys.forEach(k => {
+      if (urlParams.has(k))        utmData[k] = urlParams.get(k);
+      else if (fallbackUTM[k])     utmData[k] = fallbackUTM[k];
+    });
+
+    // Map UTM -> GA4 traffic_source fields
+    const utmToGa4 = {
+      utm_source:  'source',
+      utm_medium:  'medium',
+      utm_campaign:'campaign',
+      utm_term:    'term',
+      utm_content: 'content'
+    };
+    const trafficParams = {};
+    Object.keys(utmData).forEach(k => {
+      const gaKey = utmToGa4[k];
+      if (gaKey) trafficParams[gaKey] = utmData[k];
+    });
+
+    const currentDomain = '<%= @domain %>';
+
+    gtag('config', '<%= @project.domain.google_tracking_id %>', {
+      send_page_view: false,
+      page_location: '<%= @page_full_path %>',
+      linker: { domains: [currentDomain] },
+      ...trafficParams
+    });
+
+    gtag('event', 'page_view', {
+      page_location: '<%= @page_full_path %>'
+    });
+  }
+  
+  // Wait for page load to ensure GA script is loaded
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeGA);
+  } else {
+    initializeGA();
+  }
+</script>
+<% end %>
+
+<% unless @skip_client_data %>
+<script>
+// Function to collect browser and device data
+function collectClientData() {
+  // Get screen dimensions
+  // Screen dimensions are available immediately and don't require DOM loading
+  const screenWidth = window.screen.width || null;
+  const screenHeight = window.screen.height || null;
+  
+  // Get timezone (offset in minutes)
+  // Timezone is also available immediately
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  
+  // Get language (ensuring format like en-RO without additional parameters)
+  let language = null;
+  if (navigator.language || navigator.userLanguage) {
+    language = navigator.language || navigator.userLanguage;
+    if (language.includes(',')) {
+      language = language.split(',')[0];
+    }
+    if (language.includes(';')) {
+      language = language.split(';')[0];
+    }
+  }
+  
+  // Get WebGL vendor and renderer
+  let webglVendor = null;
+  let webglRenderer = null;
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    if (gl) {
+      const info = gl.getExtension('WEBGL_debug_renderer_info');
+      if (info) {
+        webglVendor = gl.getParameter(info.UNMASKED_VENDOR_WEBGL) || null;
+        webglRenderer = gl.getParameter(info.UNMASKED_RENDERER_WEBGL) || null;
+      }
+    }
+  } catch (e) {
+    // Silently handle errors
+  }
+  
+  // Compile all data
+  const clientData = {
+    screen_width: screenWidth,
+    screen_height: screenHeight,
+    timezone: timezone,
+    webgl_vendor: webglVendor,
+    webgl_renderer: webglRenderer,
+    language: language
+  };
+  
+  return clientData;
+}
+
+// Function to send data to server
+function sendDataToServer() {
+  const data = collectClientData();
+  
+  // Get the CSRF token from meta tags
+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
+  
+  // Based on your logs, you're using the root path "/"
+  fetch('/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': csrfToken,
+      'X-Requested-With': 'XMLHttpRequest' // This often helps with CSRF issues
+    },
+    credentials: 'same-origin', // Include cookies (including linksquared)
+    body: JSON.stringify(data)
+  })
+  .catch(error => {
+    // Silently handle errors
+  });
+}
+
+// Use a safer approach that works in most scenarios
+if (document.readyState === 'loading') {
+  // If the document is still loading, wait for DOMContentLoaded
+  document.addEventListener('DOMContentLoaded', sendDataToServer);
+} else {
+  // If DOMContentLoaded has already fired, run immediately
+  sendDataToServer();
+}
+</script>
+<% end %>
+
+<script>
+window.PREVIEW_BASE_URL = "<%= ENV['PREVIEW_BASE_URL'] %>";
+</script>

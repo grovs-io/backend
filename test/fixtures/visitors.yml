@@ -1,0 +1,15 @@
+ios_visitor:
+  project: one
+  device: ios_device
+  web_visitor: false
+  sdk_identifier: "user_ios_abc123"
+  sdk_attributes: '{"plan": "premium", "age_group": "25-34"}'
+  uuid: "550e8400-e29b-41d4-a716-446655440001"
+
+android_visitor:
+  project: one
+  device: android_device
+  web_visitor: false
+  sdk_identifier: "user_android_xyz789"
+  sdk_attributes: '{"plan": "free"}'
+  uuid: "550e8400-e29b-41d4-a716-446655440002"

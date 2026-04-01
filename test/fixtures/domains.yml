@@ -1,0 +1,13 @@
+one:
+  domain: "sqd.link"
+  subdomain: "example"
+  project: one
+  generic_title: "Grovs Demo App"
+  generic_subtitle: "Deep linking made simple"
+  google_tracking_id: "G-TEST12345"
+  generic_image_url: "https://cdn.example.com/og-image.jpg"
+
+two:
+  domain: "sqd.link"
+  subdomain: "other"
+  project: two

@@ -1,0 +1,53 @@
+basic_link:
+  domain: one
+  redirect_config: one
+  path: "test-path"
+  title: "Test Link"
+  subtitle: "A test link"
+  generated_from_platform: "ios"
+  active: true
+  sdk_generated: false
+  tracking_source: "email"
+  tracking_campaign: "spring2026"
+  tracking_medium: "newsletter"
+  data: '[{"key": "value"}]'
+  created_at: "2026-03-01 08:00:00"
+  name: "Spring Campaign Link"
+  tags: '{promo,social}'
+
+second_link:
+  domain: two
+  redirect_config: one
+  path: "second-path"
+  title: "Second Link"
+  subtitle: "Another test link"
+  generated_from_platform: "android"
+  active: true
+  sdk_generated: false
+  data: '[]'
+
+no_custom_redirect_link:
+  domain: one
+  redirect_config: one
+  path: "standard-path"
+  title: "Standard Link"
+  subtitle: "A standard link without custom redirects"
+  generated_from_platform: "ios"
+  active: true
+  sdk_generated: false
+  tracking_source: "email"
+  tracking_campaign: "spring2026"
+  tracking_medium: "newsletter"
+  data: '[]'
+
+inactive_link:
+  domain: one
+  redirect_config: one
+
+  path: "inactive-path"
+  title: "Inactive Link"
+  subtitle: "An inactive test link"
+  generated_from_platform: "web"
+  active: false
+  sdk_generated: false
+  data: '[]'

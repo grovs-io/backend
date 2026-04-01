@@ -1,0 +1,17 @@
+active_sub:
+  instance: one
+  stripe_payment_intent: one
+  subscription_id: "sub_active_001"
+  product_type: "pro"
+  active: true
+  status: "active"
+  customer_id: "cus_001"
+
+canceled_sub:
+  instance: two
+  stripe_payment_intent: two
+  subscription_id: "sub_canceled_001"
+  product_type: "enterprise"
+  active: false
+  status: "canceled"
+  customer_id: "cus_002"

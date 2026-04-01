@@ -1,0 +1,5 @@
+one:
+  application: android_app
+  identifier: "com.test.androidapp"
+  tablet_enabled: false
+  sha256s: '{AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99}'

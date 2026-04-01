@@ -1,0 +1,63 @@
+view_event:
+  project: one
+  device: ios_device
+
+  event: "view"
+  platform: "ios"
+  engagement_time: 5000
+  created_at: "2026-03-01 10:00:00"
+  path: "/promo/spring"
+  ip: "192.168.1.100"
+  remote_ip: "10.0.0.100"
+  app_version: "1.5.0"
+  build: "2026031901"
+  data: '{"screen": "home"}'
+  vendor_id: "test-ios-vendor-001"
+
+open_event:
+  project: one
+  device: ios_device
+
+  event: "open"
+  platform: "ios"
+  engagement_time: 3000
+  created_at: "2026-03-01 11:00:00"
+
+install_event:
+  project: one
+  device: ios_device
+
+  event: "install"
+  platform: "ios"
+  engagement_time: 0
+  created_at: "2026-03-01 12:00:00"
+
+android_view_event:
+  project: one
+  device: android_device
+
+  event: "view"
+  platform: "android"
+  engagement_time: 2000
+  created_at: "2026-03-02 10:00:00"
+  path: "/products"
+  app_version: "2.1.0"
+  build: "2026031902"
+  data: '{"screen": "catalog"}'
+  vendor_id: "test-android-vendor-001"
+
+web_app_open_event:
+  project: one
+  device: web_device
+  event: "app_open"
+  platform: "web"
+  engagement_time: 1000
+  created_at: "2026-03-02 11:00:00"
+
+reinstall_event:
+  project: one
+  device: android_device
+  event: "reinstall"
+  platform: "android"
+  engagement_time: 0
+  created_at: "2026-03-02 12:00:00"

@@ -1,0 +1,24 @@
+ios_app:
+  platform: "ios"
+  instance: one
+  enabled: true
+
+android_app:
+  platform: "android"
+  instance: one
+  enabled: true
+
+desktop_app:
+  platform: "desktop"
+  instance: one
+  enabled: true
+
+web_app:
+  platform: "web"
+  instance: one
+  enabled: true
+
+second_ios_app:
+  platform: "ios"
+  instance: two
+  enabled: true

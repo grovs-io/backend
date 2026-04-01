@@ -1,0 +1,11 @@
+premium_ios:
+  project: one
+  product_id: "com.test.premium"
+  platform: "ios"
+  unique_purchasing_devices: 1
+
+onetime_android:
+  project: one
+  product_id: "com.test.onetime"
+  platform: "android"
+  unique_purchasing_devices: 1

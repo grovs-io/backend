@@ -1,0 +1,2 @@
+class StripeWebhookMessage < ApplicationRecord
+end

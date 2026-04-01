@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light">
+    <meta name="supported-color-schemes" content="light">
+    <title>Welcome to Grovs - Deep Linking and Attribution.</title>
+  </head>
+  <body style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; margin: 0; padding: 0; background-color: #f6f7f9; font-size: 14px; line-height: 1.5; color: #333333;">
+    <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
+      
+      <!-- Header -->
+      <div style="padding: 25px 40px; text-align: left; border-bottom: 1px solid #f0f0f0;">
+        <a href="https://grovs.io/">
+          <img src="<%= Grovs::Assets::LOGO_LARGE %>" alt="Grovs Logo" style="width: 80px; height: auto;">
+        </a>
+      </div>
+
+      <!-- Content -->
+      <div style="padding: 30px 40px;">
+        <h2 style="color: #132441; font-weight: 600; margin-top: 0; margin-bottom: 24px;">Welcome <%= @user.name %>,</h2>
+
+        <p style="margin-bottom: 20px; color: #4a4a4a; font-size: 15px;">We're thrilled to have you on board!</p>
+
+        <p style="margin-bottom: 20px; color: #4a4a4a; font-size: 15px;">
+          At Grovs, we're dedicated to helping you optimize your web and mobile experiences through seamless deep linking, robust attribution tracking, and insightful analytics.
+        </p>
+
+        <p style="margin-bottom: 20px; color: #4a4a4a; font-size: 15px;">Here’s what you can expect from Grovs:</p>
+
+        <ul style="padding-left: 20px; margin-bottom: 20px; color: #4a4a4a; font-size: 15px;">
+          <li style="margin-bottom: 10px;">
+            <strong style="color: #132441;">Effortless Deep Linking:</strong> Easily guide users to specific content or features within your apps and websites. Share deep links across channels to boost engagement.
+          </li>
+          <li style="margin-bottom: 10px;">
+            <strong style="color: #132441;">Insightful Attribution Tracking:</strong> Track the source of app installs, website visits, and user interactions. Refine your acquisition strategies with actionable insights.
+          </li>
+          <li style="margin-bottom: 10px;">
+            <strong style="color: #132441;">Data-Driven Analytics:</strong> Gain a deep understanding of user behavior, conversion rates, and key metrics to optimize your strategies and enhance user experiences.
+          </li>
+        </ul>
+
+        <p style="margin-bottom: 20px; color: #4a4a4a; font-size: 15px;">
+          We're here to support you every step of the way. If you have any questions, feel free to reach out at 
+          <a href="mailto:support@grovs.io" style="color: #2A86FF; text-decoration: none; font-weight: 500;">support@grovs.io</a>.
+        </p>
+
+        <p style="margin-bottom: 10px; color: #4a4a4a; font-size: 15px;">Once again, welcome aboard!</p>
+        <p style="margin-bottom: 10px; color: #4a4a4a; font-size: 15px;">– The Grovs Team</p>
+      </div>
+
+      <!-- Footer -->
+      <div style="background-color: #132441; color: #ffffff; padding: 30px 40px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <!-- Left side -->
+            <td style="vertical-align: middle; text-align: left;">
+              <a href="https://grovs.io/">
+                <img src="<%= Grovs::Assets::LOGO_SQUARE %>" 
+                    alt="Grovs Logo" 
+                    style="width:30px; max-width:30px; height:auto; vertical-align:middle;">
+              </a>
+              <span style="font-size:13px; color:#adb5bd; margin-left:8px; vertical-align:middle; display:inline-block;">
+                © <%= Time.now.year %> Grovs. All rights reserved.
+              </span>
+            </td>
+
+            <!-- Right side -->
+            <td style="text-align:right; vertical-align:middle; font-size:0; line-height:0; mso-line-height-rule:exactly; background-color:#132441;">
+              <!-- remove whitespace between anchors in HTML to avoid gaps -->
+              <a href="https://www.linkedin.com/company/grovs" style="display:inline-block; margin-left:10px; line-height:0;">
+                <img src="<%= Grovs::Assets::LINKEDIN_ICON %>"
+                    alt="LinkedIn"
+                    width="24" height="24"
+                    style="display:block; width:24px; height:24px; border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic;">
+              </a><a href="https://github.com/grovs-io" style="display:inline-block; margin-left:10px; line-height:0;">
+                <img src="<%= Grovs::Assets::GITHUB_ICON %>"
+                    alt="GitHub"
+                    width="24" height="24"
+                    style="display:block; width:24px; height:24px; border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic;">
+              </a>
+            </td>
+          </tr>
+        </table>
+
+        <div style="margin-top: 20px; font-size: 12px; color: #adb5bd; text-align: left;">
+          <a href="https://grovs.io/terms" style="color: #ffffff; text-decoration: none; margin: 0 10px 0 0;">Terms and Conditions</a> | 
+          <a href="https://grovs.io/privacy" style="color: #ffffff; text-decoration: none; margin: 0 10px;">Privacy Policy</a>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

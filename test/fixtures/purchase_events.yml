@@ -1,0 +1,196 @@
+buy_event:
+  event_type: "buy"
+  device: ios_device
+  project: one
+  identifier: "com.test.app"
+  price_cents: 999
+  currency: "USD"
+  usd_price_cents: 999
+  date: "2026-03-01 10:00:00"
+  transaction_id: "txn_buy_001"
+  original_transaction_id: "orig_txn_001"
+  product_id: "com.test.premium"
+  webhook_validated: true
+  store: true
+  processed: true
+  purchase_type: "subscription"
+  store_source: "apple"
+  expires_date: "2027-03-01 10:00:00"
+
+buy_event_repeat:
+  event_type: "buy"
+  device: ios_device
+  project: one
+  identifier: "com.test.app"
+  price_cents: 999
+  currency: "USD"
+  usd_price_cents: 999
+  date: "2026-03-02 10:00:00"
+  transaction_id: "txn_buy_002"
+  original_transaction_id: "orig_txn_001"
+  product_id: "com.test.premium"
+  webhook_validated: true
+  store: true
+  processed: true
+  purchase_type: "subscription"
+
+cancel_event:
+  event_type: "cancel"
+  device: ios_device
+  project: one
+  identifier: "com.test.app"
+  price_cents: 999
+  currency: "USD"
+  usd_price_cents: 999
+  date: "2026-03-03 10:00:00"
+  transaction_id: "txn_cancel_001"
+  original_transaction_id: "orig_txn_001"
+  product_id: "com.test.premium"
+  webhook_validated: true
+  store: true
+  processed: true
+  purchase_type: "subscription"
+
+refund_event:
+  event_type: "refund"
+  device: ios_device
+  project: one
+  identifier: "com.test.app"
+  price_cents: 499
+  currency: "USD"
+  usd_price_cents: 499
+  date: "2026-03-03 12:00:00"
+  transaction_id: "txn_refund_001"
+  original_transaction_id: "orig_txn_002"
+  product_id: "com.test.onetime"
+  webhook_validated: true
+  store: true
+  processed: true
+  purchase_type: "one_time"
+
+buy_one_time:
+  event_type: "buy"
+  device: android_device
+  project: one
+  identifier: "com.test.app"
+  price_cents: 499
+  currency: "USD"
+  usd_price_cents: 499
+  date: "2026-03-01 14:00:00"
+  transaction_id: "txn_buy_ot_001"
+  original_transaction_id: "orig_txn_002"
+  product_id: "com.test.onetime"
+  webhook_validated: true
+  store: true
+  processed: true
+  purchase_type: "one_time"
+  store_source: "google"
+
+unprocessed_buy:
+  event_type: "buy"
+  device: ios_device
+  project: one
+  identifier: "com.test.app"
+  price_cents: 1999
+  currency: "USD"
+  usd_price_cents: 1999
+  date: "2026-03-04 10:00:00"
+  transaction_id: "txn_buy_unprocessed"
+  original_transaction_id: "orig_txn_003"
+  product_id: "com.test.premium"
+  webhook_validated: true
+  store: true
+  processed: false
+  purchase_type: "subscription"
+
+no_device_buy:
+  event_type: "buy"
+  project: one
+  identifier: "com.test.app"
+  price_cents: 999
+  currency: "USD"
+  usd_price_cents: 999
+  date: "2026-03-01 16:00:00"
+  transaction_id: "txn_buy_nodev"
+  original_transaction_id: "orig_txn_004"
+  product_id: "com.test.premium"
+  webhook_validated: true
+  store: true
+  processed: true
+  purchase_type: "subscription"
+
+nil_usd_buy:
+  event_type: "buy"
+  device: ios_device
+  project: one
+  identifier: "com.test.app"
+  price_cents: 500
+  currency: "EUR"
+  date: "2026-03-04 12:00:00"
+  transaction_id: "txn_nil_usd"
+  original_transaction_id: "orig_txn_005"
+  product_id: "com.test.premium"
+  webhook_validated: true
+  store: true
+  processed: false
+  purchase_type: "subscription"
+
+google_bundle_buy_1:
+  event_type: "buy"
+  device: android_device
+  project: one
+  identifier: "com.test.app"
+  price_cents: 299
+  currency: "USD"
+  usd_price_cents: 299
+  date: "2026-03-01 15:00:00"
+  transaction_id: "token_bundle_001:product_a"
+  original_transaction_id: "token_bundle_001"
+  product_id: "com.test.product_a"
+  webhook_validated: true
+  store: true
+  processed: true
+  purchase_type: "one_time"
+  store_source: "google"
+  order_id: "GPA.bundle-001"
+  quantity: 1
+
+google_bundle_buy_2:
+  event_type: "buy"
+  device: android_device
+  project: one
+  identifier: "com.test.app"
+  price_cents: 499
+  currency: "USD"
+  usd_price_cents: 499
+  date: "2026-03-01 15:00:00"
+  transaction_id: "token_bundle_001:product_b"
+  original_transaction_id: "token_bundle_001"
+  product_id: "com.test.product_b"
+  webhook_validated: true
+  store: true
+  processed: true
+  purchase_type: "one_time"
+  store_source: "google"
+  order_id: "GPA.bundle-001"
+  quantity: 1
+
+google_quantity_buy:
+  event_type: "buy"
+  device: android_device
+  project: one
+  identifier: "com.test.app"
+  price_cents: 100
+  currency: "USD"
+  usd_price_cents: 100
+  date: "2026-03-01 15:00:00"
+  transaction_id: "token_qty_001"
+  original_transaction_id: "token_qty_001"
+  product_id: "com.test.gems"
+  webhook_validated: true
+  store: true
+  processed: false
+  purchase_type: "one_time"
+  store_source: "google"
+  order_id: "GPA.qty-001"
+  quantity: 5

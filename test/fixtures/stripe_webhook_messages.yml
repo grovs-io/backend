@@ -1,0 +1,11 @@
+invoice_paid:
+  data: '{"type": "invoice.paid", "id": "evt_001"}'
+  message_type: "invoice.paid"
+  stripe_event_id: "evt_001"
+  processed: true
+
+subscription_updated:
+  data: '{"type": "customer.subscription.updated", "id": "evt_002"}'
+  message_type: "customer.subscription.updated"
+  stripe_event_id: "evt_002"
+  processed: true

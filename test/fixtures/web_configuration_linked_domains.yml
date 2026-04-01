@@ -1,0 +1,7 @@
+primary_domain:
+  web_configuration: one
+  domain: "app.example.com"
+
+secondary_domain:
+  web_configuration: one
+  domain: "www.example.com"

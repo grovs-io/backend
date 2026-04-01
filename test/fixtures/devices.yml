@@ -1,0 +1,34 @@
+ios_device:
+  user_agent: "TestApp/1.0 iPhone"
+  ip: "192.168.1.1"
+  remote_ip: "10.0.0.1"
+  platform: "ios"
+  vendor: "test-ios-vendor-001"
+  model: "iPhone 15 Pro"
+  app_version: "1.5.0"
+  build: "2026031901"
+  language: "en"
+  timezone: "America/New_York"
+  screen_width: 1179
+  screen_height: 2556
+
+android_device:
+  user_agent: "TestApp/1.0 Android"
+  ip: "192.168.1.2"
+  remote_ip: "10.0.0.2"
+  platform: "android"
+  vendor: "test-android-vendor-001"
+  model: "Pixel 8"
+  app_version: "2.1.0"
+  build: "2026031902"
+  language: "es"
+  timezone: "Europe/Madrid"
+  screen_width: 1080
+  screen_height: 2400
+
+web_device:
+  user_agent: "Mozilla/5.0"
+  ip: "192.168.1.3"
+  remote_ip: "10.0.0.3"
+  platform: "web"
+  vendor: "test-web-vendor-001"

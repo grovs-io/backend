@@ -1,0 +1,113 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-grovsdb}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5437:5432"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.preview
+    image: grovs-preview:latest
+    env_file:
+      - .env
+      - .env.preview
+    command: bash -c "rm -f tmp/pids/server.pid && (bundle exec rails db:create || true) && bundle exec rails db:migrate && bundle exec rails s -b '0.0.0.0' -p 3001"
+    ports:
+      - "8765:3001"
+    depends_on:
+      - db
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/up"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  worker_scheduler:
+    image: grovs-preview:latest
+    env_file:
+      - .env
+      - .env.preview
+    command: bundle exec sidekiq -C config/sidekiq_scheduler.yml
+    depends_on:
+      web:
+        condition: service_healthy
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  worker_task:
+    image: grovs-preview:latest
+    env_file:
+      - .env
+      - .env.preview
+    command: bundle exec sidekiq -C config/sidekiq_worker.yml -c 20
+    depends_on:
+      web:
+        condition: service_healthy
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  worker_batch:
+    image: grovs-preview:latest
+    env_file:
+      - .env
+      - .env.preview
+    command: bundle exec sidekiq -C config/sidekiq_batch.yml -c 3
+    depends_on:
+      web:
+        condition: service_healthy
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  worker_maintenance:
+    image: grovs-preview:latest
+    env_file:
+      - .env
+      - .env.preview
+    command: bundle exec sidekiq -C config/sidekiq_maintenance.yml -c 3
+    depends_on:
+      web:
+        condition: service_healthy
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  worker_device_updates:
+    image: grovs-preview:latest
+    env_file:
+      - .env
+      - .env.preview
+    command: bundle exec sidekiq -C config/sidekiq_device_updates.yml -c 3
+    depends_on:
+      web:
+        condition: service_healthy
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  redis:
+    image: redis:6
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:

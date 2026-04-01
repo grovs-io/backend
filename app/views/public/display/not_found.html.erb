@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700&display=swap" rel="stylesheet">
+<title>Lost in the Void</title>
+
+<!-- Open Graph meta tags -->
+<meta property="og:title" content="grovs">
+<meta property="og:description" content="Dynamic links, attributions, and referrals across mobile and web platforms.">
+<meta property="og:image" content="<%= Grovs::Links::SOCIAL_PREVIEW %>">
+<meta property="og:type" content="website">
+
+<!-- Optional: Twitter Card meta tags -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="grovs">
+<meta name="twitter:description" content="Dynamic links, attributions, and referrals across mobile and web platforms.">
+<meta name="twitter:image" content="<%= Grovs::Links::SOCIAL_PREVIEW %>">
+
+<style>
+body {
+  font-family: Lato, sans-serif;
+  background-color: #F8F8F8;;
+  color: #000;
+  margin: 0;
+  padding: 0;
+}
+
+.container {
+  max-width: 700px;
+  margin: 40px auto;
+  padding: 60px;
+  background-color: #ffffff;
+  border-radius: 10px;
+}
+
+h1 {
+  color: #2A86FF;
+  margin-bottom: 30px;
+  margin-top: 0px;
+  font-size: 25px;
+}
+
+h2 {
+  margin-bottom: 20px;
+  margin-top: 0px;
+  font-size: 20px;
+}
+
+p {
+  font-size: 16px;
+  line-height: 1.4;
+  color: rgba(19, 36, 65, 0.56);
+}
+
+ul {
+  padding-left: 20px;
+}
+
+a {
+   color: #2A86FF;
+  text-decoration: none;
+}
+
+li {
+    font-size: 16px;
+    margin-bottom: 20px;
+}
+
+.logo {
+    margin-bottom: 20px;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 600px) {
+  .container {
+    margin: 30px;
+    padding: 40px;
+  }
+  p {
+    font-size: 16px;
+  }
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+ <div class = "logo">
+    <a href="https://grovs.io"><%= image_tag "logo-large-black.svg", alt: "grovs - logo" %></a>
+  </div>
+  <br>
+  <h1>Uh-oh! You've wandered into the void!</h1>
+<br>
+  <h2>Here are a few suggestions:</h2>
+  <ul>
+    <li><strong>Check your coordinates:</strong> Maybe you mistyped the URL or followed a broken link. Double-check the address bar and try again.</li>
+    <li><strong>Contact mission control:</strong> If you believe this is a technical glitch, feel free to contact our support team at <a href="mailto:support@grovs.io">support@grovs.io</a>. They're friendly, helpful, and always ready to assist.</li>
+  </ul>
+  <br>
+  <p>In the meantime, why not enjoy the view of the vast cosmic abyss? Who knows what wonders await beyond the event horizon? Remember, in the grand scheme of the universe, a little detour is just a chance for a cosmic adventure!</p>
+  <p>Keep exploring, space traveler!</p>
+</div>
+
+</body>
+</html>

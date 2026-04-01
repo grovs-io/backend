@@ -1,0 +1,36 @@
+<body>
+    <div id="mobile-view">
+        <div id="popup" class="popup" ios="<%=@ios_config%>" android="<%=@android_config%>">
+            <img id="app-logo" alt="app image">
+            <h2 id="app-name"></h2>
+            <h3 id="app-details"></h3>
+        </div>
+        <div class="button-container">
+            <button id="open-app-button"></button>
+        </div>
+        <div class="button-container">
+            <button id="open-appstore-button"></button>
+        </div>
+    </div>
+
+
+    <div id="desktop-view" desktop="<%= @desktop_config %>">
+        <div class="container">
+            <div class="column">
+                <img id="desktop-app-icon" alt="App Icon">
+                <h2 id ="desktop-app-name" class="app-name"></h2>
+            </div>
+            <div id="download-column" class="column">
+                <h1 class="main-heading">Scan and download</h1>
+                <div id="desktop-qr-code">
+                </div>
+
+                <p class="or-text">or use direct link</p>
+                <div class="store-buttons">
+                <button class="empty-button" id="desktop-ios-button" ><%= image_tag "ios.svg", alt: "App Store" %></button>
+                <button class="empty-button" id="desktop-android-button"><%= image_tag "android.svg", alt: "Google Play" %></button>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>

@@ -1,0 +1,12 @@
+/extensions
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+config/master.key
+config/credentials.yml.enc
+.kamal/secrets
+
+# Resources (may contain private keys)
+/resources

@@ -1,0 +1,7 @@
+one:
+  device: ios_device
+  project: one
+
+two:
+  device: android_device
+  project: one

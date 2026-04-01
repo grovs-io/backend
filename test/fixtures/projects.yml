@@ -1,0 +1,15 @@
+one:
+  name: "Test Project"
+  identifier: "test-project-001"
+  instance: one
+
+one_test:
+  name: "Test Environment Project"
+  identifier: "test-env-project-001"
+  instance: one
+  test: true
+
+two:
+  name: "Test Project 2"
+  identifier: "test-project-002"
+  instance: two

@@ -1,0 +1,15 @@
+premium_sub:
+  project: one
+  original_transaction_id: "orig_txn_001"
+  device_id: <%= ActiveRecord::FixtureSet.identify(:ios_device) %>
+  product_id: "com.test.premium"
+  latest_transaction_id: "txn_buy_002"
+  purchase_type: "subscription"
+
+onetime_sub:
+  project: one
+  original_transaction_id: "orig_txn_002"
+  device_id: <%= ActiveRecord::FixtureSet.identify(:android_device) %>
+  product_id: "com.test.onetime"
+  latest_transaction_id: "txn_buy_ot_001"
+  purchase_type: "one_time"

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700&display=swap" rel="stylesheet">
+<title><%= @name %></title>
+<style>
+body {
+  font-family: Lato, sans-serif;
+  background-color: #F8F8F8;;
+  color: #000;
+  margin: 0;
+  padding: 0;
+}
+
+.container {
+  max-width: 700px;
+  margin: 40px auto;
+  padding: 60px;
+  background-color: #ffffff;
+  border-radius: 10px;
+}
+
+h1 {
+  color: #2A86FF;
+  margin-bottom: 0px;
+  margin-top: 0px;
+  font-size: 25px;
+  max-width: 100%;
+  word-break: break-word; /* breaks long words */
+  overflow-wrap: break-word; /* for broader browser support */
+  white-space: normal; /* allow normal wrapping */
+  display: -webkit-box;
+  -webkit-line-clamp: 20; /* max 2 lines */
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+h2 {
+  margin-bottom: 20px;
+  margin-top: 0px;
+  font-size: 20px;
+}
+
+p {
+  font-size: 15px;
+  line-height: 1.4;
+  color: rgba(19, 36, 65, 0.56);
+}
+
+ul {
+  padding-left: 20px;
+}
+
+a {
+   color: #2A86FF;
+  text-decoration: none;
+}
+
+li {
+    font-size: 16px;
+    margin-bottom: 20px;
+}
+
+.logo {
+    margin-bottom: 20px;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 600px) {
+  .container {
+    margin: 30px;
+    padding: 40px;
+  }
+  p {
+    font-size: 15px;
+  }
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+ <div class = "logo">
+    <a href="https://grovs.io"><%= image_tag "logo-large-black.svg", alt: "grovs - logo" %></a>
+  </div>
+  <br>
+  <h1><%= @name %></h1>
+<br>
+<p>This is your default redirect page.</p>
+<p>You are accessing this URL on a platform where redirects are not currently enabled. If you are the app developer, you can enable specific redirects (such as websites or App Stores) for this platform through the dashboard.</p>
+<br>
+  <p>To update these settings, navigate to your project’s redirect configuration under <a href="https://app.grovs.io">Configuration -> Redirect</a>.</p>
+</div>
+</body>
+</html>

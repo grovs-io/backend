@@ -1,0 +1,17 @@
+ios_redirect_for_basic_link:
+  link: basic_link
+  platform: "ios"
+  url: "https://example.com/ios-custom"
+  open_app_if_installed: true
+
+android_redirect_for_basic_link:
+  link: basic_link
+  platform: "android"
+  url: "https://example.com/android-custom"
+  open_app_if_installed: false
+
+desktop_redirect_for_basic_link:
+  link: basic_link
+  platform: "desktop"
+  url: "https://example.com/desktop-custom"
+  open_app_if_installed: false

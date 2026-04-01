@@ -1,0 +1,26 @@
+ios_phone_redirect:
+  redirect_config: one
+  application: ios_app
+  platform: "ios"
+  variation: "phone"
+  appstore: true
+  fallback_url:
+  enabled: true
+
+android_phone_redirect:
+  redirect_config: one
+  application: android_app
+  platform: "android"
+  variation: "phone"
+  appstore: false
+  fallback_url: "https://example.com/fallback"
+  enabled: true
+
+desktop_redirect:
+  redirect_config: one
+  application: desktop_app
+  platform: "desktop"
+  variation: "desktop"
+  appstore: false
+  fallback_url: "https://example.com/desktop-fallback"
+  enabled: true

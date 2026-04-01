@@ -1,0 +1,25 @@
+admin_user:
+  email: "admin@example.com"
+  encrypted_password: "$2a$11$fake_encrypted_password_admin"
+  name: "Admin User"
+  super_admin: false
+
+member_user:
+  email: "member@example.com"
+  encrypted_password: "$2a$11$fake_encrypted_password_member"
+  name: "Member User"
+  super_admin: false
+
+super_admin_user:
+  email: "superadmin@example.com"
+  encrypted_password: "$2a$11$fake_encrypted_password_super"
+  name: "Super Admin"
+  super_admin: false
+
+oauth_user:
+  email: "oauth@example.com"
+  encrypted_password: ""
+  name: "OAuth User"
+  provider: "google_oauth2"
+  uid: "123456789"
+  super_admin: false

@@ -1,0 +1,7 @@
+app_icon:
+  identifier: "com.test.app"
+  platform: "ios"
+
+android_icon:
+  identifier: "com.test.android"
+  platform: "android"

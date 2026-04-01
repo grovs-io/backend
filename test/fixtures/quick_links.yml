@@ -1,0 +1,18 @@
+basic_quick_link:
+  domain: one
+  path: "quick-test"
+  title: "Quick Link"
+  subtitle: "A quick link"
+  ios_phone: "https://apps.apple.com/app/id123"
+  android_phone: "https://play.google.com/store/apps/details?id=com.test"
+  ios_tablet: "https://apps.apple.com/app/id123-ipad"
+  android_tablet: "https://play.google.com/store/apps/details?id=com.test.tablet"
+  desktop: "https://example.com/desktop"
+  desktop_mac: "https://example.com/mac"
+  desktop_windows: "https://example.com/windows"
+
+no_url_quick_link:
+  domain: two
+  path: "quick-empty"
+  title: "Empty Quick Link"
+  subtitle: "No URLs"

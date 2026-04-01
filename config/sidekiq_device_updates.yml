@@ -1,0 +1,3 @@
+:concurrency: 10
+:queues:
+  - [device_updates, 100]

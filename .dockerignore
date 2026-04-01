@@ -1,0 +1,35 @@
+# Don't bake env files into image - use Kamal secrets at runtime
+.env
+.env.*
+.env.staging
+.env.production
+.env.development
+.env.test
+.env.local
+
+# Kamal secrets
+.kamal/secrets
+
+# Rails credentials (use RAILS_MASTER_KEY env var instead)
+config/master.key
+config/credentials.yml.enc
+
+# Git
+.git
+.gitignore
+
+# Logs
+log/*
+tmp/*
+
+# Test/Dev
+spec/
+test/
+.rspec
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store

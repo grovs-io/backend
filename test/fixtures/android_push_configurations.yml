@@ -1,0 +1,4 @@
+one:
+  android_configuration: one
+  name: "FCM Config"
+  firebase_project_id: "my-firebase-project-12345"

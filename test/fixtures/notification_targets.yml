@@ -1,0 +1,11 @@
+one:
+  notification: one
+  existing_users: true
+  new_users: false
+  platforms: '{ios,android}'
+
+two:
+  notification: two
+  existing_users: false
+  new_users: true
+  platforms: '{web}'

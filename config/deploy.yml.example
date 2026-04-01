@@ -1,0 +1,82 @@
+# Name of your application. Used to uniquely configure containers.
+service: grovs
+image: your-registry/grovs
+
+# Deploy to these servers.
+servers:
+  web:
+    hosts:
+      - 1.2.3.4        # Replace with your server IPs
+      - 5.6.7.8
+    cmd: bundle exec rails s
+
+  scheduler:
+    hosts:
+      - 1.2.3.4
+    cmd: bundle exec sidekiq -C config/sidekiq_scheduler.yml
+
+  worker_a:
+    hosts:
+      - 5.6.7.8
+    cmd: bundle exec sidekiq -C config/sidekiq_worker.yml -c 20
+
+  worker_b:
+    hosts:
+      - 5.6.7.8
+    cmd: bundle exec sidekiq -C config/sidekiq_worker.yml -c 20
+
+  worker_c:
+    hosts:
+      - 5.6.7.8
+    cmd: bundle exec sidekiq -C config/sidekiq_worker.yml -c 15
+
+  worker_batch:
+    hosts:
+      - 1.2.3.4
+    cmd: bundle exec sidekiq -C config/sidekiq_batch.yml -c 2
+
+  worker_maintenance:
+    hosts:
+      - 1.2.3.4
+    cmd: bundle exec sidekiq -C config/sidekiq_maintenance.yml -c 5
+
+  worker_device_updates:
+    hosts:
+      - 1.2.3.4
+    cmd: bundle exec sidekiq -C config/sidekiq_device_updates.yml -c 10
+
+# Credentials for your image host.
+registry:
+  username: your-docker-username
+
+  # Always use an access token rather than real password (pulled from .kamal/secrets).
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+# Configure builder setup.
+builder:
+  arch: amd64
+  dockerfile: "Dockerfile.production"
+  context: "."
+
+proxy:
+  ssl: false
+  app_port: 3000
+  forward_headers: true
+
+  healthcheck:
+    interval: 3
+    path: /up
+    timeout: 30
+
+# Optional: Add accessories like log collectors
+# accessories:
+#   fluentbit:
+#     image: cr.fluentbit.io/fluent/fluent-bit:4.0.4
+#     roles:
+#       - web
+#     volumes:
+#       - "/path/to/fluent-bit.conf:/fluent-bit.conf:ro"
+#     cmd: fluent-bit -c /fluent-bit.conf
+
+deploy_timeout: 120

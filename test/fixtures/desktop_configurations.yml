@@ -1,0 +1,8 @@
+one:
+  application: desktop_app
+  generated_page: true
+  fallback_url: "https://example.com/desktop"
+  mac_enabled: true
+  mac_uri: "testapp://mac"
+  windows_enabled: true
+  windows_uri: "testapp://windows"

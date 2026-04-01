@@ -1,0 +1,44 @@
+ios_stat_day1:
+  visitor: ios_visitor
+  project_id: <%= ActiveRecord::FixtureSet.identify(:one) %>
+  event_date: "2026-03-01"
+  platform: "ios"
+  views: 50
+  opens: 20
+  installs: 5
+  reinstalls: 1
+  time_spent: 3000
+  revenue: 500
+  reactivations: 0
+  app_opens: 10
+  user_referred: 2
+
+ios_stat_day2:
+  visitor: ios_visitor
+  project_id: <%= ActiveRecord::FixtureSet.identify(:one) %>
+  event_date: "2026-03-02"
+  platform: "ios"
+  views: 80
+  opens: 30
+  installs: 8
+  reinstalls: 2
+  time_spent: 5000
+  revenue: 800
+  reactivations: 1
+  app_opens: 20
+  user_referred: 4
+
+android_stat_day1:
+  visitor: android_visitor
+  project_id: <%= ActiveRecord::FixtureSet.identify(:one) %>
+  event_date: "2026-03-01"
+  platform: "android"
+  views: 30
+  opens: 10
+  installs: 3
+  reinstalls: 0
+  time_spent: 2000
+  revenue: 300
+  reactivations: 0
+  app_opens: 8
+  user_referred: 1

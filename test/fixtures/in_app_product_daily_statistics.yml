@@ -1,0 +1,47 @@
+premium_day1:
+  in_app_product: premium_ios
+  project: one
+  event_date: "2026-03-01"
+  platform: "ios"
+  revenue: 999
+  purchase_events: 1
+  canceled_events: 0
+  first_time_purchases: 1
+  repeat_purchases: 0
+  device_revenue: 999
+
+premium_day2:
+  in_app_product: premium_ios
+  project: one
+  event_date: "2026-03-02"
+  platform: "ios"
+  revenue: 999
+  purchase_events: 1
+  canceled_events: 0
+  first_time_purchases: 0
+  repeat_purchases: 1
+  device_revenue: 999
+
+premium_day3_cancel:
+  in_app_product: premium_ios
+  project: one
+  event_date: "2026-03-03"
+  platform: "ios"
+  revenue: 0
+  purchase_events: 0
+  canceled_events: 1
+  first_time_purchases: 0
+  repeat_purchases: 0
+  device_revenue: 0
+
+onetime_day1:
+  in_app_product: onetime_android
+  project: one
+  event_date: "2026-03-01"
+  platform: "android"
+  revenue: 499
+  purchase_events: 1
+  canceled_events: 0
+  first_time_purchases: 1
+  repeat_purchases: 0
+  device_revenue: 499

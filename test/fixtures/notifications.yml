@@ -1,0 +1,17 @@
+one:
+  title: "Welcome"
+  subtitle: "Welcome to the app"
+  html: "<p>Welcome to our app!</p>"
+  project: one
+  archived: false
+  auto_display: false
+  send_push: false
+
+two:
+  title: "Update Available"
+  subtitle: "New features"
+  html: "<p>Check out our new features!</p>"
+  project: one
+  archived: false
+  auto_display: true
+  send_push: true

@@ -1,0 +1,16 @@
+<html>
+<head>
+    <%= render partial: "partial_meta" %>
+    <%= render partial: "partial_includes" %>
+
+    <%= javascript_include_tag 'handle_android' %>
+</head>
+
+<%= render partial: "partial_view" %>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        handleAndroidIfNeeded()
+    });
+</script>
+</html>

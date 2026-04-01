@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <%= render partial: "partial_meta" %>
+    <%= render partial: "partial_includes" %>
+   
+    <script type="text/javascript">
+        document.addEventListener('DOMContentLoaded', function() {
+          const fallbackUrl = <%= json_escape(@redirect_url.to_json).html_safe %>;
+          // Check if the 'url' parameter exists and is not empty
+          if (fallbackUrl && fallbackUrl.trim() !== "") {
+            // Perform the redirect
+            document.getElementById('error-message').style.display = 'none';
+            document.getElementById('mobile-view').style.display = 'block';
+
+            document.getElementById('open-app-button').addEventListener('click', function() {
+                window.location.href = fallbackUrl;
+            });
+          } else {
+            // Show the invalid URL message
+            document.getElementById('error-message').style.display = 'block';
+            document.getElementById('mobile-view').style.display = 'none';
+          }
+        });
+    </script>
+</head>
+<body>
+  <div id="mobile-view">
+        <div id="popup" class="popup">
+            <img id="app-logo"  src="<%= @image %>" alt="app image">
+            <h2 id="app-name"><%= @name.present? ? @name : "" %></h2>
+            <h3 id="app-details"></h3>
+        </div>
+        <div class="button-container">
+            <button id="open-app-button">Open</button>
+        </div>
+  </div>
+  <p id="error-message" class="error-message">Invalid link</p>
+</body>
+</html>

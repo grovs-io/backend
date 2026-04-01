@@ -1,0 +1,5 @@
+one:
+  application: ios_app
+  bundle_id: "com.test.iosapp"
+  app_prefix: "ABC123"
+  tablet_enabled: false

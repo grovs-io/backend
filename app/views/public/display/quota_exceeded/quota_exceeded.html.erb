@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700&display=swap" rel="stylesheet">
+<title>Quota exceeded</title>
+<style>
+body {
+  font-family: Lato, sans-serif;
+  background-color: #F8F8F8;;
+  color: #000;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  justify-content: center; /* Center horizontally */
+  align-items: center; /* Center vertically */
+  height: 100vh; /* Make body full height of viewport */
+}
+
+.container {
+  max-width: 500px;
+  margin: 40px auto;
+  padding: 30px;
+  background-color: #ffffff;
+  border-radius: 10px;
+  /* box-shadow: 0 0 10px rgba(0, 0, 0, 0.3); */
+}
+
+h1 {
+  /* text-align: center; */
+  color: #2A86FF;
+  margin-bottom: 40px;
+  margin-top: 20px;
+  font-size: 35px;
+}
+
+p {
+  font-size: 16px;
+  line-height: 1.6;
+  color: rgba(19, 36, 65, 0.56);
+}
+
+ul {
+  padding-left: 20px;
+}
+
+a {
+   color: #2A86FF;
+  text-decoration: none;
+}
+
+li {
+    font-size: 18px;
+    margin-bottom: 20px;
+}
+
+.logo {
+    margin-bottom: 20px;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 600px) {
+  .container {
+    margin: 30px;
+    padding: 40px;
+  }
+  p {
+    font-size: 16px;
+  }
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+ <div class = "logo">
+    <a href="https://linksquared.io"><%= image_tag "logo-large-black.svg", alt: "linksquared - logo" %></a>
+  </div>
+  <p>Quota exceeded. This means that you have reached the limit of free usage for the current period.
+  To continue using our services without interruption, upgrade your plan.</p>
+ 
+</div>
+
+</body>
+</html>

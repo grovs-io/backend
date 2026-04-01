@@ -1,0 +1,14 @@
+admin_role:
+  instance: one
+  user: admin_user
+  role: "admin"
+
+member_role:
+  instance: one
+  user: member_user
+  role: "member"
+
+super_admin_instance_two_role:
+  instance: two
+  user: super_admin_user
+  role: "admin"

@@ -1,0 +1,9 @@
+one:
+  notification: one
+  visitor: ios_visitor
+  read: false
+
+two:
+  notification: two
+  visitor: android_visitor
+  read: false

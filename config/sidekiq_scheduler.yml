@@ -1,0 +1,23 @@
+:concurrency: 1
+:queues:
+  - scheduler # never used by any job; this process only enqueues
+
+:scheduler:
+  enabled: true
+  schedule:
+    disable_quotas_task:
+      cron: "*/10 * * * *"
+      class: "DisableQuotasJob"
+      queue: default
+    backfill_last_3_days:
+      cron: "3,13,23,33,43,53 * * * *"
+      class: "BackfillLast3DaysJob"
+      queue: maintenance
+    backfill_project_daily_active_users:
+      cron: "6,16,26,36,46,56 * * * *"
+      class: "BackfillProjectDailyActiveUsersJob"
+      queue: maintenance
+    batch_event_processor:
+      cron: "* * * * *"
+      class: "BatchEventProcessorJob"
+      queue: batch_events

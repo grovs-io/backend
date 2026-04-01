@@ -1,0 +1,21 @@
+# Note: project_id uses ERB to match fixture-generated IDs.
+# DailyProjectMetric has no belongs_to, so we use FixtureSet.identify.
+metric_day1:
+  project_id: <%= ActiveRecord::FixtureSet.identify(:one) %>
+  event_date: "2026-02-15"
+  platform: "ios"
+  views: 100
+  installs: 10
+  opens: 50
+  reinstalls: 2
+  link_views: 80
+  returning_users: 5
+  referred_users: 3
+  organic_users: 7
+  new_users: 10
+  app_opens: 30
+  first_time_visitors: 8
+  revenue: 999
+  units_sold: 5
+  cancellations: 1
+  first_time_purchases: 3

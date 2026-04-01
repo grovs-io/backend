@@ -1,0 +1,3 @@
+:concurrency: 3
+:queues:
+  - [batch_events, 100]

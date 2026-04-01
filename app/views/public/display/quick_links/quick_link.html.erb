@@ -1,0 +1,23 @@
+<title><%= @page_title %></title>
+
+<meta property="og:title" content="<%= @page_title %>">
+<meta property="og:description" content="<%= @page_subtitle %>">
+
+<meta property="og:image" content="<%=@page_image %>">
+<meta property="og:type" content="website"> <!-- Type of content -->
+<meta property="og:url" content="<%=@page_full_path%>">
+
+ <!-- Twitter specific meta tags -->
+<meta name="twitter:card" content="<%=@page_image %>">
+<meta name="twitter:title" content="<%= @page_title %>">
+<meta name="twitter:description" content="<%= @page_subtitle %>">
+<meta name="twitter:image" content="<%=@page_image %>">
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<%= javascript_include_tag 'device_detection' %>
+<%= javascript_include_tag 'quick_links_redirects.js' %>
+
+<script type="text/javascript">
+ handleQuickLinkRedirect('<%=@link.ios_phone %>', '<%=@link.ios_tablet %>', '<%=@link.android_phone %>', '<%=@link.android_tablet %>','<%=@link.desktop %>', '<%=@link.desktop_mac %>', '<%=@link.desktop_windows %>', '<%=@link.desktop_linux %>')
+</script>

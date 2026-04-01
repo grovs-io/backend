@@ -1,0 +1,11 @@
+one:
+  user: admin_user
+  instance: one
+  intent_id: "pi_test_001"
+  product_type: "pro"
+
+two:
+  user: member_user
+  instance: two
+  intent_id: "pi_test_002"
+  product_type: "enterprise"

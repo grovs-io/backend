@@ -1,0 +1,17 @@
+#!/bin/bash
+# Pre-commit hook: run Rubocop on staged Ruby files
+
+staged_rb_files=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rb$')
+
+if [ -z "$staged_rb_files" ]; then
+  exit 0
+fi
+
+echo "Running Rubocop on staged files..."
+bundle exec rubocop --force-exclusion $staged_rb_files
+
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "Rubocop found offenses. Fix them before committing."
+  exit 1
+fi

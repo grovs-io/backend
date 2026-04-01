@@ -1,0 +1,390 @@
+require:
+  - ./lib/rubocop/cop/custom/model_caching_requires_cache_keys
+
+plugins:
+  - rubocop-rails
+
+AllCops:
+  TargetRubyVersion: 3.1
+  NewCops: disable
+  SuggestExtensions: false
+  Exclude:
+    - 'db/schema.rb'
+    - 'db/migrate/**/*'
+    - 'bin/**/*'
+    - 'vendor/**/*'
+    - 'node_modules/**/*'
+    - 'tmp/**/*'
+    - 'config/initializers/opentelemetry.rb'
+
+# -- Layout --
+
+Layout/IndentationWidth:
+  Enabled: true
+
+Layout/IndentationConsistency:
+  Enabled: true
+
+Layout/AccessModifierIndentation:
+  Enabled: true
+
+Layout/CommentIndentation:
+  Enabled: true
+
+Layout/FirstArgumentIndentation:
+  Enabled: false
+
+Layout/ClosingParenthesisIndentation:
+  Enabled: false
+
+Layout/LineLength:
+  Max: 160
+
+Layout/EmptyLines:
+  Enabled: false
+
+Layout/EmptyLinesAroundClassBody:
+  Enabled: false
+
+Layout/EmptyLinesAroundModuleBody:
+  Enabled: false
+
+Layout/EmptyLinesAroundBlockBody:
+  Enabled: false
+
+Layout/EmptyLineBetweenDefs:
+  Enabled: false
+
+Layout/EmptyLineAfterGuardClause:
+  Enabled: false
+
+Layout/TrailingEmptyLines:
+  Enabled: false
+
+Layout/TrailingWhitespace:
+  Enabled: false
+
+Layout/SpaceInsideHashLiteralBraces:
+  Enabled: false
+
+Layout/SpaceInsideBlockBraces:
+  Enabled: false
+
+Layout/SpaceAfterComma:
+  Enabled: false
+
+Layout/MultilineMethodCallIndentation:
+  Enabled: false
+
+Layout/FirstHashElementIndentation:
+  Enabled: false
+
+Layout/FirstArrayElementIndentation:
+  Enabled: false
+
+Layout/HashAlignment:
+  Enabled: false
+
+Layout/ArgumentAlignment:
+  Enabled: false
+
+Layout/ExtraSpacing:
+  Enabled: false
+
+Layout/CaseIndentation:
+  Enabled: false
+
+Layout/SpaceAroundOperators:
+  Enabled: false
+
+Layout/EmptyLinesAroundExceptionHandlingKeywords:
+  Enabled: false
+
+Layout/EmptyLinesAroundMethodBody:
+  Enabled: false
+
+Layout/SpaceBeforeBlockBraces:
+  Enabled: false
+
+Layout/BlockAlignment:
+  Enabled: true
+
+Layout/MultilineOperationIndentation:
+  Enabled: false
+
+Layout/EmptyLinesAroundAccessModifier:
+  Enabled: false
+
+Layout/LeadingEmptyLines:
+  Enabled: false
+
+Layout/SpaceAfterColon:
+  Enabled: false
+
+Layout/ArrayAlignment:
+  Enabled: false
+
+Layout/AssignmentIndentation:
+  Enabled: false
+
+Layout/DefEndAlignment:
+  Enabled: true
+
+Layout/MultilineMethodCallBraceLayout:
+  Enabled: false
+
+Layout/RescueEnsureAlignment:
+  Enabled: true
+
+Layout/SpaceInsideArrayLiteralBrackets:
+  Enabled: false
+
+Layout/ElseAlignment:
+  Enabled: true
+
+Layout/EndAlignment:
+  Enabled: true
+
+Layout/MultilineHashBraceLayout:
+  Enabled: false
+
+Layout/SpaceBeforeComma:
+  Enabled: false
+
+# -- Metrics --
+
+Metrics/ClassLength:
+  Max: 600
+
+Metrics/MethodLength:
+  Max: 80
+  Exclude:
+    - 'lib/tasks/**/*'
+
+Metrics/ModuleLength:
+  Max: 600
+
+Metrics/AbcSize:
+  Max: 80
+  Exclude:
+    - 'lib/tasks/**/*'
+
+Metrics/CyclomaticComplexity:
+  Max: 25
+  Exclude:
+    - 'lib/tasks/**/*'
+
+Metrics/PerceivedComplexity:
+  Max: 25
+  Exclude:
+    - 'lib/tasks/**/*'
+
+Metrics/BlockLength:
+  Max: 60
+  Exclude:
+    - 'config/routes.rb'
+    - 'config/environments/**/*'
+    - 'test/**/*'
+    - 'lib/tasks/**/*'
+
+Metrics/ParameterLists:
+  Max: 16
+
+# -- Style --
+
+Style/Documentation:
+  Enabled: false
+
+Style/FrozenStringLiteralComment:
+  Enabled: false
+
+Style/StringLiterals:
+  Enabled: false
+
+Style/StringLiteralsInInterpolation:
+  Enabled: false
+
+Style/StringConcatenation:
+  Enabled: false
+
+Style/SymbolArray:
+  Enabled: false
+
+Style/WordArray:
+  Enabled: false
+
+Style/ClassAndModuleChildren:
+  Enabled: false
+
+Style/GuardClause:
+  Enabled: false
+
+Style/IfUnlessModifier:
+  Enabled: false
+
+Style/NegatedIf:
+  Enabled: true
+
+Style/ConditionalAssignment:
+  Enabled: false
+
+Style/NumericLiterals:
+  Enabled: false
+
+Style/NumericPredicate:
+  Enabled: false
+
+Style/RedundantSelf:
+  Enabled: false
+
+Style/RedundantBegin:
+  Enabled: true
+
+Style/RedundantReturn:
+  Enabled: true
+
+Style/TrailingCommaInArguments:
+  Enabled: false
+
+Style/TrailingCommaInArrayLiteral:
+  Enabled: false
+
+Style/TrailingCommaInHashLiteral:
+  Enabled: false
+
+Style/HashSyntax:
+  Enabled: false
+
+Style/GlobalVars:
+  Enabled: false
+
+Style/MutableConstant:
+  Enabled: false
+
+Style/IdenticalConditionalBranches:
+  Enabled: false
+
+Style/Next:
+  Enabled: false
+
+Style/EmptyMethod:
+  Enabled: false
+
+Style/RescueStandardError:
+  Enabled: false
+
+Style/RescueModifier:
+  Enabled: false
+
+Style/EmptyElse:
+  Enabled: false
+
+Style/SafeNavigation:
+  Enabled: false
+
+Style/NilComparison:
+  Enabled: false
+
+Style/NonNilCheck:
+  Enabled: false
+
+Style/MethodCallWithoutArgsParentheses:
+  Enabled: false
+
+# -- Naming --
+
+Naming/VariableNumber:
+  Enabled: false
+
+Naming/MemoizedInstanceVariableName:
+  Enabled: false
+
+Naming/AccessorMethodName:
+  Enabled: false
+
+Naming/PredicatePrefix:
+  Enabled: false
+
+# -- Lint --
+
+Lint/MissingSuper:
+  Enabled: false
+
+Lint/UnusedMethodArgument:
+  Enabled: false
+
+Lint/UselessAssignment:
+  Enabled: false
+
+Lint/UselessAccessModifier:
+  Enabled: false
+
+Lint/IneffectiveAccessModifier:
+  Enabled: false
+
+Lint/AmbiguousBlockAssociation:
+  Enabled: false
+
+Lint/ConstantDefinitionInBlock:
+  Exclude:
+    - 'lib/tasks/**/*'
+
+# -- Security --
+
+Security/MarshalLoad:
+  Enabled: false
+
+# -- Bundler --
+
+Bundler/OrderedGems:
+  Enabled: false
+
+# -- Rails --
+
+Rails/DynamicFindBy:
+  AllowedMethods:
+    - find_by_hashid
+
+Rails/ApplicationController:
+  Enabled: false
+
+Rails/SkipsModelValidations:
+  Enabled: false
+
+Rails/Output:
+  Enabled: false
+
+Rails/HasManyOrHasOneDependent:
+  Enabled: false
+
+Rails/InverseOf:
+  Enabled: false
+
+Rails/LexicallyScopedActionFilter:
+  Enabled: false
+
+Rails/UnknownEnv:
+  Enabled: false
+
+Rails/I18nLocaleTexts:
+  Enabled: false
+
+Rails/TimeZone:
+  Enabled: false
+
+Rails/Date:
+  Enabled: false
+
+Rails/Blank:
+  Enabled: false
+
+Rails/HelperInstanceVariable:
+  Exclude:
+    - 'app/helpers/sdk_link_builder.rb'
+
+# -- Custom --
+
+Custom/ModelCachingRequiresCacheKeys:
+  Enabled: true
+  Include:
+    - 'app/models/**/*.rb'
