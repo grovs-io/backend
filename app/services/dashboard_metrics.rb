@@ -49,8 +49,6 @@ class DashboardMetrics
         first_time_visitors = values.map!(&:to_i)
 
       total_users      = unique_visitors_for_range(project_id, range_start, range_end, platform)
-      # first_time_visitors already fetched from DailyProjectMetric (pre-aggregated).
-      # Refreshed every 10 min by BackfillLast3DaysJob — good enough for dashboard.
       returning_users  = [total_users - first_time_visitors, 0].max
       returning_rate   = total_users.zero? ? 0.0 : (returning_users.to_f / total_users)
 
