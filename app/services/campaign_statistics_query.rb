@@ -67,7 +67,7 @@ class CampaignStatisticsQuery
   def filter_by_name(query)
     return query unless params[:term].present?
 
-    query.where("campaigns.name ILIKE ?", "%#{params[:term]}%")
+    query.where("campaigns.name ILIKE ?", "%#{ActiveRecord::Base.sanitize_sql_like(params[:term])}%")
   end
 
   def platform
@@ -97,12 +97,15 @@ class CampaignStatisticsQuery
   end
 
   def order_clause
+    dir = direction
     if SORTABLE_CAMPAIGN_FIELDS.include?(sort_by)
-      "campaigns.#{sort_by} #{direction}"
+      col = ActiveRecord::Base.connection.quote_column_name(sort_by)
+      Arel.sql("campaigns.#{col} #{dir}")
     elsif SORTABLE_METRIC_FIELDS.include?(sort_by)
-      Arel.sql("COALESCE(SUM(link_daily_statistics.#{sort_by}), 0) #{direction}")
+      col = ActiveRecord::Base.connection.quote_column_name(sort_by)
+      Arel.sql("COALESCE(SUM(link_daily_statistics.#{col}), 0) #{dir}")
     else
-      "campaigns.created_at DESC"
+      Arel.sql("campaigns.created_at DESC")
     end
   end
 end

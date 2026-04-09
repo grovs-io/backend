@@ -27,10 +27,7 @@ class CampaignManagementService
       campaign.archived = true
       campaign.save!
 
-      campaign.links.each do |link|
-        link.active = false
-        link.save!
-      end
+      campaign.links.where(active: true).update_all(active: false)
     end
 
     campaign.reload

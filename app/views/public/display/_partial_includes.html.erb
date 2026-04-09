@@ -6,8 +6,6 @@
 
 <%= stylesheet_link_tag 'deeplink' %>
 
-<link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700&display=swap" rel="stylesheet">
-
 <% if @project && @project.domain.google_tracking_id.present? %>
   <script async src="https://www.googletagmanager.com/gtag/js?id=<%= @project.domain.google_tracking_id %>"></script>
 <script>

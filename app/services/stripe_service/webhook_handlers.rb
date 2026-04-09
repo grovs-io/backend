@@ -156,7 +156,7 @@ module StripeService::WebhookHandlers
     end
 
     current_usage = @project_helper.current_mau(instance)
-    if current_usage > ENV['FREE_MAU_COUNT'].to_i
+    if current_usage > Grovs.free_mau_count
       instance.quota_exceeded = true
     else
       instance.quota_exceeded = false
@@ -171,7 +171,7 @@ module StripeService::WebhookHandlers
       create_and_apply_coupon(subscription, ENV['SECOND_DISCOUNT_PERCENTAGE'].to_i)
     elsif quantity >= ENV['FIRST_DISCOUNT_MAUS_THRESHOLD'].to_i
       create_and_apply_coupon(subscription, ENV['FIRST_DISCOUNT_PERCENTAGE'].to_i)
-    elsif quantity >= ENV["FREE_MAU_COUNT"].to_i
+    elsif quantity >= Grovs.free_mau_count
       apply_first_10_k_maus_coupon(subscription)
     else
       # No discount

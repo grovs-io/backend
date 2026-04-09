@@ -3,7 +3,7 @@ require "test_helper"
 class LinksViewsReportDashboardTest < ActiveSupport::TestCase
   fixtures :instances, :projects, :daily_project_metrics
 
-  # Fixture metric_day1: project :one, event_date 2026-02-15, platform ios, link_views 80
+  # Fixtures on 2026-02-15: metric_day1 (ios, link_views=80) + metric_day1_android (android, link_views=30)
 
   setup do
     @pid = projects(:one).id
@@ -25,17 +25,17 @@ class LinksViewsReportDashboardTest < ActiveSupport::TestCase
       start_date: Date.new(2026, 2, 15), end_date: Date.new(2026, 2, 15)
     ).call
 
-    # Service writes DB results with string key via date.to_s
-    assert_equal 80, result[Date.new(2026, 2, 15).to_s]
+    # ios(80) + android(30) — platform: nil sums all platforms
+    assert_equal 110, result[Date.new(2026, 2, 15).to_s]
   end
 
-  test "filters by platform — no android data returns all zeros" do
+  test "filters by platform — android returns only android data" do
     result = LinksViewsReportDashboard.new(
       project_id: @pid, platform: "android",
       start_date: Date.new(2026, 2, 15), end_date: Date.new(2026, 2, 15)
     ).call
 
-    assert_equal 0, result[Date.new(2026, 2, 15)]
+    assert_equal 30, result["2026-02-15"]
   end
 
   test "multi-day range with data on one day — other days stay zero" do
@@ -53,7 +53,7 @@ class LinksViewsReportDashboardTest < ActiveSupport::TestCase
       start_date: Date.new(2026, 2, 15), end_date: Date.new(2026, 2, 17)
     ).call
 
-    assert_equal 80, result["2026-02-15"]
+    assert_equal 110, result["2026-02-15"]  # ios(80) + android(30)
     assert_equal 45, result["2026-02-16"]
     # 2026-02-17 has no data, only the Date key exists with 0
     assert_equal 0, result[Date.new(2026, 2, 17)]

@@ -18,6 +18,43 @@ Rails.application.routes.draw do
     post '/', to: "public/device_data#store_device_data"
   end
 
+  constraints(McpSubdomain) do
+    # OAuth 2.1 discovery endpoints
+    get '.well-known/oauth-protected-resource', to: "mcp/oauth_metadata#protected_resource"
+    get '.well-known/oauth-authorization-server', to: "mcp/oauth_metadata#authorization_server"
+
+    # OAuth 2.1 flow endpoints
+    post '/register', to: "mcp/registration#create"
+    get '/authorize', to: "mcp/authorize#show"
+    post '/token', to: "mcp/token#create"
+
+    # MCP API endpoints (protected by MCP token)
+    namespace :api, defaults: { format: :json } do
+      namespace :v1 do
+        get 'mcp/status', to: "mcp/auth#status"
+        get 'mcp/usage', to: "mcp/auth#usage"
+        get 'mcp/validate', to: "mcp/auth#validate"
+        delete 'mcp/token', to: "mcp/auth#revoke_token"
+        get 'mcp/tokens', to: "mcp/auth#list_tokens"
+        post 'mcp/projects', to: "mcp/projects#create"
+        put 'mcp/redirects', to: "mcp/configurations#setup_redirects"
+        put 'mcp/sdk', to: "mcp/configurations#setup_sdk"
+        post 'mcp/links/search', to: "mcp/links#index"
+        post 'mcp/links', to: "mcp/links#create"
+        get 'mcp/links/by-path/:path', to: "mcp/links#show"
+        patch 'mcp/links/:id', to: "mcp/links#update"
+        delete 'mcp/links/:id', to: "mcp/links#archive"
+        post 'mcp/analytics/link', to: "mcp/analytics#link_stats"
+        post 'mcp/analytics/overview', to: "mcp/analytics#project_metrics"
+        post 'mcp/analytics/top_links', to: "mcp/analytics#top_links"
+        # Campaigns
+        post 'mcp/campaigns', to: "mcp/campaigns#create"
+        post 'mcp/campaigns/search', to: "mcp/campaigns#index"
+        delete 'mcp/campaigns/:campaign_id', to: "mcp/campaigns#archive"
+      end
+    end
+  end
+
   constraints(ApiSubdomain) do
     namespace :api, defaults: {format: :json} do
       namespace :v1 do
@@ -143,6 +180,11 @@ Rails.application.routes.draw do
         # Automation (machine-to-machine, unchanged)
         post 'automation/metrics_for_user', to: "automation#metrics_for_user"
         post 'automation/details_for_link', to: "automation#details_for_link"
+
+        # MCP (Model Context Protocol) — dashboard-only routes (Doorkeeper-protected)
+        post 'mcp/approve_consent', to: "mcp/auth#approve_consent"
+        get 'mcp/tokens', to: "mcp/auth#list_tokens"
+        delete 'mcp/tokens/:id', to: "mcp/auth#revoke_token_by_id"
 
         # Admin (machine-to-machine, unchanged)
         post 'admin/create_enterprise_subscription', to: "admin#create_enterprise_subscription"

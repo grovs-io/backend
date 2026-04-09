@@ -28,6 +28,21 @@ stat_day2:
   project_id: <%= ActiveRecord::FixtureSet.identify(:one) %>
   platform: "ios"
 
+stat_standard_link_day1:
+  link: no_custom_redirect_link
+  event_date: "2026-03-01"
+  views: 20
+  opens: 10
+  installs: 2
+  reinstalls: 0
+  time_spent: 1000
+  reactivations: 0
+  app_opens: 5
+  user_referred: 0
+  revenue: 0
+  project_id: <%= ActiveRecord::FixtureSet.identify(:one) %>
+  platform: "ios"
+
 stat_day3_other_link:
   link: second_link
   event_date: "2026-03-01"
@@ -42,3 +57,18 @@ stat_day3_other_link:
   revenue: 499
   project_id: <%= ActiveRecord::FixtureSet.identify(:one) %>
   platform: "android"
+
+stat_campaign_link_day1:
+  link: campaign_link
+  event_date: "2026-03-01"
+  views: 150
+  opens: 70
+  installs: 15
+  reinstalls: 3
+  time_spent: 6000
+  reactivations: 2
+  app_opens: 40
+  user_referred: 5
+  revenue: 1500
+  project_id: <%= ActiveRecord::FixtureSet.identify(:one) %>
+  platform: "ios"

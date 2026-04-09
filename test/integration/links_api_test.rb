@@ -58,7 +58,7 @@ class LinksApiTest < ActionDispatch::IntegrationTest
 
   test "search links returns paginated results with fixture link" do
     post "#{API_PREFIX}/projects/#{@project.id}/links/search",
-      params: { active: "true", sdk: "false" },
+      params: { active: "true", sdk: "false", start_date: "2026-01-01" },
       headers: @headers
     assert_response :ok
     json = JSON.parse(response.body)
@@ -195,11 +195,11 @@ class LinksApiTest < ActionDispatch::IntegrationTest
     campaign = campaigns(:one)
     assert_difference "Link.count", 1 do
       post "#{API_PREFIX}/projects/#{@project.id}/links",
-        params: { title: "Campaign Link", path: "campaign-link-path", campaign_id: campaign.id },
+        params: { title: "Campaign Link", path: "new-campaign-link-path", campaign_id: campaign.id },
         headers: @headers
     end
     assert_response :ok
-    created = Link.find_by(path: "campaign-link-path")
+    created = Link.find_by(path: "new-campaign-link-path")
     assert_not_nil created
     assert_equal campaign.id, created.campaign_id, "link must be associated to campaign"
   end

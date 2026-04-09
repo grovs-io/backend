@@ -26,7 +26,7 @@ namespace :custom_task do
 
       if !subscription && !enterprise_subscription
         quantity = project_helper.current_mau(instance)
-        if quantity > ENV['FREE_MAU_COUNT'].to_i
+        if quantity > Grovs.free_mau_count
           instance.quota_exceeded = true
         else
           instance.quota_exceeded = false

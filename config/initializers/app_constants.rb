@@ -52,7 +52,8 @@ module Grovs
     API = "api"
     GO = "go"
     PREVIEW = "preview"
-    FORBIDDEN = [SDK, API, GO, PROXY, PREVIEW].freeze
+    MCP = "mcp"
+    FORBIDDEN = [SDK, API, GO, PROXY, PREVIEW, MCP].freeze
   end
 
   module RedisKeys
@@ -103,6 +104,10 @@ module Grovs
   module SSO
     MICROSOFT = "microsoft_graph"
     GOOGLE = "google_oauth2"
+  end
+
+  def self.free_mau_count
+    ENV.fetch("FREE_MAU_COUNT", "10000").to_i
   end
 
   GOOGLE_PUBLISHER_SCOPE = 'https://www.googleapis.com/auth/androidpublisher'.freeze

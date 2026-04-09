@@ -47,7 +47,7 @@ class SubscriptionBillingService
   # Returns { current_quantity: Integer, total_available: String }
   def current_mau
     current_qty = @project_service.current_mau(@instance)
-    { current_quantity: current_qty, total_available: ENV["FREE_MAU_COUNT"] }
+    { current_quantity: current_qty, total_available: Grovs.free_mau_count.to_s }
   end
 
   # Returns Hash with billing usage info or nil if no subscription.
@@ -82,7 +82,7 @@ class SubscriptionBillingService
 
     snap = StripeService.monthly_total_snapshot(subscription) || {}
 
-    free_maus = ENV.fetch("FREE_MAU_COUNT", "10000").to_i
+    free_maus = Grovs.free_mau_count
     raw_quantity = snap[:maus_from_invoice_line].to_i
 
     paid_maus = raw_quantity > free_maus ? raw_quantity - free_maus : 0

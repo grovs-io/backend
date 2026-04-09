@@ -1,0 +1,16 @@
+# These fixtures store digests directly — find_by_plain_token won't work because
+# it expects a token generated via generate_token (which prepends "mcp_" + SecureRandom).
+# Use these only for attribute checks (revoked?, expired?, etc.), not token auth.
+admin_token:
+  user: admin_user
+  token_digest: <%= Digest::SHA256.hexdigest("fixture_admin_token") %>
+  name: "Claude Desktop"
+  expires_at: <%= 90.days.from_now.utc.iso8601 %>
+  last_used_at: "2026-04-01 10:00:00"
+
+revoked_token:
+  user: admin_user
+  token_digest: <%= Digest::SHA256.hexdigest("fixture_revoked_token") %>
+  name: "Old Token"
+  expires_at: <%= 90.days.from_now.utc.iso8601 %>
+  revoked_at: "2026-03-15 12:00:00"

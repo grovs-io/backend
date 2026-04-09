@@ -46,6 +46,39 @@ class Rack::Attack
       end
     end
 
+    # MCP token exchange (mcp subdomain)
+    throttle('mcp_token/ip', limit: 20, period: 1.minute) do |req|
+      if req.host&.start_with?(Grovs::Subdomains::MCP) &&
+         req.post? && req.path == "/token"
+        req.ip
+      end
+    end
+
+    # MCP client registration — stricter limit (unauthenticated, creates DB rows)
+    throttle('mcp_register/ip', limit: 5, period: 1.minute) do |req|
+      if req.host&.start_with?(Grovs::Subdomains::MCP) &&
+         req.post? && req.path == "/register"
+        req.ip
+      end
+    end
+
+    # MCP authorize (GET, triggers consent redirect — limit to prevent enumeration)
+    throttle('mcp_authorize/ip', limit: 20, period: 1.minute) do |req|
+      if req.host&.start_with?(Grovs::Subdomains::MCP) &&
+         req.get? && req.path == "/authorize"
+        req.ip
+      end
+    end
+
+    # MCP consent (api subdomain, Doorkeeper-protected)
+    throttle('mcp_consent/ip', limit: 10, period: 1.minute) do |req|
+      if req.host&.start_with?(Grovs::Subdomains::API) &&
+         req.post? &&
+         req.path == "/api/v1/mcp/approve_consent"
+        req.ip
+      end
+    end
+
     throttle('admin/ip', limit: 5000, period: 1.minute) do |req|
       if req.host&.start_with?(Grovs::Subdomains::API) &&
          (req.path.start_with?("/api/v1/admin/") || req.path.start_with?("/api/v1/automation/"))

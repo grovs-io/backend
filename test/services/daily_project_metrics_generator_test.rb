@@ -27,8 +27,8 @@ class DailyProjectMetricsGeneratorTest < ActiveSupport::TestCase
 
     metric = DailyProjectMetric.find_by(project_id: @project.id, event_date: @date, platform: "ios")
     assert metric
-    # stat_day1: link=basic_link, views=100, installs=10, platform=ios
-    assert_equal 100, metric.link_views
+    # stat_day1(100) + stat_standard_link_day1(20) + stat_campaign_link_day1(150), all ios on 2026-03-01
+    assert_equal 270, metric.link_views
   end
 
   test "organic_users clamped at zero" do

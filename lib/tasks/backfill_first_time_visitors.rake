@@ -13,7 +13,7 @@ namespace :backfill do
                     .pluck(:project_id)
 
     # Resume support: skip already-processed projects
-    checkpoint_file = Rails.root.join("tmp", "backfill_ftv_checkpoint.txt")
+    checkpoint_file = Rails.root.join("tmp/backfill_ftv_checkpoint.txt")
     last_done = checkpoint_file.exist? ? checkpoint_file.read.strip.to_i : 0
     remaining = project_ids.select { |id| id > last_done }
 

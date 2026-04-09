@@ -43,7 +43,6 @@ no_custom_redirect_link:
 inactive_link:
   domain: one
   redirect_config: one
-
   path: "inactive-path"
   title: "Inactive Link"
   subtitle: "An inactive test link"
@@ -51,3 +50,16 @@ inactive_link:
   active: false
   sdk_generated: false
   data: '[]'
+
+campaign_link:
+  domain: one
+  redirect_config: one
+  path: "campaign-link-path"
+  title: "Campaign Link"
+  subtitle: "A link in a campaign"
+  generated_from_platform: "ios"
+  active: true
+  sdk_generated: false
+  name: "Campaign Deep Link"
+  data: '[]'
+  created_at: "2026-03-01 10:00:00"

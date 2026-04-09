@@ -19,3 +19,23 @@ metric_day1:
   units_sold: 5
   cancellations: 1
   first_time_purchases: 3
+
+metric_day1_android:
+  project_id: <%= ActiveRecord::FixtureSet.identify(:one) %>
+  event_date: "2026-02-15"
+  platform: "android"
+  views: 40
+  installs: 5
+  opens: 20
+  reinstalls: 1
+  link_views: 30
+  returning_users: 2
+  referred_users: 1
+  organic_users: 3
+  new_users: 4
+  app_opens: 10
+  first_time_visitors: 3
+  revenue: 500
+  units_sold: 2
+  cancellations: 0
+  first_time_purchases: 1

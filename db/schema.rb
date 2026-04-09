@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_03_27_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_09_054757) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -419,6 +419,58 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_27_120000) do
     t.index ["path"], name: "index_links_on_path"
     t.index ["redirect_config_id"], name: "index_links_on_redirect_config_id"
     t.index ["visitor_id"], name: "index_links_on_visitor_id"
+  end
+
+  create_table "mcp_authorization_codes", force: :cascade do |t|
+    t.string "client_id", default: "", null: false
+    t.string "code", null: false
+    t.string "code_challenge"
+    t.string "code_challenge_method"
+    t.datetime "created_at", null: false
+    t.datetime "expires_at", null: false
+    t.string "redirect_uri", null: false
+    t.string "scope"
+    t.string "state"
+    t.datetime "updated_at", null: false
+    t.datetime "used_at"
+    t.bigint "user_id", null: false
+    t.index ["code"], name: "index_mcp_authorization_codes_on_code", unique: true
+    t.index ["expires_at"], name: "index_mcp_authorization_codes_on_expires_at"
+    t.index ["user_id"], name: "index_mcp_authorization_codes_on_user_id"
+  end
+
+  create_table "mcp_clients", force: :cascade do |t|
+    t.string "application_type", default: "native"
+    t.string "client_id", null: false
+    t.string "client_name", null: false
+    t.string "client_uri"
+    t.datetime "created_at", null: false
+    t.string "grant_types", default: "authorization_code"
+    t.string "logo_uri"
+    t.jsonb "redirect_uris", default: [], null: false
+    t.string "response_types", default: "code"
+    t.string "token_endpoint_auth_method", default: "none"
+    t.datetime "updated_at", null: false
+    t.index ["client_id"], name: "index_mcp_clients_on_client_id", unique: true
+  end
+
+  create_table "mcp_tokens", force: :cascade do |t|
+    t.string "client_id"
+    t.datetime "created_at", null: false
+    t.datetime "expires_at", null: false
+    t.datetime "last_used_at"
+    t.string "name", null: false
+    t.string "refresh_token_digest"
+    t.datetime "revoked_at"
+    t.string "scope"
+    t.string "token_digest", null: false
+    t.datetime "updated_at", null: false
+    t.bigint "user_id", null: false
+    t.index ["client_id"], name: "index_mcp_tokens_on_client_id"
+    t.index ["expires_at"], name: "index_mcp_tokens_on_expires_at"
+    t.index ["refresh_token_digest"], name: "index_mcp_tokens_on_refresh_token_digest", unique: true, where: "(refresh_token_digest IS NOT NULL)"
+    t.index ["token_digest"], name: "index_mcp_tokens_on_token_digest", unique: true
+    t.index ["user_id"], name: "index_mcp_tokens_on_user_id"
   end
 
   create_table "notification_messages", force: :cascade do |t|
@@ -850,6 +902,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_27_120000) do
   add_foreign_key "links", "campaigns"
   add_foreign_key "links", "domains"
   add_foreign_key "links", "visitors"
+  add_foreign_key "mcp_authorization_codes", "users"
+  add_foreign_key "mcp_tokens", "users"
   add_foreign_key "notification_messages", "notifications"
   add_foreign_key "notification_messages", "visitors"
   add_foreign_key "notification_targets", "notifications"

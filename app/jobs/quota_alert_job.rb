@@ -17,7 +17,7 @@ class QuotaAlertJob
 
     if !subscription && !enterprise_subscription
       current_maus = project_helper.current_mau(instance)
-      free_mau_count = ENV['FREE_MAU_COUNT'].to_i
+      free_mau_count = Grovs.free_mau_count
       usage_percentage = (current_maus.to_f / free_mau_count * 100).round
 
       if current_maus > free_mau_count

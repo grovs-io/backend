@@ -21,3 +21,7 @@
       cron: "* * * * *"
       class: "BatchEventProcessorJob"
       queue: batch_events
+    mcp_cleanup:
+      cron: "0 3 * * *"
+      class: "McpCleanupJob"
+      queue: maintenance

@@ -16,10 +16,7 @@ class CampaignQueryServiceTest < ActiveSupport::TestCase
       name: "Beta Campaign", project: @project,
       created_at: 1.day.ago, updated_at: 3.days.ago
     )
-    @archived_camp = Campaign.create!(
-      name: "Archived Campaign", project: @project,
-      archived: true, created_at: 2.days.ago, updated_at: 2.days.ago
-    )
+    @archived_camp = campaigns(:archived_campaign)
   end
 
   # --- search: archived filtering ---

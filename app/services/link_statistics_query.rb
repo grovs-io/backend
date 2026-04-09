@@ -58,11 +58,12 @@ class LinkStatisticsQuery
     query = query.where(links: { id: link_id }) if link_id
 
     if term.present?
+      sanitized_term = "%#{ActiveRecord::Base.sanitize_sql_like(term)}%"
       query = query.where(
         "links.name ILIKE :t OR links.title ILIKE :t OR links.subtitle ILIKE :t OR links.path ILIKE :t OR EXISTS (
           SELECT 1 FROM unnest(links.tags) AS tag WHERE tag ILIKE :t
         )",
-        t: "%#{term}%"
+        t: sanitized_term
       )
     end
 
@@ -72,12 +73,15 @@ class LinkStatisticsQuery
   end
 
   def order_clause
+    dir = direction
     if SORTABLE_LINK_FIELDS.include?(sort_by)
-      "links.#{sort_by} #{direction}"
+      col = ActiveRecord::Base.connection.quote_column_name(sort_by)
+      Arel.sql("links.#{col} #{dir}")
     elsif SORTABLE_METRIC_FIELDS.include?(sort_by)
-      Arel.sql("SUM(COALESCE(link_daily_statistics.#{sort_by}, 0)) #{direction}")
+      col = ActiveRecord::Base.connection.quote_column_name(sort_by)
+      Arel.sql("SUM(COALESCE(link_daily_statistics.#{col}, 0)) #{dir}")
     else
-      "links.created_at DESC"
+      Arel.sql("links.created_at DESC")
     end
   end
 

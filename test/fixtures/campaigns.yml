@@ -1,7 +1,14 @@
 one:
   name: "Spring 2026 Campaign"
   project: one
+  archived: false
 
 two:
   name: "Summer Promo"
   project: two
+  archived: false
+
+archived_campaign:
+  name: "Archived Campaign"
+  project: one
+  archived: true

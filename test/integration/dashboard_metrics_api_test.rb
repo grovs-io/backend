@@ -35,20 +35,20 @@ class DashboardMetricsApiTest < ActionDispatch::IntegrationTest
     json = JSON.parse(response.body)
     current = json["metrics"]["current"]
 
-    # These must match daily_project_metrics.yml metric_day1 exactly
-    assert_equal 100, current["views"], "views must match fixture metric_day1"
-    assert_equal 10, current["installs"], "installs must match fixture metric_day1"
-    assert_equal 50, current["opens"], "opens must match fixture metric_day1"
-    assert_equal 2, current["reinstalls"], "reinstalls must match fixture metric_day1"
-    assert_equal 80, current["link_views"], "link_views must match fixture metric_day1"
-    assert_equal 10, current["new_users"], "new_users must match fixture metric_day1"
-    assert_equal 30, current["app_opens"], "app_opens must match fixture metric_day1"
-    assert_equal 999, current["revenue"], "revenue must match fixture metric_day1"
-    assert_equal 5, current["units_sold"], "units_sold must match fixture metric_day1"
-    assert_equal 1, current["cancellations"], "cancellations must match fixture metric_day1"
-    assert_equal 3, current["first_time_purchases"], "first_time_purchases must match fixture metric_day1"
-    assert_equal 7, current["organic_users"], "organic_users must match fixture metric_day1"
-    assert_equal 3, current["referred_users"], "referred_users must match fixture metric_day1"
+    # Sums metric_day1 (ios) + metric_day1_android on 2026-02-15
+    assert_equal 140, current["views"], "views = ios(100) + android(40)"
+    assert_equal 15, current["installs"], "installs = ios(10) + android(5)"
+    assert_equal 70, current["opens"], "opens = ios(50) + android(20)"
+    assert_equal 3, current["reinstalls"], "reinstalls = ios(2) + android(1)"
+    assert_equal 110, current["link_views"], "link_views = ios(80) + android(30)"
+    assert_equal 14, current["new_users"], "new_users = ios(10) + android(4)"
+    assert_equal 40, current["app_opens"], "app_opens = ios(30) + android(10)"
+    assert_equal 1499, current["revenue"], "revenue = ios(999) + android(500)"
+    assert_equal 7, current["units_sold"], "units_sold = ios(5) + android(2)"
+    assert_equal 1, current["cancellations"], "cancellations = ios(1) + android(0)"
+    assert_equal 4, current["first_time_purchases"], "first_time_purchases = ios(3) + android(1)"
+    assert_equal 10, current["organic_users"], "organic_users = ios(7) + android(3)"
+    assert_equal 4, current["referred_users"], "referred_users = ios(3) + android(1)"
 
     # Previous period should have zero values (no data before 2026-02-15)
     previous = json["metrics"]["previous"]
@@ -67,8 +67,8 @@ class DashboardMetricsApiTest < ActionDispatch::IntegrationTest
     metrics = json["metrics"]
     assert_kind_of Hash, metrics, "metrics must be a hash"
 
-    # metric_day1 has link_views=80 on 2026-02-15
-    assert_equal 80, metrics["2026-02-15"], "link_views on 2026-02-15 must be 80 from fixture"
+    # link_views = ios(80) + android(30) on 2026-02-15
+    assert_equal 110, metrics["2026-02-15"], "link_views on 2026-02-15 = ios(80) + android(30)"
   end
 
   # --- Best Performing Links ---
