@@ -79,8 +79,11 @@ class UserAccountService
 
 
   # Generates OTP secret if needed, returns provisioning URI for QR code.
+  # Regenerates the secret if the stored value isn't valid Base32 — this can
+  # happen when the ActiveRecord encryption keys change and old ciphertext is
+  # returned unchanged due to `support_unencrypted_data: true`.
   def self.setup_2fa(user:)
-    unless user.otp_secret
+    unless valid_otp_secret?(user.otp_secret)
       user.otp_secret = User.generate_otp_secret
       user.save!
     end
@@ -88,6 +91,11 @@ class UserAccountService
     issuer = ENV.fetch("OTP_ISSUER", "Grovs")
     label = "#{issuer}:#{user.email}"
     user.otp_provisioning_uri(label, issuer: issuer)
+  end
+
+  # A valid TOTP secret is Base32: uppercase A-Z, digits 2-7, optional '=' padding.
+  def self.valid_otp_secret?(secret)
+    secret.present? && secret.match?(/\A[A-Z2-7]+=*\z/)
   end
 
   # Validates OTP code and toggles 2FA on/off.

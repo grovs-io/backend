@@ -219,6 +219,99 @@ class UserAccountServiceTest < ActiveSupport::TestCase
     assert_equal original_secret, user.reload.otp_secret
   end
 
+  # Real AR-encrypted ciphertext JSON shape. In production this is what
+  # `user.otp_secret` returns when keys drift and `support_unencrypted_data:
+  # true` masks the decryption failure.
+  GARBLED_CIPHERTEXT = '{"p":"iShx7TW8qBnvVHGcL04zXkTrFPZ5DPMI","h":{"iv":"s1VbhYHmzbL/g1J4","at":"jqIc4emsBN3XNvjY7u36ig=="}}'.freeze
+
+  test "setup_2fa replaces a corrupted otp_secret with a valid Base32 value" do
+    user = User.create!(email: @email, password: @password)
+    corrupt_otp_secret!(user)
+
+    UserAccountService.setup_2fa(user: user)
+    user.reload
+
+    assert_not_equal GARBLED_CIPHERTEXT, user.otp_secret, "Corrupted secret must be replaced"
+    assert_match(/\A[A-Z2-7]+=*\z/, user.otp_secret, "Replacement must be valid Base32")
+  end
+
+  test "setup_2fa does not disable 2FA while recovering from a corrupted secret" do
+    user = User.create!(email: @email, password: @password)
+    user.update!(otp_required_for_login: true)
+    corrupt_otp_secret!(user)
+
+    UserAccountService.setup_2fa(user: user)
+
+    assert user.reload.otp_required_for_login,
+      "setup_2fa must not flip otp_required_for_login — a user mid-recovery must stay enrolled"
+  end
+
+  test "setup_2fa returns a well-formed otpauth URI with issuer, host, and embedded Base32 secret" do
+    user = User.create!(email: @email, password: @password)
+    corrupt_otp_secret!(user)
+
+    uri = UserAccountService.setup_2fa(user: user)
+    user.reload
+
+    parsed = URI.parse(uri)
+    assert_equal "otpauth", parsed.scheme, "URI scheme must be otpauth"
+    assert_equal "totp", parsed.host, "URI type must be totp"
+
+    query = URI.decode_www_form(parsed.query).to_h
+    assert_equal "Grovs", query["issuer"], "URI must carry the configured issuer"
+    assert_equal user.otp_secret, query["secret"], "URI must embed the saved secret verbatim"
+    assert_match(/\A[A-Z2-7]+=*\z/, query["secret"], "Embedded secret must be Base32")
+  end
+
+  test "setup_2fa enables a full server-side TOTP round-trip after recovery" do
+    user = User.create!(email: @email, password: @password)
+    corrupt_otp_secret!(user)
+
+    UserAccountService.setup_2fa(user: user)
+    user.reload
+
+    # The real contract: after recovery, ROTP must be able to both GENERATE
+    # codes from the stored secret and VALIDATE them. If either side fails,
+    # the enrollment UI shows "Wrong OTP code" and existing 2FA users are
+    # permanently locked out.
+    code = user.current_otp
+    assert_match(/\A\d{6}\z/, code, "current_otp must produce a 6-digit numeric code")
+    assert user.validate_and_consume_otp!(code),
+      "Server must validate a code generated from its own stored secret"
+  end
+
+  test "setup_2fa URI is compatible with third-party TOTP apps (scanner → server)" do
+    user = User.create!(email: @email, password: @password)
+    corrupt_otp_secret!(user)
+
+    uri = UserAccountService.setup_2fa(user: user)
+    user.reload
+
+    # Simulate what Google Authenticator does: parse the QR's otpauth URI,
+    # extract the `secret` param, feed it to an *independent* ROTP instance,
+    # generate a code, and have the server validate it. This catches URL-
+    # encoding drift or any mismatch between the URI-embedded secret and the
+    # server-side secret that a byte-equality assertion alone could miss
+    # (e.g. if padding `=` got re-encoded somewhere in the chain).
+    scanner_secret = URI.decode_www_form(URI.parse(uri).query).to_h.fetch("secret")
+    scanner_code = ROTP::TOTP.new(scanner_secret).now
+
+    assert user.validate_and_consume_otp!(scanner_code),
+      "Server must accept codes generated from the URI-embedded secret by an independent authenticator"
+  end
+
+  private
+
+  # Writes a Rails-encryption-shaped JSON blob to the user's otp_secret. This
+  # simulates the service-layer symptom of AR encryption key drift: reading
+  # `user.otp_secret` returns non-Base32 garbage that breaks ROTP everywhere
+  # (enrollment validation, login validation, QR-code generation).
+  def corrupt_otp_secret!(user)
+    user.update!(otp_secret: GARBLED_CIPHERTEXT)
+  end
+
+  public
+
   # === toggle_2fa ===
 
   test "toggle_2fa returns nil for invalid OTP code without changing state" do
