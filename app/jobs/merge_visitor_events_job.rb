@@ -20,12 +20,11 @@ class MergeVisitorEventsJob
     ActiveRecord::Base.transaction do
       conn = ActiveRecord::Base.lease_connection
       conn.execute("SET LOCAL statement_timeout = '10s'")
-      conn.execute("SET LOCAL lock_timeout = '2s'")
 
-      # Lock the source visitor row to prevent concurrent merge jobs from
-      # double-counting stats. Under READ COMMITTED, if a concurrent job
-      # already destroyed this row and committed, find_by returns nil.
-      from_visitor = Visitor.lock.find_by(device_id: from_device.id, project_id: project.id)
+      # Under READ COMMITTED, if a concurrent job already destroyed this
+      # visitor and committed, find_by returns nil — no explicit lock needed.
+      # CoalescedMergeJob serializes merges per target via Redis processing lock.
+      from_visitor = Visitor.find_by(device_id: from_device.id, project_id: project.id)
       unless from_visitor
         Rails.logger.warn("From Visitor not found for merging events, nothing to merge")
         return
@@ -75,5 +74,11 @@ class MergeVisitorEventsJob
       # so destroy only hits the visitor row itself — no N+1.
       from_visitor.destroy
     end
+
+    REDIS.set(
+      "#{BatchEventProcessorJob::MERGED_DEVICE_PREFIX}:#{project_id}:#{from_device_id}",
+      to_device_id,
+      ex: 86_400
+    )
   end
 end
