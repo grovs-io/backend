@@ -73,6 +73,9 @@ class DeviceService
     delegate :update_device, to: :DeviceUpdateService
 
     def merge_visitor_events_and_device(from_device, to_device, project)
+      dedup_key = "merge_visitors:#{[from_device.id, to_device.id].sort.join(':')}:#{project.id}"
+      return unless REDIS.set(dedup_key, "1", nx: true, ex: 60)
+
       MergeVisitorEventsJob.perform_async(from_device.id, to_device.id, project.id)
     end
 

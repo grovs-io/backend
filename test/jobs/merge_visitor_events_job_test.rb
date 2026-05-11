@@ -96,6 +96,28 @@ class MergeVisitorEventsJobTest < ActiveSupport::TestCase
     assert_equal 7, merged.opens, "Opens should be summed (5 + 2)"
   end
 
+  test "merges cross-platform visitor daily statistics as separate rows" do
+    from_dev, to_dev, from_vis, to_vis = create_merge_pair
+
+    date = Date.current
+
+    VisitorDailyStatistic.create!(visitor: from_vis, project_id: @project.id, event_date: date, platform: "ios", views: 10)
+    VisitorDailyStatistic.create!(visitor: from_vis, project_id: @project.id, event_date: date, platform: "android", views: 20)
+    VisitorDailyStatistic.create!(visitor: to_vis, project_id: @project.id, event_date: date, platform: "ios", views: 5)
+
+    perform_merge(from_dev, to_dev, from_vis)
+
+    assert_equal 0, VisitorDailyStatistic.where(visitor_id: from_vis.id).count
+
+    ios_stat = VisitorDailyStatistic.find_by(visitor_id: to_vis.id, event_date: date, platform: "ios")
+    android_stat = VisitorDailyStatistic.find_by(visitor_id: to_vis.id, event_date: date, platform: "android")
+
+    assert_not_nil ios_stat
+    assert_not_nil android_stat, "Android stat should remain as separate row"
+    assert_equal 15, ios_stat.views, "iOS views should be summed (10 + 5)"
+    assert_equal 20, android_stat.views, "Android views should be inserted as-is"
+  end
+
   # --- VisitorLastVisit transfer ---
 
   test "transfers VisitorLastVisit when to_visitor has none" do
@@ -195,21 +217,7 @@ class MergeVisitorEventsJobTest < ActiveSupport::TestCase
     [from_dev, to_dev, from_vis, to_vis]
   end
 
-  # Run the merge job with Visitor Redis cache bypassed.
-  # visitor_for_project_id uses redis_find_by_multiple_conditions which
-  # returns stale results in parallel tests (10 processes share one Redis).
-  # We bypass the cache layer so lookups hit the DB directly — the merge
-  # logic itself (event/action/stat transfer, visitor destruction) is still
-  # fully exercised against real data.
   def perform_merge(from_dev, to_dev, _from_vis)
-    db_lookup = lambda { |conditions, **kwargs|
-      query = Visitor.all
-      query = query.includes(kwargs[:includes]) if kwargs[:includes]
-      query.find_by(conditions.is_a?(Hash) ? conditions : { conditions[0] => conditions[1] })
-    }
-
-    Visitor.stub(:redis_find_by_multiple_conditions, db_lookup) do
-      @job.perform(from_dev.id, to_dev.id, @project.id)
-    end
+    @job.perform(from_dev.id, to_dev.id, @project.id)
   end
 end

@@ -24,21 +24,37 @@ class VisitorDailyStatistic < ApplicationRecord
     raise ArgumentError, "from and to must differ" if from_id.to_i == to_id.to_i
 
     transaction do
-      where(visitor_id: from_id).find_each do |src|
-        dst = find_or_initialize_by(visitor_id: to_id, event_date: src.event_date)
+      # Single SQL UPSERT: move stats from from_visitor to to_visitor,
+      # summing metrics when the target already has a row for that (date, platform).
+      sanitized = sanitize_sql_array([<<~SQL, to_id, from_id])
+        INSERT INTO visitor_daily_statistics
+          (visitor_id, project_id, event_date, platform, invited_by_id,
+           views, opens, installs, reinstalls, time_spent,
+           revenue, reactivations, app_opens, user_referred,
+           created_at, updated_at)
+        SELECT
+          ?, project_id, event_date, platform, invited_by_id,
+          views, opens, installs, reinstalls, time_spent,
+          revenue, reactivations, app_opens, user_referred,
+          NOW(), NOW()
+        FROM visitor_daily_statistics
+        WHERE visitor_id = ?
+        ON CONFLICT (project_id, visitor_id, event_date, platform)
+        DO UPDATE SET
+          views         = COALESCE(visitor_daily_statistics.views, 0)         + COALESCE(EXCLUDED.views, 0),
+          opens         = COALESCE(visitor_daily_statistics.opens, 0)         + COALESCE(EXCLUDED.opens, 0),
+          installs      = COALESCE(visitor_daily_statistics.installs, 0)      + COALESCE(EXCLUDED.installs, 0),
+          reinstalls    = COALESCE(visitor_daily_statistics.reinstalls, 0)    + COALESCE(EXCLUDED.reinstalls, 0),
+          time_spent    = COALESCE(visitor_daily_statistics.time_spent, 0)    + COALESCE(EXCLUDED.time_spent, 0),
+          revenue       = COALESCE(visitor_daily_statistics.revenue, 0)       + COALESCE(EXCLUDED.revenue, 0),
+          reactivations = COALESCE(visitor_daily_statistics.reactivations, 0) + COALESCE(EXCLUDED.reactivations, 0),
+          app_opens     = COALESCE(visitor_daily_statistics.app_opens, 0)     + COALESCE(EXCLUDED.app_opens, 0),
+          user_referred = COALESCE(visitor_daily_statistics.user_referred, 0) + COALESCE(EXCLUDED.user_referred, 0),
+          invited_by_id = COALESCE(visitor_daily_statistics.invited_by_id, EXCLUDED.invited_by_id),
+          updated_at    = NOW()
+      SQL
+      connection.execute(sanitized)
 
-        METRIC_COLUMNS.each do |col|
-          dst[col] = dst[col].to_i + src[col].to_i
-        end
-
-        # carry over aux fields if missing on the target—tweak as needed
-        dst.project_id    ||= src.project_id
-        dst.invited_by_id ||= src.invited_by_id
-
-        dst.save!
-      end
-
-      # remove the old rows after merge
       where(visitor_id: from_id).delete_all
     end
   end

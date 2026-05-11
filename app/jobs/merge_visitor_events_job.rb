@@ -1,6 +1,6 @@
 class MergeVisitorEventsJob
   include Sidekiq::Job
-  sidekiq_options queue: :events, retry: 1
+  sidekiq_options queue: :events, retry: 2
 
   def perform(from_device_id, to_device_id, project_id)
     from_device = Device.find_by(id: from_device_id)
@@ -17,15 +17,22 @@ class MergeVisitorEventsJob
       InstalledApp.find_or_create_by!(device_id: device.id, project_id: project.id)
     end
 
-    from_visitor = from_device.visitor_for_project_id(project.id)
-    if from_visitor.nil?
-      Rails.logger.warn("From Visitor not found for merging events, nothing to merge")
-      return
-    end
-
-    to_visitor = Visitor.find_or_create_by!(device: to_device, project: project)
-
     ActiveRecord::Base.transaction do
+      conn = ActiveRecord::Base.lease_connection
+      conn.execute("SET LOCAL statement_timeout = '10s'")
+      conn.execute("SET LOCAL lock_timeout = '2s'")
+
+      # Lock the source visitor row to prevent concurrent merge jobs from
+      # double-counting stats. Under READ COMMITTED, if a concurrent job
+      # already destroyed this row and committed, find_by returns nil.
+      from_visitor = Visitor.lock.find_by(device_id: from_device.id, project_id: project.id)
+      unless from_visitor
+        Rails.logger.warn("From Visitor not found for merging events, nothing to merge")
+        return
+      end
+
+      to_visitor = Visitor.find_or_create_by!(device: to_device, project: project)
+
       # Update inviter if needed
       if to_visitor.inviter_id.nil? && from_visitor.inviter_id.present?
         to_visitor.inviter_id = from_visitor.inviter_id
