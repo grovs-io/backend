@@ -22,7 +22,7 @@ class Rack::Attack
   # need unrestricted access for testing and debugging.
   if Rails.env.production?
     throttle('req/ip', limit: 200, period: 1.minute) do |req|
-      unless req.host&.start_with?(Grovs::Subdomains::API) || req.host&.start_with?('dls')
+      unless req.host&.start_with?(Grovs::Subdomains::API) || req.host&.start_with?(Grovs::Subdomains::SDK) || req.host&.start_with?('dls')
         req.ip
       end
     end
@@ -86,7 +86,7 @@ class Rack::Attack
       end
     end
 
-    throttle('sdk-requests/ip', limit: 200, period: 1.second) do |req|
+    throttle('sdk-requests/ip', limit: 5000, period: 1.second) do |req|
       if req.host&.start_with?(Grovs::Subdomains::SDK)
         req.ip
       end
