@@ -73,10 +73,22 @@ class DeviceService
     delegate :update_device, to: :DeviceUpdateService
 
     def merge_visitor_events_and_device(from_device, to_device, project)
-      dedup_key = "merge_visitors:#{[from_device.id, to_device.id].sort.join(':')}:#{project.id}"
-      return unless REDIS.set(dedup_key, "1", nx: true, ex: 60)
+      return if from_device.id == to_device.id
 
-      MergeVisitorEventsJob.perform_async(from_device.id, to_device.id, project.id)
+      # Prevent bidirectional race: A→B and B→A can't both proceed.
+      # Canonical sorted pair ensures only one direction wins.
+      pair = [from_device.id, to_device.id].sort.join(':')
+      pair_key = "merge_pair:#{pair}:#{project.id}"
+      return unless REDIS.set(pair_key, "1", nx: true, ex: 300)
+
+      set_key     = "#{CoalescedMergeJob::SET_PREFIX}:#{to_device.id}:#{project.id}"
+      pending_key = "#{CoalescedMergeJob::PENDING_PREFIX}:#{to_device.id}:#{project.id}"
+
+      REDIS.sadd?(set_key, from_device.id.to_s)
+      REDIS.expire(set_key, 86_400) # 24h safety net — orphaned sets self-clean
+      return unless REDIS.set(pending_key, "1", nx: true, ex: 60)
+
+      CoalescedMergeJob.perform_async(to_device.id, project.id)
     end
 
     private

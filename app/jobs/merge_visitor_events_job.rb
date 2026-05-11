@@ -64,7 +64,15 @@ class MergeVisitorEventsJob
         from_vlv.delete
       end
 
-      # Clean up old visitor
+      # Clean up old visitor — bulk-delete the heavy children first to avoid
+      # N+1 callback overhead (notification_messages has no callbacks).
+      # visitor_daily_statistics and visitor_last_visits already handled above.
+      NotificationMessage.where(visitor_id: from_visitor.id).delete_all
+      Visitor.where(inviter_id: from_visitor.id).update_all(inviter_id: nil)
+      VisitorDailyStatistic.where(invited_by_id: from_visitor.id).update_all(invited_by_id: nil)
+      # Use destroy (not delete) so after_commit :clear_cache fires and
+      # invalidates Redis lookup caches. Children are already gone above,
+      # so destroy only hits the visitor row itself — no N+1.
       from_visitor.destroy
     end
   end
