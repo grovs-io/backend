@@ -612,6 +612,8 @@ class BatchEventProcessorJob
       vlv = VisitorLastVisit.find_or_initialize_by(project_id: project_id, visitor_id: visitor_id)
       vlv.link_id = link_id
       vlv.save!
+    rescue ActiveRecord::RecordInvalid, ActiveRecord::InvalidForeignKey => e
+      Rails.logger.warn("BatchEventProcessorJob: visitor_last_visit skip visitor_id=#{visitor_id}: #{e.message}")
     end
   end
 
