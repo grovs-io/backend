@@ -241,6 +241,7 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
   teardown do
     REDIS.with do |conn|
       conn.del(BatchEventProcessorJob::REDIS_KEY)
+      conn.del(BatchEventProcessorJob::PROCESSOR_LOCK_KEY)
       conn.del("events:processing:#{@job.jid}")
       conn.del("events:heartbeat:#{@job.jid}")
       # Clean dedup keys for all fixture devices
@@ -754,7 +755,7 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
     end
   end
 
-  test "perform exits loop after consecutive failures" do
+  test "perform exits loop after first batch failure" do
     event_json = {
       type: Grovs::Events::OPEN,
       project_id: @project.id,
@@ -785,8 +786,19 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
       end
     end
 
-    # Should have stopped after MAX_CONSECUTIVE_FAILURES (3)
-    assert_equal BatchEventProcessorJob::MAX_CONSECUTIVE_FAILURES, failure_count
+    assert_equal 1, failure_count
+  end
+
+  test "enqueue_if_backlog schedules delayed retry after failure" do
+    scheduled_delay = nil
+
+    REDIS.stub(:llen, 5) do
+      BatchEventProcessorJob.stub(:perform_in, ->(delay) { scheduled_delay = delay }) do
+        @job.send(:enqueue_if_backlog, delay: BatchEventProcessorJob::FAILURE_RETRY_DELAY)
+      end
+    end
+
+    assert_equal BatchEventProcessorJob::FAILURE_RETRY_DELAY, scheduled_delay
   end
 
   # ===========================================================================
@@ -849,6 +861,52 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
     assert stat, "VisitorDailyStatistic should be created for TIME_SPENT"
     assert_equal 7500, stat.time_spent,
       "time_spent should be the engagement_time value (7500), not 1"
+  end
+
+  test "process_batch remaps queued events from merged source device to target visitor" do
+    from_dev = Device.create!(
+      user_agent: "QueuedMergeFrom/#{SecureRandom.hex(4)}",
+      ip: "172.#{rand(16..31)}.#{rand(256)}.#{rand(256)}",
+      remote_ip: "172.#{rand(16..31)}.#{rand(256)}.#{rand(256)}",
+      platform: "ios"
+    )
+    from_vis = Visitor.create!(device: from_dev, project: @project)
+
+    to_dev = Device.create!(
+      user_agent: "QueuedMergeTo/#{SecureRandom.hex(4)}",
+      ip: "172.#{rand(16..31)}.#{rand(256)}.#{rand(256)}",
+      remote_ip: "172.#{rand(16..31)}.#{rand(256)}.#{rand(256)}",
+      platform: "android"
+    )
+    to_vis = Visitor.create!(device: to_dev, project: @project)
+
+    merge_key = "#{BatchEventProcessorJob::MERGED_DEVICE_PREFIX}:#{@project.id}:#{from_dev.id}"
+    REDIS.set(merge_key, to_dev.id, ex: 86_400)
+
+    event_date = "2026-07-11T15:00:00Z"
+    event_json = {
+      type: Grovs::Events::OPEN, project_id: @project.id, device_id: from_dev.id,
+      link_id: nil, data: nil, engagement_time: nil, created_at: event_date
+    }.to_json
+
+    @job.send(:process_batch, [event_json])
+
+    assert Event.exists?(
+      project_id: @project.id, device_id: to_dev.id,
+      event: Grovs::Events::OPEN, created_at: Time.parse(event_date)
+    )
+
+    stat = VisitorDailyStatistic.find_by(
+      project_id: @project.id, visitor_id: to_vis.id,
+      event_date: Date.parse("2026-07-11"), platform: to_dev.platform_for_metrics
+    )
+    assert_equal 1, stat&.opens
+    assert_nil VisitorDailyStatistic.find_by(
+      project_id: @project.id, visitor_id: from_vis.id,
+      event_date: Date.parse("2026-07-11")
+    )
+  ensure
+    REDIS.del(merge_key) if defined?(merge_key) && merge_key
   end
 
   test "process_batch creates USER_REFERRED event for INSTALL with referral link" do

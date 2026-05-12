@@ -17,6 +17,8 @@ class MergeVisitorEventsJob
       InstalledApp.find_or_create_by!(device_id: device.id, project_id: project.id)
     end
 
+    cache_keys = nil
+
     ActiveRecord::Base.transaction do
       conn = ActiveRecord::Base.lease_connection
       conn.execute("SET LOCAL statement_timeout = '10s'")
@@ -67,13 +69,28 @@ class MergeVisitorEventsJob
       # N+1 callback overhead (notification_messages has no callbacks).
       # visitor_daily_statistics and visitor_last_visits already handled above.
       NotificationMessage.where(visitor_id: from_visitor.id).delete_all
-      Visitor.where(inviter_id: from_visitor.id).update_all(inviter_id: nil)
-      VisitorDailyStatistic.where(invited_by_id: from_visitor.id).update_all(invited_by_id: nil)
-      # Use destroy (not delete) so after_commit :clear_cache fires and
-      # invalidates Redis lookup caches. Children are already gone above,
-      # so destroy only hits the visitor row itself — no N+1.
-      from_visitor.destroy
+
+      # Repoint referral attribution from from_visitor → to_visitor.
+      # invited_by_id has no index on the 50GB visitor_daily_statistics table, so
+      # querying by it directly causes a 10s+ full table scan. Instead, find invited
+      # visitors from the small visitors table, then use idx_vds_visitor_id to update
+      # their stats — fast indexed lookups only.
+      invited_visitor_ids = Visitor.where(inviter_id: from_visitor.id).pluck(:id)
+      if invited_visitor_ids.any?
+        VisitorDailyStatistic.where(visitor_id: invited_visitor_ids, invited_by_id: from_visitor.id)
+                             .update_all(invited_by_id: to_visitor.id)
+      end
+      Visitor.where(inviter_id: from_visitor.id).update_all(inviter_id: to_visitor.id)
+
+      # Use delete (not destroy) to skip dependent: :nullify on referral_daily_statistics
+      # which would scan the 50GB table by unindexed invited_by_id. All dependents are
+      # already cleaned up above. Manually clear Redis cache after commit.
+      cache_keys = from_visitor.cache_keys_to_clear
+      from_visitor.delete
     end
+
+    # Clear Redis lookup caches after transaction commits (mirrors after_commit :clear_cache)
+    REDIS.del(*cache_keys) if cache_keys.present?
 
     REDIS.set(
       "#{BatchEventProcessorJob::MERGED_DEVICE_PREFIX}:#{project_id}:#{from_device_id}",

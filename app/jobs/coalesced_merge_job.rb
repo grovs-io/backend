@@ -3,12 +3,20 @@ class CoalescedMergeJob
   sidekiq_options queue: :events, retry: 2
 
   LOCK_TTL = 300 # 5 minutes — generous ceiling for sequential drain
-  MAX_ATTEMPTS = 5
+  MAX_ATTEMPTS = 5 # only counts permanent errors, not transient DB timeouts
   RETRY_DELAY = 30 # seconds — backoff between drain attempts for transient errors
   SET_PREFIX = "merge_sources"
   LOCK_PREFIX = "merge_lock"
   PENDING_PREFIX = "merge_pending"
   FAILURES_PREFIX = "merge_failures"
+
+  # Transient errors: DB under load, will resolve on their own.
+  # These do NOT count toward dead-letter — source stays in set for retry.
+  TRANSIENT_ERRORS = [
+    ActiveRecord::LockWaitTimeout,
+    ActiveRecord::QueryCanceled,
+    ActiveRecord::ConnectionTimeoutError
+  ].freeze
 
   # Lua script: release lock only if we still own it (atomic check-and-delete).
   # This is a standard Redis distributed lock pattern (Redlock), not arbitrary code.
@@ -66,18 +74,26 @@ class CoalescedMergeJob
         merge_job.perform(from_device_id_str.to_i, to_device_id, project_id)
       rescue => e
         had_failures = true
-        attempts = REDIS.hincrby(failures_key, from_device_id_str, 1)
-        REDIS.expire(failures_key, 86_400) # 24h safety net
-        if attempts >= MAX_ATTEMPTS
-          REDIS.srem?(set_key, from_device_id_str)
-          REDIS.hdel(failures_key, from_device_id_str)
-          Rails.logger.error(
-            "CoalescedMergeJob: #{from_device_id_str}->#{to_device_id} (project #{project_id}) dead-lettered after #{attempts} attempts: #{e.class} #{e.message}"
+        if transient_error?(e)
+          # Transient DB contention — don't count toward dead-letter.
+          # Source stays in set and will be retried after RETRY_DELAY.
+          Rails.logger.warn(
+            "CoalescedMergeJob: #{from_device_id_str}->#{to_device_id} (project #{project_id}) transient: #{e.class} #{e.message}"
           )
         else
-          Rails.logger.warn(
-            "CoalescedMergeJob: #{from_device_id_str}->#{to_device_id} (project #{project_id}) attempt #{attempts}/#{MAX_ATTEMPTS} failed: #{e.class} #{e.message}"
-          )
+          attempts = REDIS.hincrby(failures_key, from_device_id_str, 1)
+          REDIS.expire(failures_key, 86_400) # 24h safety net
+          if attempts >= MAX_ATTEMPTS
+            REDIS.srem?(set_key, from_device_id_str)
+            REDIS.hdel(failures_key, from_device_id_str)
+            Rails.logger.error(
+              "CoalescedMergeJob: #{from_device_id_str}->#{to_device_id} (project #{project_id}) dead-lettered after #{attempts} attempts: #{e.class} #{e.message}"
+            )
+          else
+            Rails.logger.warn(
+              "CoalescedMergeJob: #{from_device_id_str}->#{to_device_id} (project #{project_id}) attempt #{attempts}/#{MAX_ATTEMPTS} failed: #{e.class} #{e.message}"
+            )
+          end
         end
         next
       end
@@ -87,6 +103,10 @@ class CoalescedMergeJob
 
     REDIS.del(failures_key) if REDIS.hlen(failures_key) == 0
     had_failures
+  end
+
+  def transient_error?(error)
+    TRANSIENT_ERRORS.any? { |klass| error.is_a?(klass) }
   end
 
   def release_lock(key, value)
