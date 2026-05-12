@@ -50,9 +50,12 @@ class EventIngestionService
       visitor = device.visitor_for_project_id(project.id)
       return unless visitor
 
-      vlv = VisitorLastVisit.find_or_initialize_by(project_id: project.id, visitor_id: visitor.id)
-      vlv.link_id = link.id
-      vlv.save!
+      VisitorLastVisit.upsert(
+        { project_id: project.id, visitor_id: visitor.id, link_id: link.id,
+          created_at: Time.current, updated_at: Time.current },
+        unique_by: :index_vlv_on_project_and_visitor,
+        update_only: [:link_id]
+      )
     rescue StandardError => e
       Rails.logger.error("update_visitor_last_visit failed: #{e.message}")
     end

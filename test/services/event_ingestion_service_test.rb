@@ -370,6 +370,48 @@ class EventIngestionServiceTest < ActiveSupport::TestCase
                  "visitor_last_visit should update to the newest link"
   end
 
+  test "log_async preserves created_at on visitor_last_visit update" do
+    original_time = 3.days.ago.change(usec: 0)
+    vlv = VisitorLastVisit.create!(project: @project, visitor: @visitor, link: @link)
+    vlv.update_columns(created_at: original_time)
+
+    new_link = Link.create!(
+      domain: domains(:one), path: "ts-test-#{SecureRandom.hex(4)}",
+      title: "TS", active: true, redirect_config: @link.redirect_config,
+      generated_from_platform: "ios"
+    )
+
+    REDIS.stub(:lpush, ->(*_) {}) do
+      EventIngestionService.log_async(
+        Grovs::Events::VIEW, @project, @device, @data, new_link
+      )
+    end
+
+    vlv.reload
+    assert_equal original_time, vlv.created_at,
+                 "upsert should not overwrite created_at on existing records"
+    assert_equal new_link.id, vlv.link_id
+  end
+
+  test "log_async gracefully handles FK violation from deleted visitor" do
+    # Simulate a stale cached visitor: lookup returns a visitor object
+    # whose row has been deleted from the DB (e.g. by a concurrent merge job).
+    ghost_visitor = Visitor.create!(project: @project, device: @device, web_visitor: false)
+    ghost_id = ghost_visitor.id
+    ghost_visitor.delete
+
+    fake_visitor = Visitor.new(id: ghost_id, project: @project, device: @device)
+    @device.stub(:visitor_for_project_id, ->(_) { fake_visitor }) do
+      assert_nothing_raised do
+        REDIS.stub(:lpush, ->(*_) {}) do
+          EventIngestionService.log_async(
+            Grovs::Events::VIEW, @project, @device, @data, @link
+          )
+        end
+      end
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Referral tracking (INSTALL and REINSTALL)
   # ---------------------------------------------------------------------------

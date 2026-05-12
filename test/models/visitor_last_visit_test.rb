@@ -31,17 +31,7 @@ class VisitorLastVisitTest < ActiveSupport::TestCase
     assert_nil visit.reload.link
   end
 
-  # === uniqueness constraint (visitor_id scoped to project_id) ===
-
-  test "rejects duplicate visitor within the same project at validation level" do
-    duplicate = VisitorLastVisit.new(
-      project: @visit.project,
-      visitor: @visit.visitor,
-      link: nil
-    )
-    assert_not duplicate.valid?
-    assert_includes duplicate.errors[:visitor_id], "has already been taken"
-  end
+  # === uniqueness constraint (DB-level via index_vlv_on_project_and_visitor) ===
 
   test "enforces uniqueness at database level" do
     duplicate = VisitorLastVisit.new(

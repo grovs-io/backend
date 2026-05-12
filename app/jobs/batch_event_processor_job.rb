@@ -608,11 +608,20 @@ class BatchEventProcessorJob
     end
     return if last_links.empty?
 
+    now = Time.current
     last_links.each do |(project_id, visitor_id), link_id|
-      vlv = VisitorLastVisit.find_or_initialize_by(project_id: project_id, visitor_id: visitor_id)
-      vlv.link_id = link_id
-      vlv.save!
-    rescue ActiveRecord::RecordInvalid, ActiveRecord::InvalidForeignKey => e
+      VisitorLastVisit.upsert(
+        {
+          project_id: project_id,
+          visitor_id: visitor_id,
+          link_id: link_id,
+          created_at: now,
+          updated_at: now
+        },
+        unique_by: :index_vlv_on_project_and_visitor,
+        update_only: [:link_id]
+      )
+    rescue ActiveRecord::InvalidForeignKey => e
       Rails.logger.warn("BatchEventProcessorJob: visitor_last_visit skip visitor_id=#{visitor_id}: #{e.message}")
     end
   end
