@@ -91,11 +91,5 @@ class MergeVisitorEventsJob
 
     # Clear Redis lookup caches after transaction commits (mirrors after_commit :clear_cache)
     REDIS.del(*cache_keys) if cache_keys.present?
-
-    REDIS.set(
-      "#{BatchEventProcessorJob::MERGED_DEVICE_PREFIX}:#{project_id}:#{from_device_id}",
-      to_device_id,
-      ex: 86_400
-    )
   end
 end
