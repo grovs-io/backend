@@ -16,18 +16,10 @@ class ActionsService
     end
 
     def mark_actions_before_action_as_handled(old_action)
-      actions = Action.where(device_id: old_action.device_id).where('created_at <= ?', old_action.created_at)
-
-      # Mark all the actions as handled
-      actions.each do |action|
-        unless action.link
-          action.destroy!  # This will destroy the action
-          next
-        end
-
-        action.handled = true
-        action.save!
-      end
+      Action.where(device_id: old_action.device_id)
+            .where('created_at <= ?', old_action.created_at)
+            .where(handled: false)
+            .update_all(handled: true, updated_at: Time.current)
     end
   end
 

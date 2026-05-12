@@ -25,3 +25,7 @@
       cron: "0 3 * * *"
       class: "McpCleanupJob"
       queue: maintenance
+    orphaned_actions_cleanup:
+      cron: "0 4 * * *"
+      class: "OrphanedActionsCleanupJob"
+      queue: maintenance

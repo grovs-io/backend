@@ -88,16 +88,25 @@ class ActionsServiceTest < ActiveSupport::TestCase
     assert recent.reload.handled
   end
 
-  test "destroys orphaned actions whose link has been deleted" do
-    second_link = links(:second_link)
-    orphan = Action.create!(device_id: @device.id, link_id: second_link.id,
-                            handled: false, created_at: 5.minutes.ago)
-    second_link.delete
+  test "skips actions that are already handled" do
+    old    = actions(:old_action)
     recent = actions(:recent_action)
+    old.update_columns(handled: true)
 
     ActionsService.mark_actions_before_action_as_handled(recent)
 
-    assert_not Action.exists?(orphan.id), "Orphan action should be destroyed"
+    assert old.reload.handled
     assert recent.reload.handled
+  end
+
+  test "does not affect actions after the given action" do
+    recent = actions(:recent_action)
+    future = Action.create!(device_id: @device.id, link_id: @link.id,
+                            handled: false, created_at: 1.second.from_now)
+
+    ActionsService.mark_actions_before_action_as_handled(recent)
+
+    assert recent.reload.handled
+    assert_not future.reload.handled
   end
 end
