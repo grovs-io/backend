@@ -22,6 +22,7 @@ class BatchEventProcessorJob
   DEDUP_PREFIX = "events:dedup".freeze
   HEARTBEAT_PREFIX = "events:heartbeat".freeze
   HEARTBEAT_TTL = 120 # seconds — must be > LOOP_DURATION + worst-case timeout + cleanup
+  MERGED_DEVICE_PREFIX = "events:device_merge".freeze
 
   # Atomically pops up to ARGV[1] items from KEYS[1] (pending)
   # and pushes them onto KEYS[2] (processing). Returns the moved items.
@@ -168,6 +169,8 @@ class BatchEventProcessorJob
       REDIS.del(processing_key)
       return true
     end
+
+    remap_merged_devices!(parsed)
 
     projects, devices, links, visitors_index = bulk_load_records(parsed)
 
@@ -558,6 +561,32 @@ class BatchEventProcessorJob
     end
   rescue Redis::BaseError => e
     Rails.logger.warn("BatchEventProcessorJob: failed to enqueue follow-up: #{e.class} - #{e.message}")
+  end
+
+  # Rewrite device_id for events whose source device was merged into another.
+  # MergeVisitorEventsJob writes a breadcrumb key per merged device; we bulk-check
+  # them in a single MGET and rewrite in-place so the rest of the pipeline sees
+  # the target device (which still has a valid visitor).
+  def remap_merged_devices!(parsed)
+    project_device_pairs = parsed.map { |p| [p[:project_id], p[:device_id]] }.uniq
+    return if project_device_pairs.empty?
+
+    keys = project_device_pairs.map { |pid, did| "#{MERGED_DEVICE_PREFIX}:#{pid}:#{did}" }
+    mapped_ids = REDIS.mget(*keys)
+
+    remaps = {}
+    project_device_pairs.each_with_index do |(pid, did), idx|
+      to_id = mapped_ids[idx]
+      remaps[[pid, did]] = to_id.to_i if to_id.present?
+    end
+    return if remaps.empty?
+
+    parsed.each do |payload|
+      to_device_id = remaps[[payload[:project_id], payload[:device_id]]]
+      payload[:device_id] = to_device_id if to_device_id
+    end
+  rescue Redis::BaseError => e
+    Rails.logger.warn("BatchEventProcessorJob: device merge remap failed: #{e.class} - #{e.message}")
   end
 
   def repush_from_processing
