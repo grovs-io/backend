@@ -22,18 +22,6 @@ class BatchEventProcessorJob
   DEDUP_PREFIX = "events:dedup".freeze
   HEARTBEAT_PREFIX = "events:heartbeat".freeze
   HEARTBEAT_TTL = 120 # seconds — must be > LOOP_DURATION + worst-case timeout + cleanup
-  PROCESSOR_LOCK_KEY = "events:processor_lock".freeze
-  PROCESSOR_LOCK_TTL = 180 # seconds — prevents overlapping drain loops from fighting on hot stat rows
-  FAILURE_RETRY_DELAY = 15.seconds.freeze
-  MERGED_DEVICE_PREFIX = "events:device_merge".freeze
-
-  RELEASE_LOCK_SCRIPT = <<~LUA.freeze
-    if redis.call('get', KEYS[1]) == ARGV[1] then
-      return redis.call('del', KEYS[1])
-    else
-      return 0
-    end
-  LUA
 
   # Atomically pops up to ARGV[1] items from KEYS[1] (pending)
   # and pushes them onto KEYS[2] (processing). Returns the moved items.
@@ -67,18 +55,11 @@ class BatchEventProcessorJob
   LUA
 
   def perform
-    processor_lock_value = SecureRandom.hex(16)
-    unless REDIS.set(PROCESSOR_LOCK_KEY, processor_lock_value, nx: true, ex: PROCESSOR_LOCK_TTL)
-      Rails.logger.info("BatchEventProcessorJob: another processor is already draining events")
-      return
-    end
-
     refresh_heartbeat
     recover_orphaned_events
 
     deadline = Time.current + LOOP_DURATION
     consecutive_failures = 0
-    stopped_after_failure = false
     last_heartbeat = Time.current
 
     while Time.current < deadline
@@ -107,15 +88,17 @@ class BatchEventProcessorJob
         end
       else
         consecutive_failures += 1
-        stopped_after_failure = true
-        Rails.logger.error("BatchEventProcessorJob: batch failed, stopping and retrying after #{FAILURE_RETRY_DELAY.to_i}s")
-        break
+        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES
+          Rails.logger.error("BatchEventProcessorJob: #{MAX_CONSECUTIVE_FAILURES} consecutive failures, stopping until next run")
+          break
+        end
+        sleep SLEEP_INTERVAL * consecutive_failures
       end
     end
 
     # If there are still pending events, enqueue another job immediately
     # so the next available worker picks it up without waiting for cron.
-    enqueue_if_backlog(delay: stopped_after_failure ? FAILURE_RETRY_DELAY : nil)
+    enqueue_if_backlog
   rescue StandardError => e
     Rails.logger.error("BatchEventProcessorJob fatal error: #{e.class} - #{e.message}")
     Rails.logger.error(e.backtrace.first(10).join("\n"))
@@ -126,16 +109,9 @@ class BatchEventProcessorJob
     rescue Redis::BaseError
       nil
     end
-    release_processor_lock(processor_lock_value) if processor_lock_value
   end
 
   private
-
-  def release_processor_lock(value)
-    REDIS.eval(RELEASE_LOCK_SCRIPT, keys: [PROCESSOR_LOCK_KEY], argv: [value])
-  rescue Redis::BaseError => e
-    Rails.logger.warn("BatchEventProcessorJob: failed to release processor lock: #{e.class} - #{e.message}")
-  end
 
   def processing_key
     @processing_key ||= "#{PROCESSING_KEY_PREFIX}:#{jid}"
@@ -192,8 +168,6 @@ class BatchEventProcessorJob
       REDIS.del(processing_key)
       return true
     end
-
-    remap_merged_devices!(parsed)
 
     projects, devices, links, visitors_index = bulk_load_records(parsed)
 
@@ -572,49 +546,18 @@ class BatchEventProcessorJob
   # If the pending list still has events after this job finishes its loop,
   # enqueue another job so a free worker picks it up immediately instead of
   # waiting for the next cron tick (up to 60 seconds away).
-  def enqueue_if_backlog(delay: nil)
+  def enqueue_if_backlog
     pending = begin
       REDIS.llen(REDIS_KEY)
     rescue Redis::BaseError
       0
     end
     if pending > 0
-      if delay
-        BatchEventProcessorJob.perform_in(delay)
-        Rails.logger.info("BatchEventProcessorJob: #{pending} events still pending, scheduled follow-up in #{delay.to_i}s")
-      else
-        BatchEventProcessorJob.perform_async
-        Rails.logger.info("BatchEventProcessorJob: #{pending} events still pending, enqueued follow-up job")
-      end
+      BatchEventProcessorJob.perform_async
+      Rails.logger.info("BatchEventProcessorJob: #{pending} events still pending, enqueued follow-up job")
     end
   rescue Redis::BaseError => e
     Rails.logger.warn("BatchEventProcessorJob: failed to enqueue follow-up: #{e.class} - #{e.message}")
-  end
-
-  def remap_merged_devices!(parsed)
-    project_device_pairs = parsed.map { |payload| [payload[:project_id], payload[:device_id]] }.uniq
-    return if project_device_pairs.empty?
-
-    keys = project_device_pairs.map { |project_id, device_id| merged_device_key(project_id, device_id) }
-    mapped_ids = REDIS.mget(*keys)
-    remaps = {}
-
-    project_device_pairs.each_with_index do |(project_id, device_id), idx|
-      to_device_id = mapped_ids[idx]
-      remaps[[project_id, device_id]] = to_device_id.to_i if to_device_id.present?
-    end
-    return if remaps.empty?
-
-    parsed.each do |payload|
-      to_device_id = remaps[[payload[:project_id], payload[:device_id]]]
-      payload[:device_id] = to_device_id if to_device_id
-    end
-  rescue Redis::BaseError => e
-    Rails.logger.warn("BatchEventProcessorJob: device merge remap failed: #{e.class} - #{e.message}")
-  end
-
-  def merged_device_key(project_id, device_id)
-    "#{MERGED_DEVICE_PREFIX}:#{project_id}:#{device_id}"
   end
 
   def repush_from_processing
