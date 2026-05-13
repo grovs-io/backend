@@ -1,5 +1,8 @@
 <p align="center">
-  <img src=".github/logo.svg" alt="Grovs" height="50">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://s3.eu-north-1.amazonaws.com/grovs.io/full-white.svg">
+    <img src="https://s3.eu-north-1.amazonaws.com/grovs.io/full-black.svg" width="120" alt="Grovs">
+  </picture>
 </p>
 
 <p align="center">
