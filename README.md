@@ -6,6 +6,16 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/grovs-io/backend/releases"><img src="https://img.shields.io/github/v/release/grovs-io/backend?style=flat-square&color=4F46E5" alt="Latest release"/></a>
+  <a href="#"><img src="https://img.shields.io/badge/Rails-8.1-4F46E5?style=flat-square&logo=rubyonrails&logoColor=white" alt="Rails 8.1"/></a>
+  <a href="#"><img src="https://img.shields.io/badge/Ruby-3.3-4F46E5?style=flat-square&logo=ruby&logoColor=white" alt="Ruby 3.3"/></a>
+  <a href="#"><img src="https://img.shields.io/badge/PostgreSQL-16-4F46E5?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 16"/></a>
+  <a href="#"><img src="https://img.shields.io/badge/deploy-Kamal-4F46E5?style=flat-square" alt="Deploy with Kamal"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2B%20EE-4F46E5?style=flat-square" alt="MIT + Enterprise License"/></a>
+  <a href="https://github.com/grovs-io/backend/stargazers"><img src="https://img.shields.io/github/stars/grovs-io/backend?style=flat-square&color=4F46E5" alt="GitHub stars"/></a>
+</p>
+
+<p align="center">
   Self-hostable deep linking, attribution, and analytics platform for mobile apps.
   <br />
   An open-source alternative to Branch.io and AppsFlyer.
