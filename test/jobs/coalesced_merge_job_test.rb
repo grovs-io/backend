@@ -75,8 +75,13 @@ class CoalescedMergeJobTest < ActiveSupport::TestCase
     from_devs = create_source_devices(2)
     set_key = push_sources(from_devs)
 
-    # Delete the first device so its merge raises
+    # Delete the first device so its merge raises. Use raw .delete to simulate a
+    # row vanishing under a concurrent merge; clear dependent notification_messages
+    # first since .delete skips the dependent: :destroy that would normally remove
+    # them (they are auto-created by Visitor's after_create_commit when an active
+    # notification exists, which only happens in the full suite).
     first_vis = Visitor.find_by(device: from_devs[0], project: @project)
+    first_vis.notification_messages.delete_all
     first_vis.delete
     from_devs[0].delete
 
@@ -96,7 +101,7 @@ class CoalescedMergeJobTest < ActiveSupport::TestCase
 
     failing_job = Object.new
     def failing_job.perform(*, **)
-      raise RuntimeError, "permanent failure"
+      raise "permanent failure"
     end
 
     MergeVisitorEventsJob.stub(:new, failing_job) do

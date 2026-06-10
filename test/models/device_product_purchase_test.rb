@@ -1,7 +1,7 @@
 require "test_helper"
 
 class DeviceProductPurchaseTest < ActiveSupport::TestCase
-  fixtures :devices, :projects
+  fixtures :instances, :devices, :projects
 
   # === creation ===
 

@@ -12,6 +12,28 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
     @device = devices(:ios_device)
     @visitor = visitors(:ios_visitor)
     @link = links(:basic_link)
+
+    # Redis isn't transactional and is shared across tests within a parallel
+    # worker, so keys leak between tests. The orphan-recovery tests SCAN every
+    # `events:processing:*` key, so a stray key left by an earlier test would be
+    # swept in and inflate Event.count (flaky `assert_difference`). Start and end
+    # each test from a clean event-pipeline namespace.
+    clear_event_redis_namespace
+  end
+
+  teardown do
+    clear_event_redis_namespace
+  end
+
+  def clear_event_redis_namespace
+    REDIS.with do |conn|
+      cursor = "0"
+      loop do
+        cursor, keys = conn.scan(cursor, match: "events:*", count: 1000)
+        conn.del(*keys) unless keys.empty?
+        break if cursor == "0"
+      end
+    end
   end
 
   # --- parse_events ---

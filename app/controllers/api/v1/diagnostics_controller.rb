@@ -2,8 +2,6 @@ class Api::V1::DiagnosticsController < ApplicationController
   skip_before_action :verify_authenticity_token, raise: false
   before_action :authenticate_diagnostics_api
 
-  DIAGNOSTICS_API_KEY = ENV.fetch('DIAGNOSTICS_API_KEY', '').freeze
-
   # Test endpoint for exceptions - triggers an error for Signoz exception tracking
   # Usage: GET/POST /api/v1/diagnostics/test_exception
   # Params:
@@ -295,7 +293,11 @@ class Api::V1::DiagnosticsController < ApplicationController
               request.headers['Authorization']&.gsub(/^Bearer\s+/, '') ||
               params[:api_key]
 
-    unless api_key.present? && ActiveSupport::SecurityUtils.secure_compare(api_key, DIAGNOSTICS_API_KEY)
+    # Read the configured key at request time (not frozen at class load) so it
+    # reflects the current ENV — required for deterministic tests and key rotation.
+    configured_key = ENV.fetch('DIAGNOSTICS_API_KEY', '')
+
+    unless api_key.present? && configured_key.present? && ActiveSupport::SecurityUtils.secure_compare(api_key, configured_key)
       render json: { error: 'Unauthorized', message: 'Invalid or missing API key' }, status: :unauthorized
     end
   end

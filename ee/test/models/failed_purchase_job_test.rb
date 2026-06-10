@@ -1,7 +1,7 @@
 require "test_helper"
 
 class FailedPurchaseJobTest < ActiveSupport::TestCase
-  fixtures :projects, :purchase_events
+  fixtures :instances, :devices, :projects, :purchase_events
 
   # === retry! ===
 

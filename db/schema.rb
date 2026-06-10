@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_09_054757) do
+ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -416,6 +416,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_09_054757) do
     t.bigint "visitor_id"
     t.index ["campaign_id"], name: "index_links_on_campaign_id"
     t.index ["domain_id"], name: "index_links_on_domain_id"
+    t.index ["domain_id", "created_at"], name: "index_links_on_domain_id_active", order: { created_at: :desc }, where: "active"
     t.index ["path"], name: "index_links_on_path"
     t.index ["redirect_config_id"], name: "index_links_on_redirect_config_id"
     t.index ["visitor_id"], name: "index_links_on_visitor_id"
@@ -833,6 +834,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_09_054757) do
     t.bigint "visitor_id", null: false
     t.index ["event_date", "project_id", "platform"], name: "idx_vds_date_project_platform"
     t.index ["event_date", "project_id"], name: "idx_vds_date_project"
+    t.index ["invited_by_id"], name: "idx_vds_invited_by_id", where: "(invited_by_id IS NOT NULL)"
     t.index ["project_id", "event_date", "visitor_id"], name: "idx_vds_project_date_visitor"
     t.index ["project_id", "visitor_id", "event_date", "platform"], name: "uniq_vds_proj_visitor_date_platform", unique: true
     t.index ["visitor_id"], name: "idx_vds_visitor_id"

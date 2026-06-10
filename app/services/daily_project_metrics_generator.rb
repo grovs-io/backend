@@ -7,10 +7,10 @@ class DailyProjectMetricsGenerator
 
       data[:visitor_stats]   = fetch_visitor_stats(date)
       data[:link_stats]      = fetch_link_stats(date)
-      data[:returning_users]      = fetch_returning_users(date)
-      new_and_first_time          = fetch_new_users_and_first_time_visitors(date)
-      data[:new_users]            = new_and_first_time[:new_users]
-      data[:first_time_visitors]  = new_and_first_time[:first_time_visitors]
+      classification              = fetch_visitor_classification(date)
+      data[:returning_users]      = classification[:returning_users]
+      data[:new_users]            = classification[:new_users]
+      data[:first_time_visitors]  = classification[:first_time_visitors]
       data[:referred_users]       = fetch_referred_users(date)
       data[:revenue_stats]   = fetch_revenue_stats(date)
 
@@ -63,58 +63,42 @@ class DailyProjectMetricsGenerator
         end
     end
 
-    # Returning users per project+platform:
-    # same visitor_id seen before on the SAME project+platform, on an earlier date
-    def fetch_returning_users(date)
-      current  = VisitorDailyStatistic.arel_table
-      previous = current.alias("previous")
-
-      exists_query = Arel::SelectManager.new
-        .from(previous)
-        .where(previous[:project_id].eq(current[:project_id]))
-        .where(previous[:platform].eq(current[:platform]))
-        .where(previous[:visitor_id].eq(current[:visitor_id]))
-        .where(previous[:event_date].lt(date))
-        .project(Arel.sql("1"))
-
-      VisitorDailyStatistic
-        .where(event_date: date)
-        .where(Arel::Nodes::Exists.new(exists_query))
-        .group(:project_id, :platform)
-        .pluck(:project_id, :platform, Arel.sql("COUNT(DISTINCT visitor_id)"))
-        .each_with_object({}) { |(pid, platform, count), h| h[[pid.to_i, platform]] = count.to_i }
-    end
-
-    # Combined query: first-time visitors (no prior VDS record) and new users
-    # (first-time + had installs). Single NOT EXISTS scan instead of two.
-    def fetch_new_users_and_first_time_visitors(date)
-      current  = VisitorDailyStatistic.arel_table
-      previous = current.alias("previous")
-
-      exists_query = Arel::SelectManager.new
-        .from(previous)
-        .where(previous[:project_id].eq(current[:project_id]))
-        .where(previous[:platform].eq(current[:platform]))
-        .where(previous[:visitor_id].eq(current[:visitor_id]))
-        .where(previous[:event_date].lt(date))
-        .project(Arel.sql("1"))
-
-      rows = VisitorDailyStatistic
-        .where(event_date: date)
-        .where(Arel::Nodes::Not.new(Arel::Nodes::Exists.new(exists_query)))
-        .group(:project_id, :platform)
-        .pluck(
-          :project_id,
-          :platform,
-          Arel.sql("COUNT(DISTINCT visitor_id)"),
-          Arel.sql("COUNT(DISTINCT CASE WHEN installs > 0 THEN visitor_id END)")
+    # Classify visitors active on `date` into returning / first-time / new, in one pass
+    # (was two full-day scans computing the same "has a prior record?" predicate twice).
+    #   Returning  = same visitor seen earlier on this project+platform
+    #   First-time = no prior record for this project+platform+visitor
+    #   New        = first-time AND installs > 0 that day
+    # AS MATERIALIZED is required: otherwise Postgres inlines `has_prior` and re-runs the
+    # correlated EXISTS once per FILTER. COUNT(*) (not COUNT(DISTINCT)) is safe because the
+    # unique (project_id, visitor_id, event_date, platform) index gives one row per visitor/day.
+    def fetch_visitor_classification(date)
+      sql = DailyProjectMetric.sanitize_sql_array([<<~SQL, date, date])
+        WITH classified AS MATERIALIZED (
+          SELECT v.project_id, v.platform, v.visitor_id, v.installs,
+                 EXISTS (
+                   SELECT 1 FROM visitor_daily_statistics p
+                   WHERE p.project_id = v.project_id
+                     AND p.platform   = v.platform
+                     AND p.visitor_id = v.visitor_id
+                     AND p.event_date < ?::date
+                 ) AS has_prior
+          FROM visitor_daily_statistics v
+          WHERE v.event_date = ?::date
         )
+        SELECT project_id, platform,
+          COUNT(*) FILTER (WHERE has_prior)                        AS returning_users,
+          COUNT(*) FILTER (WHERE NOT has_prior)                    AS first_time_visitors,
+          COUNT(*) FILTER (WHERE NOT has_prior AND installs > 0)   AS new_users
+        FROM classified
+        GROUP BY project_id, platform
+      SQL
 
-      result = { new_users: {}, first_time_visitors: {} }
-      rows.each do |(pid, platform, first_time, new_users)|
-        key = [pid.to_i, platform]
-        result[:new_users][key] = new_users.to_i
-        result[:first_time_visitors][key] = first_time.to_i
+      result = { returning_users: {}, new_users: {}, first_time_visitors: {} }
+      VisitorDailyStatistic.connection.select_all(sql).each do |row|
+        key = [row["project_id"].to_i, row["platform"]]
+        result[:returning_users][key]     = row["returning_users"].to_i
+        result[:first_time_visitors][key] = row["first_time_visitors"].to_i
+        result[:new_users][key]           = row["new_users"].to_i
       end
       result
     end

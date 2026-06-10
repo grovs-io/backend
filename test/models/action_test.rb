@@ -1,7 +1,7 @@
 require "test_helper"
 
 class ActionTest < ActiveSupport::TestCase
-  fixtures :devices, :domains, :projects, :redirect_configs
+  fixtures :instances, :devices, :domains, :projects, :redirect_configs
 
   # === serialization ===
 

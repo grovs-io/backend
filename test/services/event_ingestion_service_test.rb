@@ -398,6 +398,10 @@ class EventIngestionServiceTest < ActiveSupport::TestCase
     # whose row has been deleted from the DB (e.g. by a concurrent merge job).
     ghost_visitor = Visitor.create!(project: @project, device: @device, web_visitor: false)
     ghost_id = ghost_visitor.id
+    # Clear dependent notification_messages before the raw .delete: they are
+    # auto-created by Visitor's after_create_commit when an active notification
+    # exists (only in the full suite), and .delete skips dependent: :destroy.
+    ghost_visitor.notification_messages.delete_all
     ghost_visitor.delete
 
     fake_visitor = Visitor.new(id: ghost_id, project: @project, device: @device)

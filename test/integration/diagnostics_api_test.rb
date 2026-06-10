@@ -4,7 +4,7 @@ require_relative "auth_test_helper"
 class DiagnosticsApiTest < ActionDispatch::IntegrationTest
   include AuthTestHelper
 
-  fixtures :users, :projects, :domains
+  fixtures :instances, :users, :projects, :domains
 
   DIAG_KEY = "test-diagnostics-key-12345"
 
