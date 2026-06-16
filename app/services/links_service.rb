@@ -208,7 +208,10 @@ class LinksService
       path: path
       }
     rescue URI::InvalidURIError, PublicSuffix::DomainNotAllowed, PublicSuffix::DomainInvalid => e
-      Rails.logger.error("Invalid URL: #{url} - #{e.message}")
+      # Custom-scheme deep links (e.g. "myapp://path") legitimately fail PublicSuffix —
+      # they have no registrable host. This is expected input, not an error, so log at
+      # debug to keep it out of the error stream. Caller handles the nil return.
+      Rails.logger.debug("Invalid URL: #{url} - #{e.message}")
       nil
 
     end
@@ -231,7 +234,9 @@ class LinksService
       # Return the URL without query parameters
       result
     rescue URI::InvalidURIError => e
-      Rails.logger.error("Invalid URL in strip_query_params: #{url} - #{e.message}")
+      # Same as parse_universal_link: unparseable/custom-scheme URLs are expected input.
+      # Log at debug and fall back to the original URL.
+      Rails.logger.debug("Invalid URL in strip_query_params: #{url} - #{e.message}")
       url # Return original URL if parsing fails
       
     end
