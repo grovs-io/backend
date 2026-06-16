@@ -34,7 +34,7 @@ class LinkDisplayService
         page_subtitle: page_subtitle,
         page_image: page_image,
         page_full_path: link.access_path,
-        domain: "https://#{link.domain.full_domain}",
+        domain: "https://#{link.domain.display_host}",
         tracking_campaign: tracking_campaign,
         tracking_source: tracking_source,
         tracking_medium: tracking_medium,

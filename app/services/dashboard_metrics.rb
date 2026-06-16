@@ -78,12 +78,6 @@ class DashboardMetrics
       }
     end
 
-    def dau_for_range(project_id, range_start, range_end, platform)
-      rel = ProjectDailyActiveUser.where(project_id: project_id, event_date: range_start..range_end)
-      rel = rel.where(platform: platform) if platform
-      rel.sum(:active_users).to_i
-    end
-
     def unique_visitors_for_range(project_id, range_start, range_end, platform)
       rel = VisitorDailyStatistic.where(project_id: project_id, event_date: range_start..range_end)
       rel = rel.where(platform: platform) if platform
@@ -93,38 +87,6 @@ class DashboardMetrics
     # Visitors in the range who have NO VDS record before range_start.
     # Uses a constant bound (range_start) instead of per-row correlation (c.event_date)
     # so Postgres can evaluate the NOT EXISTS as a single index lookup per visitor.
-    def unique_first_time_visitors_for_range(project_id, range_start, range_end, platform)
-      platform_clause = ""
-      platforms_array = Array(platform) if platform
-
-      if platform
-        placeholders = platforms_array.map { "?" }.join(", ")
-        platform_clause = "AND c.platform IN (#{placeholders})"
-        binds = [project_id, range_start, range_end, *platforms_array, range_start]
-      else
-        binds = [project_id, range_start, range_end, range_start]
-      end
-
-      sql = ActiveRecord::Base.send(
-        :sanitize_sql_array,
-        [<<~SQL, *binds]
-          SELECT COUNT(DISTINCT c.visitor_id)
-          FROM visitor_daily_statistics c
-          WHERE c.project_id = ?
-            AND c.event_date BETWEEN ? AND ?
-            #{platform_clause}
-            AND NOT EXISTS (
-              SELECT 1 FROM visitor_daily_statistics p
-              WHERE p.project_id = c.project_id
-                AND p.visitor_id = c.visitor_id
-                AND p.event_date < ?
-            )
-        SQL
-      )
-
-      ActiveRecord::Base.with_connection { |conn| conn.exec_query(sql) }.first["count"].to_i
-    end
-
     def unique_paying_users_for_range(project_id, range_start, range_end, platform)
       rel = PurchaseEvent
         .where(project_id: project_id, date: range_start.beginning_of_day..range_end.end_of_day)

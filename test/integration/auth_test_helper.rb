@@ -4,11 +4,11 @@ module AuthTestHelper
   IAP_PREFIX = "/api/v1/iap".freeze
 
   def api_host
-    "api.example.com"
+    "api.sqd.link"
   end
 
   def sdk_host
-    "sdk.example.com"
+    "sdk.sqd.link"
   end
 
   def doorkeeper_headers_for(user)

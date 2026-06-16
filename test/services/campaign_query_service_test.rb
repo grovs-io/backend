@@ -184,3 +184,30 @@ class CampaignQueryServiceTest < ActiveSupport::TestCase
     assert_includes names, "Alpha Campaign", "Campaign within date range should be included"
   end
 end
+
+class CampaignQueryLikeSanitizationTest < ActiveSupport::TestCase
+  fixtures :projects, :instances
+
+  setup do
+    @project = projects(:one)
+    @service = CampaignQueryService.new(project: @project)
+    Campaign.create!(name: "50% off promo", project: @project)
+    Campaign.create!(name: "50ab off promo", project: @project)
+    Campaign.create!(name: "winter_sale", project: @project)
+    Campaign.create!(name: "winterXsale", project: @project)
+  end
+
+  test "percent in term is matched literally, not as a wildcard" do
+    results = @service.search(archived: false, term: "50%").to_a
+    names = results.map(&:name)
+    assert_includes names, "50% off promo"
+    assert_not_includes names, "50ab off promo", "% must not act as a SQL wildcard"
+  end
+
+  test "underscore in term is matched literally, not as a wildcard" do
+    results = @service.search(archived: false, term: "winter_sale").to_a
+    names = results.map(&:name)
+    assert_includes names, "winter_sale"
+    assert_not_includes names, "winterXsale", "_ must not act as a single-char wildcard"
+  end
+end

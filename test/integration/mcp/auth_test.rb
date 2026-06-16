@@ -189,7 +189,7 @@ class McpAuthTest < ActionDispatch::IntegrationTest
         code_challenge: generate_pkce[:challenge],
         code_challenge_method: "S256"
       },
-      headers: { "Host" => "api.example.com" }
+      headers: { "Host" => "api.sqd.link" }
     assert_response :unauthorized
   end
 
@@ -459,7 +459,7 @@ class McpAuthTest < ActionDispatch::IntegrationTest
   end
 
   test "list_tokens without doorkeeper auth returns 401" do
-    get "#{MCP_PREFIX}/tokens", headers: { "Host" => "api.example.com" }
+    get "#{MCP_PREFIX}/tokens", headers: { "Host" => "api.sqd.link" }
     assert_response :unauthorized
   end
 
@@ -519,7 +519,7 @@ class McpAuthTest < ActionDispatch::IntegrationTest
     token.generate_token
     token.save!
 
-    delete "#{MCP_PREFIX}/tokens/#{token.hashid}", headers: { "Host" => "api.example.com" }
+    delete "#{MCP_PREFIX}/tokens/#{token.hashid}", headers: { "Host" => "api.sqd.link" }
     assert_response :unauthorized
   end
 

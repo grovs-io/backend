@@ -1,0 +1,20 @@
+# Migration sources test fixtures.
+#
+# The `acme_branch` source is tied to project `one` and uses the host
+# `links.acme.com` which is the active CustomHostname for project one
+# (see custom_hostnames.yml :acme_active). Most happy-path tests use this.
+#
+# Credentials column is encrypted via Rails encrypts; fixtures bypass encryption
+# at YAML load time by storing the cleartext value into credentials_ciphertext
+# via the serialized form Rails uses. To keep tests simple, fixtures only
+# populate non-credential fields here and tests set credentials via the model
+# (which encrypts on save) when needed.
+
+acme_branch:
+  project: one
+  old_host: links.acme.com
+  provider: branch
+  enabled: true
+  consecutive_failures: 0
+  created_at: <%= 1.hour.ago.to_fs(:db) %>
+  updated_at: <%= 1.hour.ago.to_fs(:db) %>

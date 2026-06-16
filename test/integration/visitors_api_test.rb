@@ -161,3 +161,78 @@ class VisitorsApiTest < ActionDispatch::IntegrationTest
     assert_not json.key?("visitor"), "403 must not leak visitor data"
   end
 end
+
+class VisitorsLegacyMetricsTest < ActionDispatch::IntegrationTest
+  include AuthTestHelper
+
+  fixtures :instances, :users, :instance_roles, :projects, :domains,
+           :redirect_configs, :devices, :visitors, :links,
+           :visitor_daily_statistics
+
+  setup do
+    @project = projects(:one)
+    @visitor = visitors(:ios_visitor)
+    @headers = doorkeeper_headers_for(users(:admin_user))
+  end
+
+  test "aggregated_metrics counts events on links the visitor created" do
+    link = links(:basic_link)
+    link.update_columns(visitor_id: @visitor.id)
+    Event.where(link_id: link.id).delete_all
+    2.times do 
+      Event.create!(project_id: @project.id, device_id: @visitor.device_id,
+                            link_id: link.id, event: Grovs::Events::OPEN)
+    end
+    Event.create!(project_id: @project.id, device_id: @visitor.device_id,
+                  link_id: link.id, event: Grovs::Events::INSTALL)
+
+    post "#{API_PREFIX}/projects/#{@project.id}/visitors/aggregated_metrics",
+      params: { page: 1 }, headers: @headers
+
+    assert_response :ok
+    json = JSON.parse(response.body)
+    row = json["metrics"].find { |r| r["id"] == @visitor.id }
+    assert row, "creator visitor must appear"
+    assert_equal 2, row["open_count"], "2 opens on the visitor's link"
+    assert_equal 1, row["install_count"], "1 install on the visitor's link"
+    assert_equal "1", json["page"].to_s
+  end
+
+  test "metrics counts the visitor's own device events" do
+    Event.where(device_id: @visitor.device_id).delete_all
+    3.times do 
+      Event.create!(project_id: @project.id, device_id: @visitor.device_id,
+                            event: Grovs::Events::APP_OPEN)
+    end
+    Event.create!(project_id: @project.id, device_id: @visitor.device_id,
+                  event: Grovs::Events::INSTALL, engagement_time: 70)
+
+    post "#{API_PREFIX}/projects/#{@project.id}/visitors/metrics",
+      params: { page: 1, visitor_id: @visitor.id }, headers: @headers
+
+    assert_response :ok
+    json = JSON.parse(response.body)
+    ids = json["metrics"].map { |v| v["id"] }.uniq
+    assert_equal [@visitor.id], ids, "rows must belong to the requested visitor"
+    row = json["metrics"][0]
+    assert_equal 3, row["app_open_count"]
+    assert_equal 1, row["install_count"]
+    assert_equal 0, row["view_count"]
+  end
+
+  test "metrics with date range excluding all data returns empty rows" do
+    post "#{API_PREFIX}/projects/#{@project.id}/visitors/metrics",
+      params: { page: 1, start_date: "2030-01-01", end_date: "2030-01-02" },
+      headers: @headers
+
+    assert_response :ok
+    assert_equal [], JSON.parse(response.body)["metrics"]
+  end
+
+  test "aggregated_metrics rejects other instances' projects" do
+    post "#{API_PREFIX}/projects/#{projects(:two).id}/visitors/aggregated_metrics",
+      params: { page: 1 }, headers: doorkeeper_headers_for(users(:member_user))
+
+    assert_response :forbidden
+  end
+end

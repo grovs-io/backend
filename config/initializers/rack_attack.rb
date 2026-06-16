@@ -18,11 +18,22 @@ end
 
 
 class Rack::Attack
+  # True only when the host is one of OUR reserved subdomains (e.g. api.sqd.link),
+  # not a customer custom domain that merely starts with "api" (e.g. api.acme.com).
+  # Defined outside the production gate so it is unit-testable.
+  def self.reserved_main_host?(host, subdomain)
+    return false if host.blank?
+
+    Grovs::Domains::MAIN.any? { |d| host == "#{subdomain}.#{d}" }
+  end
+
   # Only enable rate limiting in production — development and staging
   # need unrestricted access for testing and debugging.
   if Rails.env.production?
     throttle('req/ip', limit: 200, period: 1.minute) do |req|
-      unless req.host&.start_with?(Grovs::Subdomains::API) || req.host&.start_with?(Grovs::Subdomains::SDK) || req.host&.start_with?('dls')
+      unless reserved_main_host?(req.host, Grovs::Subdomains::API) ||
+             reserved_main_host?(req.host, Grovs::Subdomains::SDK) ||
+             req.host&.start_with?('dls')
         req.ip
       end
     end
@@ -39,7 +50,7 @@ class Rack::Attack
 
     # Unauthenticated endpoints that could be used for email enumeration
     throttle('sensitive/ip', limit: 10, period: 1.minute) do |req|
-      if req.host&.start_with?(Grovs::Subdomains::API) &&
+      if reserved_main_host?(req.host, Grovs::Subdomains::API) &&
          req.post? &&
          ["/api/v1/users/reset_password", "/api/v1/users", "/api/v1/users/otp_status"].include?(req.path)
         req.ip
@@ -48,7 +59,7 @@ class Rack::Attack
 
     # MCP token exchange (mcp subdomain)
     throttle('mcp_token/ip', limit: 20, period: 1.minute) do |req|
-      if req.host&.start_with?(Grovs::Subdomains::MCP) &&
+      if reserved_main_host?(req.host, Grovs::Subdomains::MCP) &&
          req.post? && req.path == "/token"
         req.ip
       end
@@ -56,7 +67,7 @@ class Rack::Attack
 
     # MCP client registration — stricter limit (unauthenticated, creates DB rows)
     throttle('mcp_register/ip', limit: 5, period: 1.minute) do |req|
-      if req.host&.start_with?(Grovs::Subdomains::MCP) &&
+      if reserved_main_host?(req.host, Grovs::Subdomains::MCP) &&
          req.post? && req.path == "/register"
         req.ip
       end
@@ -64,7 +75,7 @@ class Rack::Attack
 
     # MCP authorize (GET, triggers consent redirect — limit to prevent enumeration)
     throttle('mcp_authorize/ip', limit: 20, period: 1.minute) do |req|
-      if req.host&.start_with?(Grovs::Subdomains::MCP) &&
+      if reserved_main_host?(req.host, Grovs::Subdomains::MCP) &&
          req.get? && req.path == "/authorize"
         req.ip
       end
@@ -72,7 +83,7 @@ class Rack::Attack
 
     # MCP consent (api subdomain, Doorkeeper-protected)
     throttle('mcp_consent/ip', limit: 10, period: 1.minute) do |req|
-      if req.host&.start_with?(Grovs::Subdomains::API) &&
+      if reserved_main_host?(req.host, Grovs::Subdomains::API) &&
          req.post? &&
          req.path == "/api/v1/mcp/approve_consent"
         req.ip
@@ -80,14 +91,26 @@ class Rack::Attack
     end
 
     throttle('admin/ip', limit: 5000, period: 1.minute) do |req|
-      if req.host&.start_with?(Grovs::Subdomains::API) &&
+      if reserved_main_host?(req.host, Grovs::Subdomains::API) &&
          (req.path.start_with?("/api/v1/admin/") || req.path.start_with?("/api/v1/automation/"))
         req.ip
       end
     end
 
+    # /api/v1/projects/:id/migration_source/test triggers a synchronous outbound HTTP call
+    # to Branch/AppsFlyer per request. Admin-gated, but an admin (or compromised session)
+    # could hammer it to amplify outbound traffic, consume the customer's upstream quota,
+    # and trip rate-limit penalties on their behalf. 5/min/IP is plenty for legit setup
+    # validation but kills the amplification vector.
+    throttle('migration-source-test/ip', limit: 5, period: 1.minute) do |req|
+      if reserved_main_host?(req.host, Grovs::Subdomains::API) &&
+         req.path =~ %r{\A/api/v1/projects/[^/]+/migration_source/test\z}
+        req.ip
+      end
+    end
+
     throttle('sdk-requests/ip', limit: 5000, period: 1.second) do |req|
-      if req.host&.start_with?(Grovs::Subdomains::SDK)
+      if reserved_main_host?(req.host, Grovs::Subdomains::SDK)
         req.ip
       end
     end

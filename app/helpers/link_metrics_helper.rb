@@ -22,24 +22,16 @@ module LinkMetricsHelper
     links = domain.links.includes(:campaign)
     links = links.where(active: active)
     links = links.where(sdk_generated: sdk)
+    links = links.where(campaign_id: campaign_id_param) if campaign_id_param
 
-    if campaign_id_param
-      # links = links.where(campaign_id: campaign_id_param)
-    end
-
-    order_by = "created_at"
-    order = "desc"
-
-    links.order("#{order_by} #{order}")
-
-    
+    links.order(created_at: :desc)
   end
 
   def export_links_metrics_to_csv(links:, project_id:, start_date:, end_date:)
-    if links&.empty?
+    if links.nil? || links.empty?
       return ""
     end
-    
+
     # Step 1: Fetch link metrics from daily stats in the time window
     metrics = LinkDailyStatistic
                 .where(project_id: project_id, link_id: links.map(&:id), event_date: start_date..end_date)
@@ -82,7 +74,7 @@ module LinkMetricsHelper
         campaign_name = link.campaign&.name
 
         tags = link.tags || []
-        data_string = (link.data || {}).map { |k, v| "#{k}=#{v}" }.join(", ")
+        data_string = link_data_string(link.data)
 
         csv << [
           link.id,
@@ -110,6 +102,20 @@ module LinkMetricsHelper
   end
 
   private
+
+  # link.data is JSON.parse'd from a client param, so it can be any JSON value
+  def link_data_string(data)
+    case data
+    when Hash
+      data.map { |k, v| "#{k}=#{v}" }.join(", ")
+    when Array
+      data.grep(Hash).reduce({}, :merge).map { |k, v| "#{k}=#{v}" }.join(", ")
+    when nil
+      ""
+    else
+      data.to_s
+    end
+  end
 
   def default_metrics
     {

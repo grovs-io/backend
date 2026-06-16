@@ -35,7 +35,9 @@ class CampaignQueryService
     parsed_end = DateParamParser.call(end_date, default: Date.today)
     campaigns = campaigns.where(created_at: parsed_start.beginning_of_day..parsed_end.end_of_day)
 
-    campaigns = campaigns.where("name ILIKE ?", "%#{term}%") if term
+    if term
+      campaigns = campaigns.where("name ILIKE ?", "%#{ActiveRecord::Base.sanitize_sql_like(term)}%")
+    end
 
     campaigns
   end

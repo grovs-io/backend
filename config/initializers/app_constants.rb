@@ -43,7 +43,8 @@ module Grovs
   module Domains
     LIVE = ENV.fetch('DOMAIN_LIVE', 'sqd.link')
     TEST = ENV.fetch('DOMAIN_TEST', 'test-sqd.link')
-    MAIN = [LIVE, TEST, ENV['SERVER_HOST'], 'localhost', 'trycloudflare.com'].freeze
+    # lvh.me resolves to 127.0.0.1 via public DNS — works locally with no /etc/hosts entries.
+    MAIN = [LIVE, TEST, ENV['SERVER_HOST'], 'localhost', 'lvh.me', 'trycloudflare.com'].compact.freeze
   end
 
   module Subdomains
@@ -106,8 +107,38 @@ module Grovs
     GOOGLE = "google_oauth2"
   end
 
+  module Migrations
+    PROVIDER_BRANCH    = "branch"
+    PROVIDER_APPSFLYER = "appsflyer"
+    MVP_PROVIDERS = [PROVIDER_BRANCH, PROVIDER_APPSFLYER].freeze
+    GENERATED_FROM_PLATFORM = "migration"
+  end
+
+  # Adding a purpose requires updates to: the custom_hostnames CHECK constraint, the
+  # composite unique index on (project_id, purpose), this constant, the model validator,
+  # and any controller param allowlist that accepts purpose.
+  module Hostnames
+    PURPOSE_PRIMARY = "primary"
+    PURPOSE_MIGRATION = "migration"
+    PURPOSES = [PURPOSE_PRIMARY, PURPOSE_MIGRATION].freeze
+  end
+
   def self.free_mau_count
     ENV.fetch("FREE_MAU_COUNT", "10000").to_i
+  end
+
+  # Reads ENV per call so tests can toggle.
+  def self.custom_domains_enabled?
+    ENV["CUSTOM_DOMAINS_ENABLED"] == "true" &&
+      ENV["CLOUDFLARE_API_TOKEN"].present? &&
+      ENV["CLOUDFLARE_ZONE_ID"].present? &&
+      ENV["CLOUDFLARE_SAAS_CNAME_TARGET"].present?
+  end
+
+  # Implicitly depends on custom_domains_enabled? because the customer's old host must be
+  # attached as a CustomHostname for TLS + AASA.
+  def self.migrations_enabled?
+    ENV["MIGRATIONS_ENABLED"] == "true" && custom_domains_enabled?
   end
 
   GOOGLE_PUBLISHER_SCOPE = 'https://www.googleapis.com/auth/androidpublisher'.freeze

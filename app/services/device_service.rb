@@ -91,38 +91,6 @@ class DeviceService
       CoalescedMergeJob.perform_async(to_device.id, project.id)
     end
 
-    private
-
-    def build_new_device(request, project, platform, vendor: nil, user_agent: nil)
-      DeviceCreationService.build_new_device(request, project, platform, vendor: vendor, user_agent: user_agent)
-    end
-
-    def update_device_with_full_data(device, request, vendor, model, build, app_version, platform, **kwargs)
-      DeviceCreationService.update_device_with_full_data(device, request, vendor, model, build, app_version, platform, **kwargs)
-    end
-
-    def generate_vendor_id
-      DeviceCreationService.generate_vendor_id
-    end
-
-    def match_devices(devices, user_agent)
-      received_ua = Browser.new(user_agent)
-
-      devices.select do |device|
-        current_ua = Browser.new(device.user_agent)
-
-        platform_name_same = current_ua.platform.name == received_ua.platform.name
-        platform_version_same = current_ua.platform.version == received_ua.platform.version
-
-        next false unless platform_name_same && platform_version_same
-
-        if current_ua.webkit?
-          current_ua.webkit_full_version == received_ua.webkit_full_version
-        else
-          current_ua.full_version == received_ua.full_version
-        end
-      end
-    end
   end
 
 end

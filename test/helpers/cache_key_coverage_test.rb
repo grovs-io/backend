@@ -11,7 +11,8 @@ require "test_helper"
 #      cache keys actually match the lookup patterns.
 class CacheKeyCoverageTest < ActiveSupport::TestCase
   fixtures :devices, :visitors, :projects, :instances, :domains,
-           :links, :applications, :installed_apps
+           :links, :applications, :installed_apps, :custom_hostnames,
+           :migration_sources, :migrated_links
 
   # ── Manifest of every redis_find_by / redis_find_by_multiple_conditions
   #    call site in the codebase. When you add a new lookup, add an entry
@@ -43,6 +44,7 @@ class CacheKeyCoverageTest < ActiveSupport::TestCase
                                        includes: nil },
 
     # Domain
+    { model: "Domain", type: :simple, key: :id, includes: nil },
     { model: "Domain", type: :multi, conditions: { domain: :domain, subdomain: :subdomain },
                                      includes: nil },
 
@@ -59,6 +61,19 @@ class CacheKeyCoverageTest < ActiveSupport::TestCase
     # InstalledApp
     { model: "InstalledApp", type: :multi, conditions: { device_id: :device_id, project_id: :project_id },
                                            includes: nil },
+
+    # CustomHostname
+    { model: "CustomHostname", type: :simple, key: :hostname, includes: nil },
+
+    # MigrationSource (lookup by old_host on every migrated-host click via MigrationResolver)
+    { model: "MigrationSource", type: :simple, key: :old_host, includes: nil },
+
+    # MigratedLink (resolver hot path — lookup by (migration_source_id, old_path) on every
+    # cached click). Cache writes use upsert (bypasses after_commit) so FirstHitMigration
+    # explicitly calls MigratedLink.invalidate_cache_for after each upsert.
+    { model: "MigratedLink", type: :multi,
+      conditions: { migration_source_id: :migration_source_id, old_path: :old_path },
+      includes: nil },
   ].freeze
 
   # ── Test A: Static scan ──────────────────────────────────────────────
@@ -217,6 +232,9 @@ class CacheKeyCoverageTest < ActiveSupport::TestCase
     when "Link"        then links(:basic_link)
     when "Application" then applications(:ios_app)
     when "InstalledApp" then installed_apps(:one)
+    when "CustomHostname" then custom_hostnames(:acme_active)
+    when "MigrationSource" then migration_sources(:acme_branch)
+    when "MigratedLink"    then migrated_links(:acme_resolved)
     end
   end
 

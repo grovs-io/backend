@@ -17,7 +17,7 @@ class DeviceServiceTest < ActiveSupport::TestCase
   # --- build_new_device (via device_for_website_visit) ---
 
   test "build_new_device creates device with request user_agent when no override" do
-    device = DeviceService.send(:build_new_device, @request, @project, nil)
+    device = DeviceCreationService.build_new_device(@request, @project, nil)
 
     assert_equal "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", device.user_agent
     assert_equal "203.0.113.1", device.ip
@@ -27,7 +27,7 @@ class DeviceServiceTest < ActiveSupport::TestCase
   end
 
   test "build_new_device extracts language from Accept-Language header" do
-    device = DeviceService.send(:build_new_device, @request, @project, nil)
+    device = DeviceCreationService.build_new_device(@request, @project, nil)
 
     assert_equal "en-US", device.language
   end
@@ -40,33 +40,33 @@ class DeviceServiceTest < ActiveSupport::TestCase
       env: {}
     )
 
-    device = DeviceService.send(:build_new_device, request, @project, nil)
+    device = DeviceCreationService.build_new_device(request, @project, nil)
 
     assert_nil device.language
   end
 
   test "build_new_device with explicit platform uses it" do
-    device = DeviceService.send(:build_new_device, @request, @project, Grovs::Platforms::ANDROID)
+    device = DeviceCreationService.build_new_device(@request, @project, Grovs::Platforms::ANDROID)
 
     assert_equal Grovs::Platforms::ANDROID, device.platform
   end
 
   test "build_new_device with nil platform falls back to user_agent detection" do
-    device = DeviceService.send(:build_new_device, @request, @project, nil)
+    device = DeviceCreationService.build_new_device(@request, @project, nil)
 
     # iPhone user agent should resolve to iOS
     assert_equal Grovs::Platforms::IOS, device.platform
   end
 
   test "build_new_device creates associated visitor for project" do
-    device = DeviceService.send(:build_new_device, @request, @project, nil)
+    device = DeviceCreationService.build_new_device(@request, @project, nil)
 
     visitor = Visitor.find_by(device: device, project: @project)
     assert_not_nil visitor, "visitor should be created for the project"
   end
 
   test "build_new_device persists both device and visitor" do
-    device = DeviceService.send(:build_new_device, @request, @project, nil)
+    device = DeviceCreationService.build_new_device(@request, @project, nil)
 
     assert device.persisted?, "device should be saved"
     assert Visitor.exists?(device: device, project: @project), "visitor should be saved"
@@ -75,33 +75,33 @@ class DeviceServiceTest < ActiveSupport::TestCase
   # --- build_new_device with custom overrides (via create_new_device) ---
 
   test "build_new_device with custom vendor uses provided vendor" do
-    device = DeviceService.send(:build_new_device, @request, @project, nil, vendor: "custom_vendor_123")
+    device = DeviceCreationService.build_new_device(@request, @project, nil, vendor: "custom_vendor_123")
 
     assert_equal "custom_vendor_123", device.vendor
   end
 
   test "build_new_device with custom user_agent uses provided user_agent" do
-    device = DeviceService.send(:build_new_device, @request, @project, nil, user_agent: "CustomApp/2.0 Android")
+    device = DeviceCreationService.build_new_device(@request, @project, nil, user_agent: "CustomApp/2.0 Android")
 
     assert_equal "CustomApp/2.0 Android", device.user_agent
   end
 
   test "build_new_device with custom user_agent still extracts language from request" do
-    device = DeviceService.send(:build_new_device, @request, @project, nil,
+    device = DeviceCreationService.build_new_device(@request, @project, nil,
       vendor: "v123", user_agent: "CustomApp/2.0")
 
     assert_equal "en-US", device.language
   end
 
   test "build_new_device with custom user_agent and nil platform uses custom UA for detection" do
-    device = DeviceService.send(:build_new_device, @request, @project, nil,
+    device = DeviceCreationService.build_new_device(@request, @project, nil,
       user_agent: "Mozilla/5.0 (Linux; Android 13; Pixel 7)")
 
     assert_equal Grovs::Platforms::ANDROID, device.platform
   end
 
   test "build_new_device with both vendor and user_agent overrides" do
-    device = DeviceService.send(:build_new_device, @request, @project, Grovs::Platforms::IOS,
+    device = DeviceCreationService.build_new_device(@request, @project, Grovs::Platforms::IOS,
       vendor: "my_vendor", user_agent: "MyApp/1.0 iPhone")
 
     assert_equal "my_vendor", device.vendor
@@ -144,5 +144,58 @@ class DeviceServiceTest < ActiveSupport::TestCase
 
     assert device.vendor.present?
     assert_equal 64, device.vendor.length
+  end
+end
+
+class DeviceServiceAuthTest < ActiveSupport::TestCase
+  fixtures :instances, :projects, :devices, :visitors
+
+  setup do
+    @project = projects(:one)
+    @attrs = DeviceService::DeviceAttributes.new(
+      vendor: "vendor-auth-#{SecureRandom.hex(4)}",
+      user_agent: "TestApp/1.0 iPhone", platform: "ios"
+    )
+    @request = OpenStruct.new(
+      ip: "203.0.113.9", remote_ip: "198.51.100.9",
+      user_agent: "TestApp/1.0 iPhone",
+      env: { "HTTP_ACCEPT_LANGUAGE" => "en-US" },
+      headers: {}
+    )
+  end
+
+  test "authenticate_visitor creates a device and visitor for an unknown vendor" do
+    visitor = nil
+    assert_difference ["Device.count", "Visitor.count"], 1 do
+      visitor = DeviceService.authenticate_visitor(@request, @project, @attrs)
+    end
+
+    assert_equal @project.id, visitor.project_id
+    assert_equal @attrs.vendor, visitor.device.vendor
+  end
+
+  test "authenticate_visitor reuses the device on a repeat call and stays idempotent" do
+    first = DeviceService.authenticate_visitor(@request, @project, @attrs)
+
+    assert_no_difference ["Device.count", "Visitor.count"] do
+      second = DeviceService.authenticate_visitor(@request, @project, @attrs)
+      assert_equal first.id, second.id
+    end
+  end
+
+  test "device_for resolves the device from the LINKSQUARED visitor header" do
+    visitor = DeviceService.authenticate_visitor(@request, @project, @attrs)
+    request = OpenStruct.new(
+      ip: "203.0.113.9", remote_ip: "198.51.100.9",
+      user_agent: "TestApp/1.0 iPhone",
+      env: {}, headers: { "LINKSQUARED" => visitor.hashid }
+    )
+
+    device = DeviceService.device_for(request, nil, "TestApp/1.0 iPhone", @project.id)
+    assert_equal visitor.device_id, device.id
+  end
+
+  test "device_for returns nil for unknown vendor and no header" do
+    assert_nil DeviceService.device_for(@request, "no-such-vendor", "ua", @project.id)
   end
 end

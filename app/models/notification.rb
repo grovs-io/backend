@@ -7,7 +7,7 @@ class Notification < ApplicationRecord
   has_many :notification_messages, dependent: :destroy
 
   def access_url
-    url = project&.domain_for_project&.full_domain ? "#{project.domain_for_project.full_domain}/mm/#{self.hashid}" : nil
+    url = project&.domain_for_project&.display_host ? "#{project.domain_for_project.display_host}/mm/#{self.hashid}" : nil
     if url && url.start_with?("http")
       return "https://#{url}"
     end

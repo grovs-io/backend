@@ -4,7 +4,7 @@ module McpAuthTestHelper
   include McpSchemaHelper
 
   MCP_PREFIX = "/api/v1/mcp".freeze
-  MCP_HOST = "mcp.example.com".freeze
+  MCP_HOST = "mcp.sqd.link".freeze
 
   # Create a real MCP token + headers. Call in setup.
   def create_mcp_headers_for(user, token_name: "Test MCP")

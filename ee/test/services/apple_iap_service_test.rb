@@ -711,3 +711,158 @@ class AppleIapServiceTest < ActiveSupport::TestCase
     end
   end
 end
+
+class AppleRenewalDedupTest < ActiveSupport::TestCase
+  fixtures :instances, :projects, :devices, :visitors, :purchase_events, :subscription_states
+
+  setup do
+    @helper = AppleIapService.new
+    @project = projects(:one)
+  end
+
+  def send_renewal(transaction_id:, original_transaction_id:)
+    outer = { "notificationType" => "DID_RENEW", "subtype" => nil,
+              "data" => { "bundleId" => "com.test.app",
+                          "signedTransactionInfo" => "t", "signedRenewalInfo" => "r" } }
+    txn = { "transactionId" => transaction_id, "originalTransactionId" => original_transaction_id,
+            "productId" => "com.test.premium", "bundleId" => "com.test.app",
+            "price" => 9990, "currency" => "USD",
+            "purchaseDate" => Time.current.to_i * 1000,
+            "expiresDate" => 1.month.from_now.to_i * 1000, "environment" => "Sandbox" }
+    renewal = { "expiresDate" => 1.month.from_now.to_i * 1000 }
+    responses = [outer, txn, renewal]
+    i = -1
+    AppStoreServerApi::Utils::Decoder.stub(:decode_jws!, ->(_) { responses[i += 1] }) do
+      @helper.handle_notification({ "signedPayload" => "jws" }, @project)
+    end
+  end
+
+  test "DID_RENEW with a new transaction_id creates a renewal instead of overwriting the initial SDK purchase" do
+    initial = PurchaseEvent.create!(
+      project: @project, event_type: Grovs::Purchases::EVENT_BUY,
+      transaction_id: "txn_initial_900", original_transaction_id: "txn_initial_900",
+      product_id: "com.test.premium", price_cents: 9990, currency: "USD",
+      date: 1.month.ago, webhook_validated: false, store: true,
+      purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION
+    )
+
+    assert_difference "PurchaseEvent.count", 1 do
+      send_renewal(transaction_id: "txn_renewal_901", original_transaction_id: "txn_initial_900")
+    end
+
+    initial.reload
+    assert_equal "txn_initial_900", initial.transaction_id, "initial purchase must be untouched"
+    assert_not initial.webhook_validated, "renewal must not validate the initial event"
+
+    renewal = PurchaseEvent.find_by(transaction_id: "txn_renewal_901", project_id: @project.id)
+    assert renewal.webhook_validated
+    assert_equal "txn_initial_900", renewal.original_transaction_id
+  end
+
+  test "DID_RENEW matching an unvalidated initial purchase (same transaction_id) validates it in place" do
+    initial = PurchaseEvent.create!(
+      project: @project, event_type: Grovs::Purchases::EVENT_BUY,
+      transaction_id: "txn_initial_902", original_transaction_id: "txn_initial_902",
+      product_id: "com.test.premium", price_cents: 9990, currency: "USD",
+      date: 1.day.ago, webhook_validated: false, store: true,
+      purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION
+    )
+
+    assert_no_difference "PurchaseEvent.count" do
+      send_renewal(transaction_id: "txn_initial_902", original_transaction_id: "txn_initial_902")
+    end
+
+    assert initial.reload.webhook_validated, "matching event must be validated, not duplicated"
+  end
+end
+
+class AppleProductChangeCancelTest < ActiveSupport::TestCase
+  fixtures :instances, :projects, :devices, :visitors, :purchase_events, :subscription_states
+
+  setup do
+    @helper = AppleIapService.new
+    @project = projects(:one)
+    @device = devices(:ios_device)
+  end
+
+  def old_buy!(product:, txn: "txn_pc_old", orig: "orig_pc_001")
+    PurchaseEvent.create!(
+      project: @project, event_type: Grovs::Purchases::EVENT_BUY,
+      transaction_id: txn, original_transaction_id: orig,
+      product_id: product, price_cents: 499, currency: "USD", usd_price_cents: 499,
+      date: 1.month.ago, webhook_validated: true, store: true, device: @device,
+      purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION, processed: true
+    )
+  end
+
+  def subscribe_to_new_product!(orig: "orig_pc_001")
+    notify(type: "SUBSCRIBED", subtype: "RESUBSCRIBE",
+           transaction_id: "txn_pc_new_#{SecureRandom.hex(3)}",
+           original_transaction_id: orig, product_id: "com.test.tier_pro")
+  end
+
+  def notify(type:, transaction_id:, original_transaction_id:, subtype: nil, product_id: "com.test.tier_pro")
+    outer = { "notificationType" => type, "subtype" => subtype,
+              "data" => { "bundleId" => "com.test.app", "signedTransactionInfo" => "t",
+                          "signedRenewalInfo" => "r" } }
+    txn = { "transactionId" => transaction_id, "originalTransactionId" => original_transaction_id,
+            "productId" => product_id, "bundleId" => "com.test.app", "price" => 9990,
+            "currency" => "USD", "purchaseDate" => Time.current.to_i * 1000,
+            "expiresDate" => 1.month.from_now.to_i * 1000, "environment" => "Sandbox" }
+    responses = [outer, txn, { "expiresDate" => 1.month.from_now.to_i * 1000 }]
+    i = -1
+    AppStoreServerApi::Utils::Decoder.stub(:decode_jws!, ->(_) { responses[i += 1] }) do
+      @helper.handle_notification({ "signedPayload" => "jws" }, @project)
+    end
+  end
+
+  test "subscribing to a different product cancels the old one with attribution carried over" do
+    old = old_buy!(product: "com.test.tier_basic")
+
+    subscribe_to_new_product!
+
+    cancel = PurchaseEvent.find_by(transaction_id: "txn_pc_old_product_change_cancel",
+                                   project_id: @project.id)
+    assert cancel, "a cancel event for the old product must be created"
+    assert_equal Grovs::Purchases::EVENT_CANCEL, cancel.event_type
+    assert_equal "com.test.tier_basic", cancel.product_id
+    assert_equal old.device_id, cancel.device_id, "attribution must carry over"
+    assert cancel.webhook_validated
+    assert_not cancel.processed, "must be queued for processing"
+  end
+
+  test "product change cancel is idempotent across duplicate notifications" do
+    old_buy!(product: "com.test.tier_basic")
+
+    subscribe_to_new_product!
+    assert_no_difference -> { PurchaseEvent.where("transaction_id LIKE '%product_change_cancel'").count } do
+      subscribe_to_new_product!
+    end
+  end
+
+  test "no cancel when the old product is already canceled" do
+    old_buy!(product: "com.test.tier_basic")
+    PurchaseEvent.create!(
+      project: @project, event_type: Grovs::Purchases::EVENT_CANCEL,
+      transaction_id: "txn_pc_already_cancel", original_transaction_id: "orig_pc_001",
+      product_id: "com.test.tier_basic", price_cents: 499, currency: "USD",
+      date: 1.day.ago, webhook_validated: true, store: true,
+      purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION
+    )
+
+    subscribe_to_new_product!
+
+    assert_nil PurchaseEvent.find_by(transaction_id: "txn_pc_old_product_change_cancel"),
+      "re-subscribing after a cancel must not produce a false product-change cancel"
+  end
+
+  test "no cancel when re-subscribing to the same product" do
+    old_buy!(product: "com.test.tier_pro", txn: "txn_pc_same")
+
+    notify(type: "SUBSCRIBED", subtype: "RESUBSCRIBE",
+           transaction_id: "txn_pc_same_again", original_transaction_id: "orig_pc_001",
+           product_id: "com.test.tier_pro")
+
+    assert_nil PurchaseEvent.find_by(transaction_id: "txn_pc_same_product_change_cancel")
+  end
+end

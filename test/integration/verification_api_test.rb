@@ -22,6 +22,15 @@ class VerificationApiTest < ActionDispatch::IntegrationTest
     assert_equal "ABC123.com.test.iosapp", app_id
   end
 
+  test "iOS file generation does not mutate the global template (no cross-request leak)" do
+    original = IOS_VERIFICATION_FILE[:applinks][:details][0][:appID]
+    get "/.well-known/apple-app-site-association", headers: { "Host" => @host }
+    assert_response :ok
+    assert_equal original, IOS_VERIFICATION_FILE[:applinks][:details][0][:appID],
+                 "global IOS_VERIFICATION_FILE must not be mutated per-request"
+    assert_not_equal "ABC123.com.test.iosapp", IOS_VERIFICATION_FILE[:applinks][:details][0][:appID]
+  end
+
   test "iOS file contains correct path patterns" do
     get "/.well-known/apple-app-site-association", headers: { "Host" => @host }
     assert_response :ok

@@ -151,3 +151,133 @@ class UsersApiTest < ActionDispatch::IntegrationTest
     assert_equal false, json["otp_enabled"], "OTP must be disabled by default"
   end
 end
+
+class UsersAccountFlowsTest < ActionDispatch::IntegrationTest
+  include AuthTestHelper
+
+  fixtures :instances, :users, :instance_roles, :projects, :domains, :redirect_configs
+
+  setup do
+    @admin_user = users(:admin_user)
+    @headers = doorkeeper_headers_for(@admin_user)
+    @client_app = Doorkeeper::Application.create!(
+      name: "React",
+      redirect_uri: "urn:ietf:wg:oauth:2.0:oob"
+    )
+  end
+
+  # --- change_password ---
+
+  test "change_password with valid reset token updates the password" do
+    raw_token = @admin_user.send_reset_password_instructions
+
+    post "#{API_PREFIX}/users/change_password",
+      params: { reset_token: raw_token, new_password: "brand-new-pass-123" },
+      headers: api_headers
+    assert_response :ok
+
+    assert @admin_user.reload.valid_password?("brand-new-pass-123"),
+      "new password must be set"
+  end
+
+  test "change_password with invalid token returns 404 and keeps the old password" do
+    digest_before = @admin_user.encrypted_password
+
+    post "#{API_PREFIX}/users/change_password",
+      params: { reset_token: "not-a-real-token", new_password: "whatever-123" },
+      headers: api_headers
+    assert_response :not_found
+    assert_equal digest_before, @admin_user.reload.encrypted_password,
+      "password digest must be untouched"
+  end
+
+  # --- accept_invite ---
+
+  test "accept_invite with valid token activates the account and returns auth token" do
+    invited = User.invite!(email: "invited@example.com", skip_invitation: true)
+
+    post "#{API_PREFIX}/users/accept_invite",
+      params: { invitation_token: invited.raw_invitation_token,
+                password: "invited-pass-123", name: "Invited Person",
+                client_id: @client_app.uid },
+      headers: api_headers
+
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert json["access_token"].present?, "must return an access token"
+    assert json["refresh_token"].present?, "must return a refresh token"
+    assert_equal "bearer", json["token_type"]
+    assert json["expires_in"].is_a?(Integer)
+    assert json["created_at"].is_a?(Integer)
+    assert_equal "invited@example.com", json.dig("user", "email")
+    token = Doorkeeper::AccessToken.by_token(json["access_token"])
+    assert_equal User.find_by(email: "invited@example.com").id, token.resource_owner_id,
+      "token must belong to the invited user"
+
+    invited.reload
+    assert invited.invitation_accepted_at.present?, "invitation must be accepted"
+    assert_equal "Invited Person", invited.name
+    assert invited.valid_password?("invited-pass-123")
+  end
+
+  test "accept_invite with bad invitation token returns 422" do
+    post "#{API_PREFIX}/users/accept_invite",
+      params: { invitation_token: "bogus", password: "x-pass-123",
+                name: "X", client_id: @client_app.uid },
+      headers: api_headers
+    assert_response :unprocessable_entity
+  end
+
+  test "accept_invite with unknown client_id returns 403" do
+    invited = User.invite!(email: "invited2@example.com", skip_invitation: true)
+
+    post "#{API_PREFIX}/users/accept_invite",
+      params: { invitation_token: invited.raw_invitation_token,
+                password: "x-pass-123", name: "X", client_id: "nope" },
+      headers: api_headers
+    assert_response :forbidden
+    assert invited.reload.invitation_accepted_at.nil?, "invite must not be consumed"
+  end
+
+  # --- otp_qr / set_2fa_enabled ---
+
+  test "otp_qr provisions a TOTP secret and returns an SVG QR code" do
+    @admin_user.update_columns(otp_secret: nil, otp_required_for_login: false)
+
+    get "#{API_PREFIX}/users/me/otp_qr", headers: @headers
+    assert_response :ok
+    assert_includes response.body, "<svg"
+    assert UserAccountService.valid_otp_secret?(@admin_user.reload.otp_secret),
+      "a Base32 OTP secret must be persisted"
+  end
+
+  test "set_2fa_enabled with correct OTP code enables 2FA" do
+    get "#{API_PREFIX}/users/me/otp_qr", headers: @headers
+    @admin_user.reload
+    code = @admin_user.current_otp
+
+    put "#{API_PREFIX}/users/me/two_factor",
+      params: { enable_2fa: true, otp_code: code }, headers: @headers
+
+    assert_response :ok
+    assert @admin_user.reload.otp_required_for_login, "2FA must be enabled"
+  end
+
+  test "set_2fa_enabled with wrong OTP code returns 403 and leaves 2FA off" do
+    get "#{API_PREFIX}/users/me/otp_qr", headers: @headers
+    @admin_user.reload
+    @admin_user.update_columns(otp_required_for_login: false)
+
+    put "#{API_PREFIX}/users/me/two_factor",
+      params: { enable_2fa: true, otp_code: "000000" }, headers: @headers
+
+    assert_response :forbidden
+    assert_not @admin_user.reload.otp_required_for_login, "2FA must stay disabled"
+  end
+
+  test "set_2fa_enabled requires authentication" do
+    put "#{API_PREFIX}/users/me/two_factor",
+      params: { enable_2fa: true, otp_code: "123456" }, headers: api_headers
+    assert_response :unauthorized
+  end
+end

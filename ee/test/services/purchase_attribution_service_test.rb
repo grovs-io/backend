@@ -127,3 +127,59 @@ class PurchaseAttributionServiceTest < ActiveSupport::TestCase
     assert_equal devices(:ios_device).id, result[:device_id]
   end
 end
+
+class CachedGoogleJsonKeyTest < ActiveSupport::TestCase
+  # android_server_api_keys must be in the fixture set: other classes in the same
+  # worker load it, and the has_one would return that fixture row (no attached
+  # file) instead of the key created here.
+  fixtures :instances, :projects, :applications, :android_configurations,
+           :android_server_api_keys
+
+  include PurchaseAttributionService
+
+  setup do
+    @instance = instances(:one)
+    @config = android_configurations(:one)
+    @cache = ActiveSupport::Cache::MemoryStore.new
+  end
+
+  def attach_key(content)
+    AndroidServerApiKey.where(android_configuration: @config).destroy_all
+    AndroidServerApiKey.create!(
+      android_configuration: @config,
+      file: { io: StringIO.new(content), filename: "sa.json", content_type: "application/json" }
+    )
+  end
+
+  test "returns nil when instance has no key file" do
+    assert_nil cached_google_json_key(@instance)
+    assert_nil cached_google_json_key(nil)
+  end
+
+  test "downloads on cache miss, then serves from cache even if the blob is gone" do
+    key = attach_key('{"type":"service_account"}')
+
+    Rails.stub(:cache, @cache) do
+      assert_equal '{"type":"service_account"}', cached_google_json_key(@instance)
+
+      blob = key.file.blob
+      blob.service.delete(blob.key)
+      assert_equal '{"type":"service_account"}', cached_google_json_key(@instance),
+        "second call must be served from cache, not re-downloaded"
+    end
+  end
+
+  test "cache key is tied to the blob checksum so a rotated key re-downloads" do
+    key = attach_key('{"v":1}')
+
+    Rails.stub(:cache, @cache) do
+      assert_equal '{"v":1}', cached_google_json_key(@instance)
+
+      key.file.attach(io: StringIO.new('{"v":2}'), filename: "sa2.json",
+                      content_type: "application/json")
+      @instance.reload
+      assert_equal '{"v":2}', cached_google_json_key(@instance),
+        "rotated key file must not be served from the old cache entry"
+    end
+  end
+end

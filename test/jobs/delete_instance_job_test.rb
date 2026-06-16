@@ -12,6 +12,8 @@ class DeleteInstanceJobTest < ActiveSupport::TestCase
     @project = projects(:one)
     # Clean up stripe_subscriptions FK that DeleteInstanceJob doesn't handle
     StripeSubscription.where(instance_id: @instance.id).delete_all
+    EnterpriseSubscription.delete_all
+    CustomHostname.delete_all
   end
 
   test "deletes instance and all associated data" do
@@ -69,6 +71,62 @@ class DeleteInstanceJobTest < ActiveSupport::TestCase
 
     assert_equal 0, Link.where(domain_id: domain_ids).count
     assert_equal 0, Domain.where(project_id: @project.id).count
+  end
+
+  test "deletes custom hostnames through Cloudflare before bulk-deleting projects" do
+    enable_custom_domains!
+    CustomHostname.delete_all
+    custom_hostname = CustomHostname.create!(
+      project: @project,
+      domain: domains(:one),
+      hostname: "links.instance-delete.com",
+      cf_custom_hostname_id: "cf_instance_delete",
+      status: "active",
+      source: "saas"
+    )
+    domains(:one).update!(active_custom_host: custom_hostname.hostname)
+
+    deleted_cf_ids = []
+    CloudflareCustomHostnameService.stub(:delete, lambda { |cf_id:| 
+      deleted_cf_ids << cf_id
+      true
+    }) do
+      DeleteInstanceJob.new.perform(@instance.id)
+    end
+
+    assert_includes deleted_cf_ids, "cf_instance_delete"
+    assert_not CustomHostname.exists?(custom_hostname.id)
+  ensure
+    disable_custom_domains!
+  end
+
+  test "keeps tenant rows and suspends custom hostname when Cloudflare deletion fails" do
+    enable_custom_domains!
+    CustomHostname.delete_all
+    custom_hostname = CustomHostname.create!(
+      project: @project,
+      domain: domains(:one),
+      hostname: "links.instance-delete-fail.com",
+      cf_custom_hostname_id: "cf_instance_delete_fail",
+      status: "active",
+      source: "saas"
+    )
+    domains(:one).update!(active_custom_host: custom_hostname.hostname)
+
+    CloudflareCustomHostnameService.stub(:delete, false) do
+      assert_raises(RuntimeError) { DeleteInstanceJob.new.perform(@instance.id) }
+    end
+
+    assert Instance.exists?(@instance.id), "tenant deletion must retry instead of orphaning records"
+    assert Project.exists?(@project.id)
+    assert Domain.exists?(domains(:one).id)
+    custom_hostname.reload
+    assert_equal "suspended", custom_hostname.status
+    assert_not custom_hostname.resolvable?
+    assert_nil domains(:one).reload.active_custom_host
+  ensure
+    CustomHostname.where(id: custom_hostname&.id).delete_all
+    disable_custom_domains!
   end
 
   test "deletes visitor daily statistics for target projects only" do

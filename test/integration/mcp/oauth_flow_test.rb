@@ -10,7 +10,7 @@ class McpOauthFlowTest < ActionDispatch::IntegrationTest
   include AuthTestHelper
   include McpAuthTestHelper
 
-  MCP_HOST = "mcp.example.com"
+  MCP_HOST = "mcp.sqd.link"
 
   fixtures :instances, :users, :instance_roles, :projects, :domains,
            :redirect_configs, :links, :applications,

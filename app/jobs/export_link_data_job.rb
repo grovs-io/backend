@@ -25,6 +25,7 @@ class ExportLinkDataJob
       sdk,
       campaign_id_param
     )
+    return if links.nil? # user lost access or project has no domain
 
     csv_string = export_links_metrics_to_csv(
       links: links,

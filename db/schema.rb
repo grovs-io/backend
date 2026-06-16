@@ -96,6 +96,33 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.index ["project_id"], name: "index_campaigns_on_project_id"
   end
 
+  create_table "custom_hostnames", force: :cascade do |t|
+    t.datetime "activated_at"
+    t.string "cf_custom_hostname_id"
+    t.datetime "created_at", null: false
+    t.bigint "domain_id", null: false
+    t.datetime "grace_until"
+    t.string "hostname", null: false
+    t.datetime "last_checked_at"
+    t.string "ownership_verification_txt_name"
+    t.string "ownership_verification_txt_value"
+    t.bigint "project_id", null: false
+    t.string "purpose", default: "primary", null: false
+    t.string "source", default: "saas", null: false
+    t.string "ssl_method"
+    t.string "ssl_status"
+    t.jsonb "ssl_validation_txt_records", default: [], null: false
+    t.string "status", default: "provisioning", null: false
+    t.datetime "updated_at", null: false
+    t.text "verification_errors"
+    t.index ["cf_custom_hostname_id"], name: "index_custom_hostnames_on_cf_custom_hostname_id"
+    t.index ["domain_id"], name: "index_custom_hostnames_on_domain_id"
+    t.index ["hostname"], name: "index_custom_hostnames_on_hostname", unique: true
+    t.index ["project_id", "purpose"], name: "index_custom_hostnames_on_project_id_and_purpose", unique: true
+    t.index ["status"], name: "index_custom_hostnames_on_status"
+    t.check_constraint "purpose::text = ANY (ARRAY['primary'::character varying, 'migration'::character varying]::text[])", name: "custom_hostnames_purpose_check"
+  end
+
   create_table "custom_redirects", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.bigint "link_id", null: false
@@ -191,16 +218,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
   end
 
   create_table "domains", force: :cascade do |t|
+    t.string "active_custom_host"
     t.datetime "created_at", null: false
     t.string "domain", null: false
     t.string "generic_image_url"
     t.string "generic_subtitle"
     t.string "generic_title"
     t.string "google_tracking_id"
+    t.boolean "legacy", default: false, null: false
     t.bigint "project_id"
     t.string "subdomain"
     t.datetime "updated_at", null: false
+    t.string "verification_token"
+    t.datetime "verified_at"
+    t.index ["domain", "subdomain"], name: "index_domains_unique_domain_subdomain", unique: true, where: "(subdomain IS NOT NULL)"
     t.index ["domain"], name: "index_domains_on_domain"
+    t.index ["domain"], name: "index_domains_unique_domain_bare", unique: true, where: "(subdomain IS NULL)"
     t.index ["project_id"], name: "index_domains_on_project_id"
   end
 
@@ -229,6 +262,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.bigint "device_id", null: false
     t.bigint "engagement_time"
     t.string "event", null: false
+    t.string "event_name", default: "", null: false
     t.string "ip"
     t.bigint "link_id"
     t.string "path"
@@ -236,6 +270,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.boolean "processed", default: false, null: false
     t.bigint "project_id", null: false
     t.string "remote_ip"
+    t.string "session_id", default: "", null: false
+    t.string "tags", default: [], null: false, array: true
     t.datetime "updated_at", null: false
     t.string "vendor_id"
     t.index ["created_at"], name: "index_events_on_created_at"
@@ -400,6 +436,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.bigint "domain_id"
     t.string "generated_from_platform", null: false
     t.string "image_url"
+    t.string "migrated_from"
     t.string "name"
     t.string "path", null: false
     t.bigint "redirect_config_id", null: false
@@ -472,6 +509,39 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.index ["refresh_token_digest"], name: "index_mcp_tokens_on_refresh_token_digest", unique: true, where: "(refresh_token_digest IS NOT NULL)"
     t.index ["token_digest"], name: "index_mcp_tokens_on_token_digest", unique: true
     t.index ["user_id"], name: "index_mcp_tokens_on_user_id"
+  end
+
+  create_table "migrated_links", force: :cascade do |t|
+    t.datetime "cached_until"
+    t.datetime "created_at", null: false
+    t.bigint "link_id"
+    t.bigint "migration_source_id", null: false
+    t.string "old_path", null: false
+    t.string "status", null: false
+    t.datetime "updated_at", null: false
+    t.index ["link_id"], name: "index_migrated_links_on_link_id"
+    t.index ["migration_source_id", "old_path"], name: "index_migrated_links_on_migration_source_id_and_old_path", unique: true
+    t.index ["migration_source_id"], name: "index_migrated_links_on_migration_source_id"
+    t.index ["status", "cached_until"], name: "index_migrated_links_on_status_and_cached_until"
+    t.check_constraint "status::text = ANY (ARRAY['resolved'::character varying, 'not_found'::character varying, 'transient_error'::character varying]::text[])", name: "migrated_links_status_check"
+  end
+
+  create_table "migration_sources", force: :cascade do |t|
+    t.datetime "auto_disabled_at"
+    t.integer "consecutive_failures", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.text "credentials"
+    t.datetime "degraded_email_sent_at"
+    t.boolean "enabled", default: true, null: false
+    t.datetime "first_failure_at"
+    t.integer "last_error_status"
+    t.string "old_host", null: false
+    t.bigint "project_id", null: false
+    t.string "provider", null: false
+    t.datetime "updated_at", null: false
+    t.index ["old_host"], name: "index_migration_sources_on_old_host", unique: true
+    t.index ["project_id"], name: "index_migration_sources_on_project_id", unique: true
+    t.check_constraint "provider::text = ANY (ARRAY['branch'::character varying, 'appsflyer'::character varying]::text[])", name: "migration_sources_provider_check"
   end
 
   create_table "notification_messages", force: :cascade do |t|
@@ -826,7 +896,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.bigint "project_id"
     t.integer "reactivations", default: 0, null: false
     t.integer "reinstalls", default: 0, null: false
-    t.integer "revenue", default: 0, null: false
+    t.bigint "revenue", default: 0, null: false
     t.bigint "time_spent", default: 0, null: false
     t.datetime "updated_at", null: false
     t.integer "user_referred", default: 0, null: false
@@ -891,6 +961,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
   add_foreign_key "android_server_api_keys", "android_configurations"
   add_foreign_key "applications", "instances"
   add_foreign_key "campaigns", "projects"
+  add_foreign_key "custom_hostnames", "domains"
+  add_foreign_key "custom_hostnames", "projects"
   add_foreign_key "custom_redirects", "links"
   add_foreign_key "domains", "projects"
   add_foreign_key "iap_webhook_messages", "projects"
@@ -906,6 +978,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
   add_foreign_key "links", "visitors"
   add_foreign_key "mcp_authorization_codes", "users"
   add_foreign_key "mcp_tokens", "users"
+  add_foreign_key "migrated_links", "links", on_delete: :nullify
+  add_foreign_key "migrated_links", "migration_sources", on_delete: :cascade
+  add_foreign_key "migration_sources", "projects", on_delete: :cascade
   add_foreign_key "notification_messages", "notifications"
   add_foreign_key "notification_messages", "visitors"
   add_foreign_key "notification_targets", "notifications"

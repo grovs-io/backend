@@ -70,6 +70,26 @@ class Api::V1::AdminController < Api::V1::ProjectsBaseController
     render json: { error: "Failed to update subscription", details: e.record.errors.full_messages }, status: :unprocessable_entity
   end
 
+  # Bypasses subscription entitlement; source: "enterprise" so the lifecycle job never tears it down.
+  def create_custom_domain
+    return render(json: { error: "Custom domains are not enabled" }, status: :not_found) unless Grovs.custom_domains_enabled?
+
+    project = Project.find_by(id: params[:project_id])
+    return render(json: { error: "Project not found" }, status: :not_found) unless project
+
+    purpose = params[:purpose].presence || Grovs::Hostnames::PURPOSE_PRIMARY
+    unless Grovs::Hostnames::PURPOSES.include?(purpose)
+      return render(json: { error: "Invalid purpose" }, status: :unprocessable_entity)
+    end
+
+    result = CustomDomainProvisioningService.create(project: project, hostname: params.require(:hostname), as_enterprise: true, purpose: purpose)
+    unless result.ok
+      return render(json: { error: result.error }, status: result.status)
+    end
+
+    render json: { custom_domain: CustomHostnameSerializer.serialize(result.custom_hostname) }, status: :created
+  end
+
   private
 
   def authenticate_request

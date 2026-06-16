@@ -168,3 +168,101 @@ class SsoSessionsTest < ActionDispatch::IntegrationTest
     assert_equal user.id, token.resource_owner_id
   end
 end
+
+# Callback flow via OmniAuth test mode (mocked provider exchange).
+class SsoCallbackFlowTest < ActionDispatch::IntegrationTest
+  fixtures :users
+
+  setup do
+    ENV["REACT_HOST_PROTOCOL"] ||= "https://"
+    ENV["REACT_HOST"] ||= "app.example.com"
+    ENV["SSO_AUTHENTICATION_ENDPOINT"] ||= "https://app.example.com/login"
+    @react_host = "#{ENV['REACT_HOST_PROTOCOL']}#{ENV['REACT_HOST']}"
+
+    Doorkeeper::Application.create!(name: "React", redirect_uri: "urn:ietf:wg:oauth:2.0:oob")
+
+    OmniAuth.config.test_mode = true
+    OmniAuth.config.mock_auth[:google_oauth2] = OmniAuth::AuthHash.new(
+      provider: "google_oauth2",
+      uid: "google-uid-123",
+      info: { email: "sso-callback@example.com", name: "SSO Callback" }
+    )
+  end
+
+  teardown do
+    OmniAuth.config.test_mode = false
+    OmniAuth.config.mock_auth[:google_oauth2] = nil
+  end
+
+  def callback(state:)
+    get "/api/v1/identity/sso/auth/google_oauth2/callback",
+        params: { state: state }, headers: { "Host" => "api.sqd.link" }
+  end
+
+  test "callback with valid state creates the user and redirects with tokens" do
+    state = SsoAuthenticationService.build_state(provider: "google_oauth2")
+
+    assert_difference "User.count", 1 do
+      callback(state: state)
+    end
+
+    assert_response :redirect
+    location = response.headers["Location"]
+    assert location.start_with?(@react_host), "must redirect to the dashboard host, got #{location}"
+    assert_match(/token=[^&]+/, location)
+    assert_match(/refresh_token=[^&]+/, location)
+
+    user = User.find_by(email: "sso-callback@example.com")
+    assert_equal "google-uid-123", user.uid
+    token = location[/token=([^&]+)/, 1]
+    assert_equal user.id, Doorkeeper::AccessToken.by_token(token).resource_owner_id
+  end
+
+  test "callback with invalid state redirects with error and issues no token" do
+    assert_no_difference ["User.count", "Doorkeeper::AccessToken.count"] do
+      callback(state: "garbage-state")
+    end
+
+    assert_response :redirect
+    location = response.headers["Location"]
+    assert location.start_with?(@react_host)
+    assert_match(/error=/, location)
+    assert_no_match(/token=/, location.sub(/error=[^&]*/, ""))
+  end
+
+  test "callback with expired state redirects with error" do
+    payload = { provider: "google_oauth2", ts: (Time.now.to_i - 700) }
+    token = Base64.urlsafe_encode64(payload.to_json)
+    signature = OpenSSL::HMAC.hexdigest("SHA256", Rails.application.secret_key_base, token)
+
+    callback(state: "#{token}.#{signature}")
+
+    assert_response :redirect
+    assert_match(/error=/, response.headers["Location"])
+  end
+
+  test "callback for an email registered with password login redirects with error" do
+    password_user = users(:admin_user)
+    password_user.update_columns(provider: "password", uid: nil)
+    OmniAuth.config.mock_auth[:google_oauth2] = OmniAuth::AuthHash.new(
+      provider: "google_oauth2",
+      uid: "google-uid-999",
+      info: { email: password_user.email, name: "Imposter" }
+    )
+    state = SsoAuthenticationService.build_state(provider: "google_oauth2")
+
+    callback(state: state)
+
+    assert_response :redirect
+    location = response.headers["Location"]
+    assert_match(/error=/, location)
+    assert_match(/different\+login|different%20login/i, location)
+    assert_no_match(/refresh_token=/, location)
+  end
+
+  test "omniauth_failure redirects to the SSO endpoint" do
+    get "/api/v1/identity/sso/auth/failure", headers: { "Host" => "api.sqd.link" }
+    assert_response :redirect
+    assert_equal ENV["SSO_AUTHENTICATION_ENDPOINT"], response.headers["Location"]
+  end
+end

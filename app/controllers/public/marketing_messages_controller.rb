@@ -29,6 +29,17 @@ class Public::MarketingMessagesController < Public::BaseController
       return
     end
 
+    # Scope to the requesting host's project so a notification cannot be rendered
+    # under another tenant's (custom or sqd.link) domain. Use the cached lookup so
+    # the /mm hot path matches the same Redis-backed read pattern the link path uses.
+    domain = Domain.redis_find_by_multiple_conditions(
+               { subdomain: request.subdomain, domain: request.domain }
+             ) || LinksService.custom_hostname_for(request.host)
+    unless domain && notification.project_id == domain.project_id
+      render_not_found
+      return
+    end
+
     response.headers.delete "X-Frame-Options"
     safe_html = sanitize_html(notification.html)
     render html: safe_html

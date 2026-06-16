@@ -137,3 +137,103 @@ class AdminApiTest < ActionDispatch::IntegrationTest
     ENV["ADMIN_API_KEY"] = original
   end
 end
+
+class AdminFirebaseMigrationTest < ActionDispatch::IntegrationTest
+  include AuthTestHelper
+
+  fixtures :instances, :projects, :domains, :redirect_configs
+
+  ADMIN_KEY = "test-admin-secret-key-12345"
+
+  setup do
+    @project = projects(:one)
+  end
+
+  def with_admin_key(key)
+    original = ENV["ADMIN_API_KEY"]
+    ENV["ADMIN_API_KEY"] = key
+    yield
+  ensure
+    ENV["ADMIN_API_KEY"] = original
+  end
+
+  def csv_upload(content)
+    file = Tempfile.new(["firebase", ".csv"])
+    file.write(content)
+    file.rewind
+    Rack::Test::UploadedFile.new(file.path, "text/csv")
+  end
+
+  test "migrate_firebase_links imports rows and reports skips" do
+    csv = <<~CSV
+      name,short_link,link,utm_campaign,utm_medium,utm_source
+      Promo,https://fb.gl/promo1,https://fb.page.link/app/home,spring,email,newsletter
+      Blank,,https://fb.page.link/app/x,,,
+    CSV
+
+    with_admin_key(ADMIN_KEY) do
+      assert_difference "Link.count", 1 do
+        post "#{API_PREFIX}/admin/migrate_firebase_links",
+          params: { project_id: @project.id, file: csv_upload(csv),
+                    short_link_prefix: "https://fb.gl/" },
+          headers: api_headers.merge("X-AUTH" => ADMIN_KEY)
+      end
+    end
+
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert_equal 1, json["created_count"]
+    assert_equal 1, json["skipped_count"]
+    assert_equal "blank_path", json["skipped"][0]["reason"]
+
+    link = Link.find_by(domain: @project.domain, path: "promo1")
+    assert_equal "Promo", link.name
+    assert_equal "spring", link.tracking_campaign
+    data = link.data.is_a?(Array) ? link.data[0] : link.data
+    assert_equal "https://fb.page.link/app/home", data["appLink"]
+  end
+
+  test "duplicate paths are skipped, not overwritten" do
+    Link.create!(name: "existing", path: "promo1", domain: @project.domain,
+                 generated_from_platform: "dashboard", active: true,
+                 redirect_config: @project.redirect_config)
+    csv = "name,short_link,link\nPromo,https://fb.gl/promo1,https://fb.page.link/x\n"
+
+    with_admin_key(ADMIN_KEY) do
+      assert_no_difference "Link.count" do
+        post "#{API_PREFIX}/admin/migrate_firebase_links",
+          params: { project_id: @project.id, file: csv_upload(csv),
+                    short_link_prefix: "https://fb.gl/" },
+          headers: api_headers.merge("X-AUTH" => ADMIN_KEY)
+      end
+    end
+
+    assert_response :ok
+    assert_equal "duplicate_on_domain", JSON.parse(response.body)["skipped"][0]["reason"]
+  end
+
+  test "non-csv upload returns 422" do
+    file = Tempfile.new(["bad", ".txt"])
+    file.write("not a csv")
+    file.rewind
+
+    with_admin_key(ADMIN_KEY) do
+      post "#{API_PREFIX}/admin/migrate_firebase_links",
+        params: { project_id: @project.id,
+                  file: Rack::Test::UploadedFile.new(file.path, "text/plain") },
+        headers: api_headers.merge("X-AUTH" => ADMIN_KEY)
+    end
+
+    assert_response :unprocessable_entity
+  end
+
+  test "unknown project returns 404" do
+    with_admin_key(ADMIN_KEY) do
+      post "#{API_PREFIX}/admin/migrate_firebase_links",
+        params: { project_id: 0, file: csv_upload("name,short_link,link\n") },
+        headers: api_headers.merge("X-AUTH" => ADMIN_KEY)
+    end
+
+    assert_response :not_found
+  end
+end

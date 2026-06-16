@@ -1,0 +1,20 @@
+# MigratedLink fixtures kept minimal — most tests build rows inline so they can
+# control timing precisely (cached_until, status, link association).
+
+acme_resolved:
+  migration_source: acme_branch
+  link: basic_link
+  old_path: "resolved-abc"
+  status: resolved
+  cached_until: <%= nil %>
+  created_at: <%= 1.hour.ago.to_fs(:db) %>
+  updated_at: <%= 1.hour.ago.to_fs(:db) %>
+
+acme_not_found_fresh:
+  migration_source: acme_branch
+  link: <%= nil %>
+  old_path: "typo-xyz"
+  status: not_found
+  cached_until: <%= 23.hours.from_now.to_fs(:db) %>
+  created_at: <%= 1.hour.ago.to_fs(:db) %>
+  updated_at: <%= 1.hour.ago.to_fs(:db) %>

@@ -239,3 +239,98 @@ class ApplePurchaseValidatorTest < ActiveSupport::TestCase
     )
   end
 end
+
+class AppleClientCredentialsTest < ActiveSupport::TestCase
+  fixtures :instances, :projects, :applications, :ios_configurations, :devices, :purchase_events
+
+  P8 = <<~PEM.freeze
+    -----BEGIN PRIVATE KEY-----
+    MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQg2nQ0lO0c0v7uYkA1
+    -----END PRIVATE KEY-----
+  PEM
+
+  setup do
+    @instance = instances(:one)
+    @config = ios_configurations(:one)
+    @event = purchase_events(:buy_event)
+  end
+
+  def create_key(key_id: "KEY123", issuer_id: "ISS456")
+    IosServerApiKey.create!(ios_configuration: @config, private_key: P8,
+                            key_id: key_id, issuer_id: issuer_id)
+  end
+
+  test "returns nil when no api key exists" do
+    assert_nil ApplePurchaseValidator.build_apple_client(@event, @instance)
+  end
+
+  test "returns nil when bundle_id is blank" do
+    create_key
+    @config.update_column(:bundle_id, nil)
+    assert_nil ApplePurchaseValidator.build_apple_client(@event, @instance)
+  end
+
+  test "validate wires real credentials end-to-end: sandbox env, correct transaction, event updated" do
+    create_key
+    event = purchase_events(:buy_event)
+    event.update_columns(webhook_validated: false, price_cents: 0)
+
+    transaction = {
+      "price" => 4990, "currency" => "USD", "purchaseDate" => 1_735_689_600_000,
+      "type" => "Auto-Renewable Subscription", "bundleId" => @config.bundle_id,
+      "originalTransactionId" => "orig_e2e_001", "productId" => "com.e2e.premium"
+    }
+
+    built = []
+    fake_client = Object.new
+    fake_client.define_singleton_method(:requested) { @requested }
+    fake_client.define_singleton_method(:get_transaction_info) do |txn_id|
+      @requested = txn_id
+      { "signedTransactionInfo" => "jwt" }
+    end
+
+    AppStoreServerApi::Client.stub(:new, lambda { |**kw| 
+      built << kw
+      fake_client
+    }) do
+      AppStoreServerApi::Utils::Decoder.stub(:decode_jws!, transaction) do
+        assert ApplePurchaseValidator.validate(event, @instance)
+      end
+    end
+
+    assert_equal 1, built.size
+    creds = built[0]
+    assert_equal "KEY123", creds[:key_id]
+    assert_equal "ISS456", creds[:issuer_id]
+    assert_equal @config.bundle_id, creds[:bundle_id]
+    assert creds[:private_key].start_with?("-----BEGIN PRIVATE KEY-----")
+    expected_env = event.project.test? ? :sandbox : :production
+    assert_equal expected_env, creds[:environment]
+    assert_equal event.transaction_id, fake_client.requested,
+      "must request Apple for THIS event's transaction"
+
+    event.reload
+    assert event.webhook_validated?
+    assert_equal 499, event.price_cents
+    assert_equal "com.e2e.premium", event.product_id
+  end
+
+  test "environment follows the event's project, not the instance" do
+    create_key
+    built = []
+    AppStoreServerApi::Client.stub(:new, lambda { |**kw| 
+      built << kw
+      :client
+    }) do
+      test_event = purchase_events(:buy_event).dup
+      test_event.project = @instance.test
+      ApplePurchaseValidator.build_apple_client(test_event, @instance)
+
+      prod_event = purchase_events(:buy_event).dup
+      prod_event.project = @instance.production
+      ApplePurchaseValidator.build_apple_client(prod_event, @instance)
+    end
+
+    assert_equal %i[sandbox production], built.map { |c| c[:environment] }
+  end
+end

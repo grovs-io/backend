@@ -5,16 +5,6 @@ module DashboardAuthorization
     after_action :verify_authorized
   end
 
-  class_methods do
-    def admin_only(*actions)
-      before_action only: actions do
-        instance = current_instance(require_admin: true)
-        return unless instance
-        @_admin_authorized_instance = instance
-      end
-    end
-  end
-
   private
 
   def skip_authorization
@@ -27,6 +17,9 @@ module DashboardAuthorization
 
     action = "#{self.class.name}##{action_name}"
     Rails.logger.error("[AUTH] Authorization not performed: #{action}")
-    head :forbidden
+    # Mutate the response directly: render/head here would raise DoubleRenderError
+    # (500) when the action already rendered, and the intent is a clean 403.
+    response.status = 403
+    response.body = ""
   end
 end

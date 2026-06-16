@@ -8,6 +8,8 @@ class Project < ApplicationRecord
 
   has_one :redirect_config, dependent: :destroy
   has_one :domain, dependent: :destroy
+  has_many :custom_hostnames, dependent: :destroy
+  has_one :migration_source, dependent: :destroy
 
   has_many :events, dependent: :delete_all
 

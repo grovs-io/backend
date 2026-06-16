@@ -107,3 +107,21 @@ class ProcessNormalEventJobTest < ActiveSupport::TestCase
     assert_equal stat_count_before, VisitorDailyStatistic.count
   end
 end
+
+class ProcessNormalEventJobGuardTest < ActiveSupport::TestCase
+  fixtures :instances, :projects, :devices, :visitors
+
+  test "vanished event is a no-op, not an error" do
+    EventStatDispatchService.stub(:call_normal_event, ->(_) { raise "must not dispatch" }) do
+      assert_nothing_raised { ProcessNormalEventJob.new.perform(0) }
+    end
+  end
+
+  test "dispatch failure re-raises so Sidekiq retries" do
+    event = Event.create!(project_id: projects(:one).id, device_id: devices(:ios_device).id,
+                          event: Grovs::Events::APP_OPEN)
+    EventStatDispatchService.stub(:call_normal_event, ->(_) { raise "transient" }) do
+      assert_raises(RuntimeError) { ProcessNormalEventJob.new.perform(event.id) }
+    end
+  end
+end

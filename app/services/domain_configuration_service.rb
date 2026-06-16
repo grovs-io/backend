@@ -1,3 +1,5 @@
+require "public_suffix"
+
 class DomainConfigurationService
   # Updates domain with attrs + optional image. Returns Domain.
   def self.update_domain(domain:, attrs:, generic_image: nil)
@@ -37,6 +39,25 @@ class DomainConfigurationService
   # Returns Boolean.
   def self.domain_available?(domain_name:)
     Domain.find_by(domain: domain_name).nil?
+  end
+
+  # Returns Boolean — whether a self-serve custom subdomain may be claimed.
+  # Subdomains only (no apex), not one of our MAIN domains, and globally unique
+  # across both CustomHostname.hostname and Domain.full_domain.
+  def self.custom_hostname_available?(host)
+    host = host.to_s.strip.downcase.delete_suffix(".")
+    return false if host.blank?
+    return false unless host.ascii_only? # IDN must be supplied as punycode (DNS/Cloudflare are ASCII)
+
+    parsed = PublicSuffix.parse(host)
+    return false if parsed.trd.blank?
+    return false if Grovs::Domains::MAIN.include?(parsed.domain)
+    return false if CustomHostname.exists?(hostname: host)
+    return false if Domain.exists?(domain: parsed.domain, subdomain: parsed.trd)
+
+    true
+  rescue PublicSuffix::Error
+    false
   end
 
   private

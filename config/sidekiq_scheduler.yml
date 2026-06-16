@@ -25,6 +25,18 @@
       cron: "0 3 * * *"
       class: "McpCleanupJob"
       queue: maintenance
+    refresh_custom_hostname_status:
+      cron: "* * * * *"
+      class: "RefreshCustomHostnameStatusJob"
+      queue: maintenance
+    custom_domain_lifecycle:
+      cron: "5,15,25,35,45,55 * * * *"
+      class: "CustomDomainLifecycleJob"
+      queue: maintenance
+    migrated_link_cleanup:
+      cron: "0 4 * * *"  # daily at 04:00 UTC — deletes stale negative-cache rows older than 7-day grace
+      class: "MigratedLinkCleanupJob"
+      queue: maintenance
     orphaned_actions_cleanup:
       cron: "0 4 * * *"
       class: "OrphanedActionsCleanupJob"

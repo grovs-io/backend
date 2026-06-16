@@ -137,3 +137,63 @@ class SdkAuthTest < ActionDispatch::IntegrationTest
     assert_equal @project.id, visitor.project_id
   end
 end
+
+class SdkDeviceForVendorTest < ActionDispatch::IntegrationTest
+  include AuthTestHelper
+
+  fixtures :instances, :projects, :applications, :ios_configurations,
+           :android_configurations, :devices, :visitors, :domains, :redirect_configs
+
+  setup do
+    @project = projects(:one)
+    @visitor = visitors(:ios_visitor)
+    @device = @visitor.device
+    @headers = sdk_headers_for(@project, @visitor, platform: "ios")
+  end
+
+  test "unknown vendor returns null last_seen" do
+    get "#{SDK_PREFIX}/device_for_vendor_id",
+      params: { vendor_id: "vendor-that-does-not-exist" }, headers: @headers
+
+    assert_response :ok
+    assert_nil JSON.parse(response.body)["last_seen"]
+  end
+
+  test "known vendor with no events returns null last_seen" do
+    Event.where(device_id: @device.id, project_id: @project.id).delete_all
+
+    get "#{SDK_PREFIX}/device_for_vendor_id",
+      params: { vendor_id: @device.vendor }, headers: @headers
+
+    assert_response :ok
+    assert_nil JSON.parse(response.body)["last_seen"]
+  end
+
+  test "known vendor returns the most recent event time for this project" do
+    Event.where(device_id: @device.id, project_id: @project.id).delete_all
+    Event.create!(project_id: @project.id, device_id: @device.id,
+                  event: Grovs::Events::APP_OPEN, created_at: 3.days.ago)
+    newest = Event.create!(project_id: @project.id, device_id: @device.id,
+                           event: Grovs::Events::APP_OPEN, created_at: 1.hour.ago)
+
+    get "#{SDK_PREFIX}/device_for_vendor_id",
+      params: { vendor_id: @device.vendor }, headers: @headers
+
+    assert_response :ok
+    last_seen = Time.zone.parse(JSON.parse(response.body)["last_seen"])
+    assert_in_delta newest.created_at.to_f, last_seen.to_f, 1.0
+  end
+
+  test "events from another project do not leak into last_seen" do
+    Event.where(device_id: @device.id).delete_all
+    Event.create!(project_id: projects(:two).id, device_id: @device.id,
+                  event: Grovs::Events::APP_OPEN, created_at: 1.minute.ago)
+
+    get "#{SDK_PREFIX}/device_for_vendor_id",
+      params: { vendor_id: @device.vendor }, headers: @headers
+
+    assert_response :ok
+    assert_nil JSON.parse(response.body)["last_seen"],
+      "another project's events must not count as last_seen"
+  end
+end

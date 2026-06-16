@@ -101,6 +101,27 @@ Rails.application.routes.draw do
         post 'projects/:id/domain/check_availability', to: "domains#domain_is_available"
         put 'projects/:id/domain/google_tracking_id', to: "domains#set_google_tracking_id"
 
+        get    'projects/:id/custom_domain', to: "domains#custom_domain"
+        post   'projects/:id/custom_domain', to: "domains#create_custom_domain"
+        delete 'projects/:id/custom_domain', to: "domains#delete_custom_domain"
+
+        # `purpose` passes via body (POST) or query string (DELETE), not path.
+        get    'projects/:id/custom_domains', to: "domains#index_custom_domains"
+        post   'projects/:id/custom_domains', to: "domains#create_custom_domain_v2"
+        delete 'projects/:id/custom_domains', to: "domains#delete_custom_domain_v2"
+
+        # Pure DNS lookup; does NOT require the hostname to be a registered CustomHostname.
+        get    'projects/:id/custom_domains/preflight', to: "domains#preflight_custom_domain"
+
+        # Combined CH + MigrationSource creation (atomic). Standalone create on
+        # /migration_source was removed because every legitimate flow needs both rows.
+        post   'projects/:id/migrations', to: "migrations#create"
+
+        get    'projects/:id/migration_source',      to: "migration_sources#show"
+        patch  'projects/:id/migration_source',      to: "migration_sources#update"
+        delete 'projects/:id/migration_source',      to: "migration_sources#destroy"
+        post   'projects/:id/migration_source/test', to: "migration_sources#test"
+
         # Links
         post 'projects/:id/links', to: "links#create_link"
         post 'projects/:id/links/search', to: "links#current_project_links"
@@ -189,6 +210,7 @@ Rails.application.routes.draw do
         # Admin (machine-to-machine, unchanged)
         post 'admin/create_enterprise_subscription', to: "admin#create_enterprise_subscription"
         patch 'admin/update_enterprise_subscription', to: "admin#update_enterprise_subscription"
+        post 'admin/create_custom_domain', to: "admin#create_custom_domain"
         post 'admin/migrate_firebase_links', to: "admin#migrate_firebase_links"
         post 'admin/flush_events', to: "admin#flush_events"
 

@@ -135,3 +135,60 @@ class CampaignsApiTest < ActionDispatch::IntegrationTest
     assert_not json.key?("data"), "403 must not leak campaign data"
   end
 end
+
+class CampaignsMetricsOverviewTest < ActionDispatch::IntegrationTest
+  include AuthTestHelper
+
+  fixtures :instances, :users, :instance_roles, :projects, :domains,
+           :redirect_configs, :campaigns, :links, :devices, :visitors
+
+  setup do
+    @project = projects(:one)
+    @campaign = campaigns(:one)
+    @headers = doorkeeper_headers_for(users(:admin_user))
+    @link = links(:campaign_link)
+    @link.update_columns(campaign_id: @campaign.id)
+    Event.delete_all
+  end
+
+  def overview(params = {})
+    post "#{API_PREFIX}/projects/#{@project.id}/campaigns/metrics_overview",
+      params: { archived: false }.merge(params), headers: @headers
+    JSON.parse(response.body)
+  end
+
+  test "aggregates campaign link events per day" do
+    2.times do 
+      Event.create!(project_id: @project.id, device_id: devices(:ios_device).id,
+                            link_id: @link.id, event: Grovs::Events::OPEN, created_at: 1.day.ago)
+    end
+    Event.create!(project_id: @project.id, device_id: devices(:ios_device).id,
+                  link_id: @link.id, event: Grovs::Events::INSTALL, created_at: 1.day.ago)
+
+    json = overview
+    assert_response :ok
+    day = json["#{1.day.ago.to_date} 00:00:00 UTC"]
+    assert day, "must contain an entry for yesterday, keys: #{json.keys.first(3)}"
+    assert_equal 2, day["open"]
+    assert_equal 1, day["install"]
+  end
+
+  test "events on links outside any campaign are excluded" do
+    plain = links(:basic_link)
+    plain.update_columns(campaign_id: nil)
+    Event.create!(project_id: @project.id, device_id: devices(:ios_device).id,
+                  link_id: plain.id, event: Grovs::Events::OPEN, created_at: 1.day.ago)
+
+    json = overview
+    assert_response :ok
+    day = json["#{1.day.ago.to_date} 00:00:00 UTC"]
+    assert_equal 0, day["open"], "non-campaign event must not count"
+  end
+
+  test "fills gaps with zeroed days across the requested range" do
+    json = overview(start_date: 3.days.ago.to_date.to_s, end_date: Date.today.to_s)
+    assert_response :ok
+    assert_equal 4, json.keys.size, "every day in range must be present"
+    json.each_value { |d| assert_equal 0, d["open"] }
+  end
+end

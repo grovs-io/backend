@@ -148,3 +148,112 @@ class FingerprintingServiceTest < ActiveSupport::TestCase
     assert_empty found_after.to_a
   end
 end
+
+class FingerprintingMatchingTest < ActiveSupport::TestCase
+  IOS_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) " \
+           "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1".freeze
+  ANDROID_UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " \
+               "(KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36".freeze
+  ANDROID_UA_OLD = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " \
+                   "(KHTML, like Gecko) Chrome/119.0.6045.66 Mobile Safari/537.36".freeze
+
+  EXTRA = { screen_width: 390, screen_height: 844, timezone: "Europe/Bucharest",
+            webgl_vendor: "Apple", webgl_renderer: "Apple GPU", language: "en-US" }.freeze
+
+  setup do
+    @project_id = SecureRandom.random_number(1_000_000_000..9_999_999_999)
+    @project = OpenStruct.new(id: @project_id)
+    uid = SecureRandom.uuid
+    @ip = "fpmatch-#{uid}"
+    @request = OpenStruct.new(ip: @ip, remote_ip: @ip)
+    @keys_to_clean = ["fp:#{@ip}:#{@ip}"]
+  end
+
+  teardown do
+    REDIS.del(*@keys_to_clean)
+  end
+
+  def cache(device)
+    FingerprintingService.cache_device(device, @request, @project_id)
+    @keys_to_clean << "di:#{device.id}:#{@project_id}"
+    device
+  end
+
+  def make_device(ua:, **overrides) # rubocop:disable Naming/MethodParameterName
+    Device.create!(user_agent: ua, ip: "9.9.9.9", remote_ip: "9.9.9.9",
+                   platform: "web", **EXTRA.merge(overrides))
+  end
+
+  test "returns the single device whose user agent matches and removes it from cache" do
+    cached = cache(make_device(ua: ANDROID_UA))
+    current = make_device(ua: ANDROID_UA)
+
+    result = FingerprintingService.match_device_for_project(@request, ANDROID_UA, @project, current)
+
+    assert_equal cached.id, result.id
+    assert_nil FingerprintingService.match_device_for_project(@request, ANDROID_UA, @project, current),
+      "matched device must be consumed from the fingerprint cache"
+  end
+
+  test "does not match a cached device from a different platform" do
+    cache(make_device(ua: IOS_UA))
+    current = make_device(ua: ANDROID_UA)
+
+    assert_nil FingerprintingService.match_device_for_project(@request, ANDROID_UA, @project, current)
+  end
+
+  test "does not match the same browser at a different major version" do
+    cache(make_device(ua: ANDROID_UA_OLD))
+    current = make_device(ua: ANDROID_UA)
+
+    assert_nil FingerprintingService.match_device_for_project(@request, ANDROID_UA, @project, current)
+  end
+
+  test "matches iOS webkit devices on webkit version" do
+    cached = cache(make_device(ua: IOS_UA))
+    current = make_device(ua: IOS_UA)
+
+    result = FingerprintingService.match_device_for_project(@request, IOS_UA, @project, current)
+    assert_equal cached.id, result.id
+  end
+
+  test "UA collision is resolved by extra device info" do
+    cache(make_device(ua: ANDROID_UA, timezone: "America/New_York"))
+    winner = cache(make_device(ua: ANDROID_UA, timezone: "Europe/Bucharest"))
+    current = make_device(ua: ANDROID_UA, timezone: "Europe/Bucharest")
+
+    result = FingerprintingService.match_device_for_project(@request, ANDROID_UA, @project, current)
+    assert_equal winner.id, result.id
+  end
+
+  test "fully ambiguous collision attributes nothing" do
+    cache(make_device(ua: ANDROID_UA))
+    cache(make_device(ua: ANDROID_UA))
+    current = make_device(ua: ANDROID_UA)
+
+    assert_nil FingerprintingService.match_device_for_project(@request, ANDROID_UA, @project, current),
+      "two indistinguishable devices must not be attributed to either"
+  end
+
+  test "collision with nil extra fields attributes nothing" do
+    cache(make_device(ua: ANDROID_UA, timezone: nil))
+    cache(make_device(ua: ANDROID_UA, timezone: nil))
+    current = make_device(ua: ANDROID_UA, timezone: nil)
+
+    assert_nil FingerprintingService.match_device_for_project(@request, ANDROID_UA, @project, current),
+      "nil comparison fields must never count as a match"
+  end
+
+  test "returns nil when nothing is cached for the fingerprint" do
+    current = make_device(ua: ANDROID_UA)
+    assert_nil FingerprintingService.match_device_for_project(@request, ANDROID_UA, @project, current)
+  end
+
+  test "non-browser user agents still match on identical raw strings" do
+    cached = cache(make_device(ua: "weird-raw-agent/1"))
+    current = make_device(ua: "weird-raw-agent/1")
+
+    result = FingerprintingService.match_device_for_project(@request, "weird-raw-agent/1", @project, current)
+    assert_equal cached.id, result.id
+  end
+end

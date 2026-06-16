@@ -132,3 +132,45 @@ class DashboardMetricsApiTest < ActionDispatch::IntegrationTest
     assert_not json.key?("links"), "403 must not leak link data"
   end
 end
+
+class DashboardMetricsPlatformFilterTest < ActionDispatch::IntegrationTest
+  include AuthTestHelper
+
+  fixtures :instances, :users, :instance_roles, :projects, :domains,
+           :redirect_configs, :daily_project_metrics
+
+  setup do
+    @project = projects(:one)
+    @headers = doorkeeper_headers_for(users(:admin_user))
+  end
+
+  test "platform filter restricts metrics to that platform" do
+    post "#{API_PREFIX}/projects/#{@project.id}/dashboard/metrics_overview",
+      params: { start_date: "2026-02-15", end_date: "2026-02-15", platform: "ios" },
+      headers: @headers
+
+    assert_response :ok
+    current = JSON.parse(response.body)["metrics"]["current"]
+    assert_equal 100, current["views"], "ios-only views (android's 40 excluded)"
+    assert_equal 10, current["installs"]
+  end
+
+  test "platform filter accepts an array of platforms" do
+    post "#{API_PREFIX}/projects/#{@project.id}/dashboard/metrics_overview",
+      params: { start_date: "2026-02-15", end_date: "2026-02-15", platform: %w[ios android] },
+      headers: @headers
+
+    assert_response :ok
+    current = JSON.parse(response.body)["metrics"]["current"]
+    assert_equal 140, current["views"], "ios(100) + android(40)"
+  end
+
+  test "blank platform behaves as no filter" do
+    post "#{API_PREFIX}/projects/#{@project.id}/dashboard/metrics_overview",
+      params: { start_date: "2026-02-15", end_date: "2026-02-15", platform: "" },
+      headers: @headers
+
+    assert_response :ok
+    assert_equal 140, JSON.parse(response.body)["metrics"]["current"]["views"]
+  end
+end

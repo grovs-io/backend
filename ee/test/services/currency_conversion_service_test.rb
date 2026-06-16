@@ -60,3 +60,58 @@ class CurrencyConversionServiceTest < ActiveSupport::TestCase
     end
   end
 end
+
+class CurrencyConversionFetchTest < ActiveSupport::TestCase
+  test "primary fetch parses rates from the API response" do
+    body = { "rates" => { "USD" => 1.0, "EUR" => 0.92 } }.to_json
+    CurrencyConversionService.stub(:http_get, body) do
+      assert_equal({ "USD" => 1.0, "EUR" => 0.92 }, CurrencyConversionService.send(:fetch_from_primary))
+    end
+  end
+
+  test "fallback fetch injects USD into frankfurter rates" do
+    body = { "base" => "USD", "rates" => { "EUR" => 0.92, "RON" => 4.6 } }.to_json
+    CurrencyConversionService.stub(:http_get, body) do
+      rates = CurrencyConversionService.send(:fetch_from_fallback)
+      assert_equal 1.0, rates["USD"]
+      assert_equal 0.92, rates["EUR"]
+    end
+  end
+
+  test "network failure on primary returns nil instead of raising" do
+    CurrencyConversionService.stub(:http_get, ->(_url) { raise Net::OpenTimeout }) do
+      assert_nil CurrencyConversionService.send(:fetch_from_primary)
+    end
+  end
+
+  test "garbage response on fallback returns nil instead of raising" do
+    CurrencyConversionService.stub(:http_get, "<html>error</html>") do
+      assert_nil CurrencyConversionService.send(:fetch_from_fallback)
+    end
+  end
+
+  test "fallback rates flow through to a real conversion" do
+    memory_store = ActiveSupport::Cache::MemoryStore.new
+    primary_down = lambda do |url|
+      raise Net::OpenTimeout if url.include?("exchangerate-api")
+      { "base" => "USD", "rates" => { "EUR" => 0.92 } }.to_json
+    end
+
+    Rails.stub(:cache, memory_store) do
+      CurrencyConversionService.stub(:http_get, primary_down) do
+        assert_equal 1000, CurrencyConversionService.to_usd_cents(920, "EUR")
+      end
+    end
+    assert_equal 1.0, memory_store.read("exchange_rates_last_known")["USD"],
+      "successful fallback must be stored as last-known-good"
+  end
+
+  test "supported_currencies lists rate keys" do
+    memory_store = ActiveSupport::Cache::MemoryStore.new
+    memory_store.write("exchange_rates", { "USD" => 1.0, "EUR" => 0.92 })
+
+    Rails.stub(:cache, memory_store) do
+      assert_includes CurrencyConversionService.supported_currencies, "EUR"
+    end
+  end
+end

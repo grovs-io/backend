@@ -40,6 +40,11 @@ class DeleteInstanceJob
     remove_visitor_last_visits_for_projects(project_ids)
     log "visitor last visits removed"
 
+    # Custom hostnames before domains (Cloudflare teardown + FK cleanup)
+    log "removing custom hostnames for projects"
+    remove_custom_hostnames_for_projects(project_ids)
+    log "custom hostnames removed"
+
     # Links (+ children) and domains
     log "removing links for projects"
     remove_links_for_projects(project_ids)
@@ -255,6 +260,14 @@ class DeleteInstanceJob
     where_sql = sql_any_array("project_id", project_ids, cast: cast)
 
     batch_delete_by(scope: scope, table_name: table, where_sql: where_sql, batch_size: BATCH_SIZE)
+  end
+
+  def remove_custom_hostnames_for_projects(project_ids)
+    CustomHostname.unscoped.where(project_id: project_ids).find_each(batch_size: SUB_BATCH_SIZE) do |custom_hostname|
+      next if CustomDomainProvisioningService.destroy(custom_hostname)
+
+      raise "Cloudflare custom hostname delete failed for custom_hostname_id=#{custom_hostname.id}"
+    end
   end
 
   def remove_links_for_projects(project_ids)

@@ -5,7 +5,7 @@ require "sidekiq/testing"
 class ExportApiTest < ActionDispatch::IntegrationTest
   include AuthTestHelper
 
-  fixtures :instances, :users, :instance_roles, :projects, :domains, :redirect_configs
+  fixtures :instances, :users, :instance_roles, :projects, :domains, :redirect_configs, :campaigns
 
   setup do
     @admin_user = users(:admin_user)
@@ -78,20 +78,60 @@ class ExportApiTest < ActionDispatch::IntegrationTest
 
   # --- Export Edge Cases ---
 
-  test "export links with campaign_id passes it through to job safe_params" do
+  test "export links with valid campaign_id passes the integer through to job safe_params" do
     Sidekiq::Testing.fake! do
       ExportLinkDataJob.jobs.clear
+      campaign = campaigns(:one)
 
       post "#{API_PREFIX}/projects/#{@project.id}/exports/links",
-        params: { active: true, sdk: false, campaign_id: "42" },
+        params: { active: true, sdk: false, campaign_id: campaign.id.to_s },
         headers: @headers
       assert_response :accepted
 
       assert_equal 1, ExportLinkDataJob.jobs.size, "must enqueue ExportLinkDataJob"
       safe_params = ExportLinkDataJob.jobs.first["args"][1]
-      assert_equal "42", safe_params["campaign_id"], "campaign_id must be passed through"
+      assert_equal campaign.id, safe_params["campaign_id"], "campaign_id must be passed through as an integer"
       assert_equal true, safe_params["active"], "active must be cast to boolean true"
       assert_equal false, safe_params["sdk"], "sdk must be cast to boolean false"
+    end
+  end
+
+  test "export links with non-integer campaign_id returns 400 and does not enqueue" do
+    Sidekiq::Testing.fake! do
+      ExportLinkDataJob.jobs.clear
+
+      post "#{API_PREFIX}/projects/#{@project.id}/exports/links",
+        params: { active: true, sdk: false, campaign_id: "not-a-number" },
+        headers: @headers
+      assert_response :bad_request
+      assert_equal "campaign_id must be an integer", JSON.parse(response.body)["error"]
+      assert_equal 0, ExportLinkDataJob.jobs.size
+    end
+  end
+
+  test "export links with another project's campaign_id returns 404 and does not enqueue" do
+    Sidekiq::Testing.fake! do
+      ExportLinkDataJob.jobs.clear
+      foreign_campaign = campaigns(:two) # belongs to project two
+
+      post "#{API_PREFIX}/projects/#{@project.id}/exports/links",
+        params: { active: true, sdk: false, campaign_id: foreign_campaign.id.to_s },
+        headers: @headers
+      assert_response :not_found
+      assert_equal "Campaign not found", JSON.parse(response.body)["error"]
+      assert_equal 0, ExportLinkDataJob.jobs.size
+    end
+  end
+
+  test "export links with unknown campaign_id returns 404 and does not enqueue" do
+    Sidekiq::Testing.fake! do
+      ExportLinkDataJob.jobs.clear
+
+      post "#{API_PREFIX}/projects/#{@project.id}/exports/links",
+        params: { active: true, sdk: false, campaign_id: "999999" },
+        headers: @headers
+      assert_response :not_found
+      assert_equal 0, ExportLinkDataJob.jobs.size
     end
   end
 

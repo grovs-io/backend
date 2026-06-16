@@ -97,6 +97,9 @@ class EventIngestionService
       log_event_without_view_duplicates(type, project, device, data, link, engagement_time, created_at: created_at)
     rescue StandardError => e
       Rails.logger.error("log_async sync fallback also failed, event lost: #{e.class} - #{e.message}")
+      # Every path failed (Redis + Sidekiq + sync DB) — the event is gone. Emit a
+      # metric so dropped events are observable, not buried in logs.
+      Grovs::Metrics.increment("events.dropped", tags: { event_type: type })
     end
 
     def process_event(event)

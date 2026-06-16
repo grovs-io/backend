@@ -126,3 +126,31 @@ class CampaignSerializerTest < ActiveSupport::TestCase
     assert_equal true, result["has_links"]
   end
 end
+
+class CampaignSerializerCollectionTest < ActiveSupport::TestCase
+  fixtures :campaigns, :projects, :instances, :links, :domains, :redirect_configs
+
+  test "resolves has_links for a collection in a single query" do
+    c1 = campaigns(:one)
+    c2 = campaigns(:two)
+    links(:basic_link).update_columns(campaign_id: c1.id, active: true)
+
+    queries = []
+    sub = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+      queries << payload[:sql] if payload[:sql] =~ /bool_or\(active\)/i
+    end
+    result = CampaignSerializer.serialize(Campaign.where(id: [c1.id, c2.id]).to_a)
+    ActiveSupport::Notifications.unsubscribe(sub)
+
+    assert_equal 1, queries.size, "has_links must be one grouped query for the whole collection"
+    by_id = result.index_by { |h| h["id"] }
+    assert_equal true, by_id[c1.id]["has_links"]
+    assert_equal false, by_id[c2.id]["has_links"]
+  end
+
+  test "single-record serialization still resolves has_links" do
+    c = campaigns(:one)
+    links(:basic_link).update_columns(campaign_id: c.id, active: true)
+    assert_equal true, CampaignSerializer.serialize(c)["has_links"]
+  end
+end

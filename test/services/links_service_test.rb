@@ -10,6 +10,56 @@ class LinksServiceTest < ActiveSupport::TestCase
     @instance = instances(:one)   # uri_scheme: "testapp"
   end
 
+  # === custom_hostname_for ===
+
+  test "custom_hostname_for: returns nil when feature flag is off (no PG query)" do
+    disable_custom_domains!
+    called = false
+    CustomHostname.stub(:redis_find_by, lambda { |*| 
+      called = true
+      nil
+    }) do
+      assert_nil LinksService.custom_hostname_for("links.acme.com")
+    end
+    assert_not called, "CH lookup must not fire when custom_domains feature is off"
+  end
+
+  test "custom_hostname_for: short-circuits when host is on a MAIN domain (no PG query)" do
+    enable_custom_domains!
+    # MAIN traffic with unknown subdomains must NOT trigger a CH lookup — by definition
+    # custom hostnames are on customers' OWN domains, never on our sqd.link space. Without
+    # this guard, scanners flooding bogus *.sqd.link would amplify DB load 2x.
+    # Use only domains that are unconditionally in Grovs::Domains::MAIN regardless of env.
+    # test-sqd.link is set via DOMAIN_TEST which may be unset in some envs.
+    %w[sqd.link foo.sqd.link bar.sqd.link lvh.me api.lvh.me localhost].each do |host|
+      called = false
+      CustomHostname.stub(:redis_find_by, lambda { |*| 
+        called = true
+        nil
+      }) do
+        assert_nil LinksService.custom_hostname_for(host)
+      end
+      assert_not called, "MAIN-domain host #{host} should not trigger a CH lookup"
+    end
+  ensure
+    disable_custom_domains!
+  end
+
+  test "custom_hostname_for: external hostnames still pay the lookup (legit custom-domain resolution)" do
+    enable_custom_domains!
+    called_with = nil
+    CustomHostname.stub(:redis_find_by, lambda { |_attr, val| 
+      called_with = val
+      nil
+    }) do
+      assert_nil LinksService.custom_hostname_for("links.unknown-acme.com")
+    end
+    assert_equal "links.unknown-acme.com", called_with,
+      "external hostnames must trigger the CH lookup"
+  ensure
+    disable_custom_domains!
+  end
+
   # === link_for_request ===
 
   test "link_for_request returns link when domain and path match" do

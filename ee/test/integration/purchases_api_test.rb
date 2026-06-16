@@ -2,6 +2,15 @@ require "test_helper"
 require_relative "../../../test/integration/auth_test_helper"
 
 class PurchasesApiTest < ActionDispatch::IntegrationTest
+
+  # The query's default window is the trailing 30 days; anchor all events inside
+  # it so the suite doesn't rot as the calendar advances (the original hardcoded
+  # 2026-03-* dates started failing once they fell out of the window).
+  DAY_1 = 9.days.ago.beginning_of_day # rubocop:disable Rails/RelativeDateConstant
+  DAY_2 = DAY_1 + 1.day
+  DAY_3 = DAY_1 + 2.days
+  DAY_4 = DAY_1 + 3.days
+
   include AuthTestHelper
 
   fixtures :instances, :users, :instance_roles, :projects, :domains,
@@ -20,45 +29,45 @@ class PurchasesApiTest < ActionDispatch::IntegrationTest
     # 8 events matching the assertions in these tests
     PurchaseEvent.create!(event_type: "buy", device: devices(:ios_device), project: @project,
       identifier: "com.test.app", price_cents: 999, currency: "USD", usd_price_cents: 999,
-      date: "2026-03-01 10:00:00", transaction_id: "txn_buy_001",
+      date: DAY_1 + 10.hours, transaction_id: "txn_buy_001",
       original_transaction_id: "orig_txn_001", product_id: "com.test.premium",
       webhook_validated: true, store: true, processed: true, purchase_type: "subscription",
-      store_source: "apple", expires_date: "2027-03-01 10:00:00")
+      store_source: "apple", expires_date: DAY_1 + 1.year + 10.hours)
     PurchaseEvent.create!(event_type: "buy", device: devices(:ios_device), project: @project,
       identifier: "com.test.app", price_cents: 999, currency: "USD", usd_price_cents: 999,
-      date: "2026-03-02 10:00:00", transaction_id: "txn_buy_002",
+      date: DAY_2 + 10.hours, transaction_id: "txn_buy_002",
       original_transaction_id: "orig_txn_001", product_id: "com.test.premium",
       webhook_validated: true, store: true, processed: true, purchase_type: "subscription")
     PurchaseEvent.create!(event_type: "cancel", device: devices(:ios_device), project: @project,
       identifier: "com.test.app", price_cents: 999, currency: "USD", usd_price_cents: 999,
-      date: "2026-03-03 10:00:00", transaction_id: "txn_cancel_001",
+      date: DAY_3 + 10.hours, transaction_id: "txn_cancel_001",
       original_transaction_id: "orig_txn_001", product_id: "com.test.premium",
       webhook_validated: true, store: true, processed: true, purchase_type: "subscription")
     PurchaseEvent.create!(event_type: "refund", device: devices(:ios_device), project: @project,
       identifier: "com.test.app", price_cents: 499, currency: "USD", usd_price_cents: 499,
-      date: "2026-03-03 12:00:00", transaction_id: "txn_refund_001",
+      date: DAY_3 + 12.hours, transaction_id: "txn_refund_001",
       original_transaction_id: "orig_txn_002", product_id: "com.test.onetime",
       webhook_validated: true, store: true, processed: true, purchase_type: "one_time")
     PurchaseEvent.create!(event_type: "buy", device: devices(:android_device), project: @project,
       identifier: "com.test.app", price_cents: 499, currency: "USD", usd_price_cents: 499,
-      date: "2026-03-01 14:00:00", transaction_id: "txn_buy_ot_001",
+      date: DAY_1 + 14.hours, transaction_id: "txn_buy_ot_001",
       original_transaction_id: "orig_txn_002", product_id: "com.test.onetime",
       webhook_validated: true, store: true, processed: true, purchase_type: "one_time",
       store_source: "google")
     PurchaseEvent.create!(event_type: "buy", device: devices(:ios_device), project: @project,
       identifier: "com.test.app", price_cents: 1999, currency: "USD", usd_price_cents: 1999,
-      date: "2026-03-04 10:00:00", transaction_id: "txn_buy_unprocessed",
+      date: DAY_4 + 10.hours, transaction_id: "txn_buy_unprocessed",
       original_transaction_id: "orig_txn_003", product_id: "com.test.premium",
       webhook_validated: true, store: true, processed: false, purchase_type: "subscription")
     PurchaseEvent.create!(event_type: "buy", project: @project,
       identifier: "com.test.app", price_cents: 999, currency: "USD", usd_price_cents: 999,
-      date: "2026-03-01 16:00:00", transaction_id: "txn_buy_nodev",
+      date: DAY_1 + 16.hours, transaction_id: "txn_buy_nodev",
       original_transaction_id: "orig_txn_004", product_id: "com.test.premium",
       webhook_validated: true, store: true, processed: true, purchase_type: "subscription")
     # nil_usd_buy: usd_price_cents must be nil (before_save auto-converts, so null it after)
     nil_usd = PurchaseEvent.create!(event_type: "buy", device: devices(:ios_device), project: @project,
       identifier: "com.test.app", price_cents: 500, currency: "EUR",
-      date: "2026-03-04 12:00:00", transaction_id: "txn_nil_usd",
+      date: DAY_4 + 12.hours, transaction_id: "txn_nil_usd",
       original_transaction_id: "orig_txn_005", product_id: "com.test.premium",
       webhook_validated: true, store: true, processed: false, purchase_type: "subscription")
     nil_usd.update_column(:usd_price_cents, nil)
@@ -122,8 +131,8 @@ class PurchasesApiTest < ActionDispatch::IntegrationTest
   test "revenue metrics returns paginated data structure" do
     post "#{API_PREFIX}/projects/#{@project.id}/purchases/revenue",
       params: {
-        start_date: "2026-03-01",
-        end_date: "2026-03-04",
+        start_date: DAY_1.to_date.to_s,
+        end_date: DAY_4.to_date.to_s,
         page: 1
       },
       headers: @headers

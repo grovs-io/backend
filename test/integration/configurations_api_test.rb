@@ -140,3 +140,71 @@ class ConfigurationsApiTest < ActionDispatch::IntegrationTest
     assert_match(/gcloud/, response.body, "script must contain gcloud commands")
   end
 end
+
+class ConfigurationsRemovalTest < ActionDispatch::IntegrationTest
+  include AuthTestHelper
+
+  fixtures :instances, :users, :instance_roles, :projects, :domains,
+           :redirect_configs, :applications, :ios_configurations,
+           :android_configurations, :desktop_configurations, :web_configurations
+
+  setup do
+    @instance = instances(:one)
+    @headers = doorkeeper_headers_for(users(:admin_user))
+  end
+
+  test "remove iOS configuration destroys it and clears ios setup steps" do
+    @instance.setup_progress_steps.create!(category: "ios_setup", step_identifier: "add_sdk",
+                                           completed_at: Time.current)
+    app = applications(:ios_app)
+    assert app.configuration.present?
+
+    delete "#{API_PREFIX}/instances/#{@instance.id}/configurations/ios", headers: @headers
+
+    assert_response :ok
+    assert_nil JSON.parse(response.body)["config"]
+    assert_not Application.exists?(app.id), "config destroy cascades to the application"
+    assert_equal 0, @instance.setup_progress_steps.where(category: "ios_setup").count
+  end
+
+  test "remove Android configuration destroys it and clears android setup steps" do
+    @instance.setup_progress_steps.create!(category: "android_setup",
+                                           step_identifier: "intent_filters",
+                                           completed_at: Time.current)
+    app = applications(:android_app)
+    assert app.configuration.present?
+
+    delete "#{API_PREFIX}/instances/#{@instance.id}/configurations/android", headers: @headers
+
+    assert_response :ok
+    assert_not Application.exists?(app.id), "config destroy cascades to the application"
+    assert_equal 0, @instance.setup_progress_steps.where(category: "android_setup").count
+  end
+
+  test "remove desktop configuration destroys it" do
+    delete "#{API_PREFIX}/instances/#{@instance.id}/configurations/desktop", headers: @headers
+
+    assert_response :ok
+    assert_nil JSON.parse(response.body)["config"]
+  end
+
+  test "remove web configuration destroys it and clears web setup steps" do
+    @instance.setup_progress_steps.create!(category: "web_setup",
+                                           step_identifier: "integrate_sdk",
+                                           completed_at: Time.current)
+
+    delete "#{API_PREFIX}/instances/#{@instance.id}/configurations/web", headers: @headers
+
+    assert_response :ok
+    assert_equal 0, @instance.setup_progress_steps.where(category: "web_setup").count
+  end
+
+  test "remove configuration on another instance returns 403 and destroys nothing" do
+    app = applications(:ios_app)
+    delete "#{API_PREFIX}/instances/#{instances(:two).id}/configurations/ios",
+      headers: doorkeeper_headers_for(users(:member_user))
+
+    assert_response :forbidden
+    assert app.reload.configuration.present?
+  end
+end

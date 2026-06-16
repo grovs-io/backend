@@ -563,3 +563,38 @@ class EventIngestionServiceTest < ActiveSupport::TestCase
     [device, visitor]
   end
 end
+
+class EventIngestionDropMetricTest < ActiveSupport::TestCase
+  fixtures :instances, :projects, :devices, :visitors
+
+  setup do
+    @project = projects(:one)
+    @device = devices(:ios_device)
+  end
+
+  test "emits events.dropped metric when every fallback path fails" do
+    dropped = []
+    Grovs::Metrics.stub(:increment, ->(name, **opts) { dropped << [name, opts] }) do
+      # Force Redis enqueue, Sidekiq, and the sync path to all fail.
+      REDIS.stub(:lpush, ->(*) { raise Redis::BaseError, "redis down" }) do
+        LogEventJob.stub(:perform_async, ->(*) { raise Redis::BaseError, "sidekiq down" }) do
+          EventIngestionService.stub(:log_event_without_view_duplicates, ->(*, **) { raise "db down" }) do
+            EventIngestionService.log_async("app_open", @project, @device, nil, nil)
+          end
+        end
+      end
+    end
+
+    assert_equal 1, dropped.size, "a dropped event must emit exactly one metric"
+    assert_equal "events.dropped", dropped[0][0]
+    assert_equal "app_open", dropped[0][1][:tags][:event_type]
+  end
+
+  test "no drop metric on the happy path" do
+    emitted = []
+    Grovs::Metrics.stub(:increment, ->(name, **) { emitted << name }) do
+      EventIngestionService.log_async("app_open", @project, @device, nil, nil)
+    end
+    assert_not_includes emitted, "events.dropped"
+  end
+end

@@ -34,6 +34,13 @@ class Instance < ApplicationRecord
     end
   end
 
+  # Entitlement gate for self-serve custom domains: an active Stripe subscription
+  # or a valid enterprise subscription. Explicit so it does not depend on the
+  # paused-subscription behaviour of #subscription.
+  def custom_domains_entitled?
+    stripe_subscriptions.exists?(active: true) || valid_enterprise_subscription.present?
+  end
+
   def application_for_platform(platform)
     application = Application.redis_find_by_multiple_conditions({ instance_id: id, platform: platform })
     application ||= Application.create(instance_id: id, platform: platform)

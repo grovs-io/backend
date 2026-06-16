@@ -34,7 +34,7 @@ class Public::VerificationController < ApplicationController
 
     app_id = "#{ios_configuration.app_prefix}.#{ios_configuration.bundle_id}"
 
-    file = IOS_VERIFICATION_FILE
+    file = IOS_VERIFICATION_FILE.deep_dup # deep-dup: never mutate the shared global template
     file[:applinks][:details][0][:appID] = app_id
 
     render json: file, status: :ok
@@ -69,7 +69,7 @@ class Public::VerificationController < ApplicationController
       return
     end
 
-    file = ANDROID_VERIFICATION_FILE
+    file = ANDROID_VERIFICATION_FILE.deep_dup # deep-dup: never mutate the shared global template
     file[:target][:package_name] = android_configuration.identifier
     file[:target][:sha256_cert_fingerprints] = android_configuration.sha256s
 
@@ -79,7 +79,11 @@ class Public::VerificationController < ApplicationController
   private
 
   def current_domain
-    Domain.find_by(subdomain: request.subdomain, domain: request.domain)
+    # Use the cached lookup so AASA / assetlinks fetches (every iOS / Android install)
+    # match the same Redis-backed read pattern the link path uses.
+    Domain.redis_find_by_multiple_conditions(
+      { subdomain: request.subdomain, domain: request.domain }
+    ) || LinksService.custom_hostname_for(request.host)
   end
 
 end

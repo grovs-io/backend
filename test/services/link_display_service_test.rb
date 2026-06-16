@@ -8,7 +8,8 @@ class LinkDisplayServiceTest < ActiveSupport::TestCase
       generic_title: nil,
       generic_subtitle: nil,
       image_url: nil,
-      full_domain: "test.sqd.link"
+      full_domain: "test.sqd.link",
+      display_host: "test.sqd.link"
     }
     OpenStruct.new(defaults.merge(overrides))
   end

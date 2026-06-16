@@ -5,6 +5,47 @@ class LinksService
 
   class << self
 
+    # Short-circuits on MAIN hosts so scanner traffic on *.sqd.link doesn't fire a second
+    # uncached PG query per request (redis_find_by doesn't cache nils). MAIN match is 2-label
+    # registrable-domain — revisit if MAIN ever includes a ccTLD.
+    def custom_hostname_for(host)
+      return nil unless Grovs.custom_domains_enabled?
+      return nil if host.blank?
+
+      lower_host = host.to_s.downcase
+      registrable_domain = lower_host.split(".").last(2).join(".")
+      return nil if Grovs::Domains::MAIN.include?(registrable_domain) ||
+                    Grovs::Domains::MAIN.include?(lower_host)
+
+      ch = CustomHostname.redis_find_by(:hostname, lower_host)
+      return nil unless ch&.resolvable?
+
+      Domain.redis_find_by(:id, ch.domain_id)
+    end
+
+    # Whitelists primary so any future non-primary purpose also fails closed; a Grovs link
+    # whose path matches an upstream Branch slug must not short-circuit the migration flow.
+    def primary_custom_hostname_for(host)
+      return nil unless Grovs.custom_domains_enabled?
+      return nil if host.blank?
+
+      lower_host = host.to_s.downcase
+      registrable_domain = lower_host.split(".").last(2).join(".")
+      return nil if Grovs::Domains::MAIN.include?(registrable_domain) ||
+                    Grovs::Domains::MAIN.include?(lower_host)
+
+      ch = CustomHostname.redis_find_by(:hostname, lower_host)
+      return nil unless ch&.primary? && ch.resolvable?
+
+      Domain.redis_find_by(:id, ch.domain_id)
+    end
+
+    def project_scoped(link, project)
+      return nil unless link && project
+
+      link.domain&.project_id == project.id ? link : nil
+    end
+
     def link_for_request(request)
       request_domain = request.domain
       # request_domain = "sqd.link"
@@ -13,7 +54,8 @@ class LinksService
       request_subdomain = request.subdomain
       request_path = request.path[1..]
 
-      domain = Domain.redis_find_by_multiple_conditions({ domain: request_domain, subdomain: request_subdomain })
+      domain = Domain.redis_find_by_multiple_conditions({ domain: request_domain, subdomain: request_subdomain }) ||
+               primary_custom_hostname_for(request.host)
       unless domain
         Rails.logger.warn("domain not found")
         return nil
@@ -36,7 +78,8 @@ class LinksService
       subdomain = parts.length > 2 ? parts[0...-2].join('.') : nil
       path = uri.path.sub(%r{^/}, '')
 
-      domain = Domain.redis_find_by_multiple_conditions({ domain: domain, subdomain: subdomain })
+      domain = Domain.redis_find_by_multiple_conditions({ domain: domain, subdomain: subdomain }) ||
+               primary_custom_hostname_for(uri.host)
       unless domain
         Rails.logger.warn("domain not found")
         return nil
@@ -110,17 +153,15 @@ class LinksService
       return nil if url.blank? || !url.match?(%r{\A\w+://}) || !url.ascii_only?
 
       clean_url = strip_query_params(url)
+      url_host = URI.parse(clean_url).host rescue nil
 
       universal_url_components = parse_universal_link(clean_url)
-      # Search domain by URL first
       if universal_url_components
-        domain = Domain.redis_find_by_multiple_conditions({ domain: universal_url_components[:domain], subdomain: universal_url_components[:subdomain] })
+        domain = Domain.redis_find_by_multiple_conditions({ domain: universal_url_components[:domain], subdomain: universal_url_components[:subdomain] }) ||
+                 primary_custom_hostname_for(url_host)
         if domain
-          # Domain found by URL, search the link
           link = Link.redis_find_by_multiple_conditions({ domain: domain.id, path: universal_url_components[:path] })
-          if link
-            return link
-          end
+          return project_scoped(link, project) if link
         end
       end
 
@@ -131,20 +172,15 @@ class LinksService
 
       domain = Domain.redis_find_by_multiple_conditions({ domain: uri_components[:domain], subdomain: uri_components[:subdomain] })
       if domain
-        # Domain found by URL, search the link
         link = Link.redis_find_by_multiple_conditions({ domain: domain.id, path: uri_components[:path] })
-        if link
-          return link
-        end
+        return project_scoped(link, project) if link
       end
 
-      # Search instances
       uri_scheme = uri_components[:domain].start_with?('.') ? uri_components[:domain][1..] : uri_components[:domain]
       instance = Instance.redis_find_by(:uri_scheme, uri_scheme)
-      if instance
-        instance.link_for_path(uri_components[:path])
-        
-      end
+      return nil unless instance
+
+      project_scoped(instance.link_for_path(uri_components[:path]), project)
     end
 
     def link_for_project_and_path(project, path)

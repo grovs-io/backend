@@ -184,3 +184,124 @@ class InstancesApiTest < ActionDispatch::IntegrationTest
       "all instance roles must be removed synchronously"
   end
 end
+
+class InstancesLifecycleTest < ActionDispatch::IntegrationTest
+  include AuthTestHelper
+
+  fixtures :instances, :users, :instance_roles, :projects, :domains, :redirect_configs
+
+  setup do
+    @admin_user = users(:admin_user)
+    @member_user = users(:member_user)
+    @instance = instances(:one)
+    @admin_headers = doorkeeper_headers_for(@admin_user)
+  end
+
+  # --- create_instance ---
+
+  test "create_instance provisions instance with two projects and admin role" do
+    assert_difference ["Instance.count"], 1 do
+      assert_difference ["Project.count"], 2 do
+        post "#{API_PREFIX}/instances", params: { name: "Fresh Workspace" },
+          headers: @admin_headers
+      end
+    end
+
+    assert_response :ok
+    created = Instance.order(:id).last
+    assert created.production.present?, "must have a production project"
+    assert created.test.present?, "must have a test project"
+    assert_equal "Fresh Workspace", created.production.name
+    role = InstanceRole.find_by(instance_id: created.id, user_id: @admin_user.id)
+    assert_equal Grovs::Roles::ADMIN, role.role, "creator must be instance admin"
+  end
+
+  test "create_instance with blank name returns 400 and creates nothing" do
+    assert_no_difference ["Instance.count", "Project.count"] do
+      post "#{API_PREFIX}/instances", params: { name: "" }, headers: @admin_headers
+    end
+    assert_response :bad_request
+  end
+
+  # --- edit_instance ---
+
+  test "edit_instance renames both production and test projects" do
+    put "#{API_PREFIX}/instances/#{@instance.id}", params: { name: "Renamed" },
+      headers: @admin_headers
+
+    assert_response :ok
+    assert_equal "Renamed", @instance.reload.production.name
+    assert_equal "Renamed-test", @instance.test.name
+  end
+
+  test "edit_instance as member returns 403 and does not rename" do
+    original = @instance.production.name
+    put "#{API_PREFIX}/instances/#{@instance.id}", params: { name: "Hijacked" },
+      headers: doorkeeper_headers_for(@member_user)
+
+    assert_response :forbidden
+    assert_equal original, @instance.reload.production.name
+  end
+
+  # --- dismiss_get_started ---
+
+  test "dismiss_get_started persists the flag" do
+    @instance.update_columns(get_started_dismissed: false)
+
+    post "#{API_PREFIX}/instances/#{@instance.id}/dismiss_get_started",
+      headers: @admin_headers
+
+    assert_response :ok
+    assert @instance.reload.get_started_dismissed
+  end
+
+  # --- setup progress ---
+
+  test "complete_setup_step records the step and setup_progress lists it" do
+    post "#{API_PREFIX}/instances/#{@instance.id}/setup_progress/complete",
+      params: { category: "ios_setup", step_identifier: "add_sdk" },
+      headers: @admin_headers
+    assert_response :ok
+
+    get "#{API_PREFIX}/instances/#{@instance.id}/setup_progress",
+      headers: @admin_headers
+    assert_response :ok
+    steps = JSON.parse(response.body)["steps"]
+    found = steps.find { |s| s["step_identifier"] == "add_sdk" }
+    assert found, "completed step must be listed"
+    assert_equal "ios_setup", found["category"]
+    assert found["completed_at"].present?
+  end
+
+  test "complete_setup_step is idempotent and keeps the original completion time" do
+    post "#{API_PREFIX}/instances/#{@instance.id}/setup_progress/complete",
+      params: { category: "android_setup", step_identifier: "intent_filters" },
+      headers: @admin_headers
+    first_completed_at = @instance.setup_progress_steps
+                                  .find_by(step_identifier: "intent_filters").completed_at
+
+    post "#{API_PREFIX}/instances/#{@instance.id}/setup_progress/complete",
+      params: { category: "android_setup", step_identifier: "intent_filters" },
+      headers: @admin_headers
+    assert_response :ok
+
+    assert_equal 1, @instance.setup_progress_steps.where(step_identifier: "intent_filters").count
+    assert_equal first_completed_at,
+                 @instance.setup_progress_steps.find_by(step_identifier: "intent_filters").completed_at
+  end
+
+  test "setup_progress filters by category" do
+    post "#{API_PREFIX}/instances/#{@instance.id}/setup_progress/complete",
+      params: { category: "ios_setup", step_identifier: "register_app" }, headers: @admin_headers
+    post "#{API_PREFIX}/instances/#{@instance.id}/setup_progress/complete",
+      params: { category: "android_setup", step_identifier: "google_play_notifications" }, headers: @admin_headers
+
+    get "#{API_PREFIX}/instances/#{@instance.id}/setup_progress",
+      params: { category: "ios_setup" }, headers: @admin_headers
+
+    steps = JSON.parse(response.body)["steps"]
+    assert steps.any? { |s| s["step_identifier"] == "register_app" }
+    assert_not steps.any? { |s| s["step_identifier"] == "google_play_notifications" },
+      "category filter must exclude other categories"
+  end
+end

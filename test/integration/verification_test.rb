@@ -50,31 +50,26 @@ class VerificationTest < ActionDispatch::IntegrationTest
     assert_equal "Configuration not enabled", json["error"]
   end
 
-  # --- BUG: iOS AASA mutates global constant ---
-  # VerificationController line 37-38 does `file = IOS_VERIFICATION_FILE` (alias, not copy)
-  # then `file[:applinks][:details][0][:appID] = app_id` which mutates the global constant.
-  # Under concurrent requests, this causes race conditions. Under sequential requests,
-  # the constant permanently holds the last domain's appID instead of the initializer default.
+  # --- FIXED: AASA/assetlinks no longer mutate the global constants ---
+  # VerificationController deep-dups IOS_VERIFICATION_FILE / ANDROID_VERIFICATION_FILE
+  # before setting request-specific values, so the shared constants stay templates
+  # (no cross-request leakage under concurrency).
 
-  test "iOS AASA mutates the global IOS_VERIFICATION_FILE constant (known bug)" do
+  test "iOS AASA does not mutate the global IOS_VERIFICATION_FILE constant" do
     get "/.well-known/apple-app-site-association", headers: public_host_headers
     assert_response :ok
 
-    # After the request, the global constant holds this domain's appID.
-    # A constant should never contain request-specific data — this proves
-    # the controller mutates the shared constant on every request (line 37-38).
     domain_app_id = "#{@ios_config.app_prefix}.#{@ios_config.bundle_id}"
-    assert_equal domain_app_id, IOS_VERIFICATION_FILE[:applinks][:details][0][:appID],
-      "BUG: Global constant holds request-specific appID instead of being a template"
+    assert_not_equal domain_app_id, IOS_VERIFICATION_FILE[:applinks][:details][0][:appID],
+      "Global constant must remain a template, not hold request-specific appID"
   end
 
-  test "Android assetlinks mutates the global ANDROID_VERIFICATION_FILE constant (known bug)" do
+  test "Android assetlinks does not mutate the global ANDROID_VERIFICATION_FILE constant" do
     get "/.well-known/assetlinks.json", headers: public_host_headers
     assert_response :ok
 
-    # Same bug: the global constant now holds this domain's package_name.
-    assert_equal @android_config.identifier, ANDROID_VERIFICATION_FILE[:target][:package_name],
-      "BUG: Global constant holds request-specific package_name instead of being a template"
+    assert_not_equal @android_config.identifier, ANDROID_VERIFICATION_FILE[:target][:package_name],
+      "Global constant must remain a template, not hold request-specific package_name"
   end
 
   # --- Android assetlinks ---
@@ -109,5 +104,63 @@ class VerificationTest < ActionDispatch::IntegrationTest
 
   def public_host_headers
     { "Host" => "#{@domain.subdomain}.#{@domain.domain}" }
+  end
+end
+
+# Mobile-SDK contract: AASA / assetlinks fetched on a CustomHostname must return the
+# same appID / package_name as a fetch on the canonical *.sqd.link host. If this breaks
+# silently, deep links stop opening apps for every customer on a custom domain.
+class CustomHostVerificationTest < ActionDispatch::IntegrationTest
+  fixtures :instances, :projects, :domains, :applications,
+           :ios_configurations, :android_configurations,
+           :redirect_configs, :redirects, :custom_hostnames
+
+  setup do
+    enable_custom_domains!
+    @custom = custom_hostnames(:acme_active)
+    @ios_config = ios_configurations(:one)
+    @android_config = android_configurations(:one)
+    # Tests are wrapped in transactions; after_commit hooks (which clear the model cache)
+    # don't fire. Wipe the host's cache key at start so cross-test state doesn't leak.
+    @custom.send(:clear_cache)
+  end
+
+  teardown do
+    @custom&.send(:clear_cache)
+    disable_custom_domains!
+  end
+
+  test "iOS AASA on a custom hostname returns the project's iOS appID" do
+    get "/.well-known/apple-app-site-association", headers: { "Host" => @custom.hostname }
+    assert_response :ok
+    json = JSON.parse(response.body)
+    expected_app_id = "#{@ios_config.app_prefix}.#{@ios_config.bundle_id}"
+    assert_equal expected_app_id, json["applinks"]["details"][0]["appID"]
+  end
+
+  test "Android assetlinks on a custom hostname returns the project's package_name and sha256" do
+    get "/.well-known/assetlinks.json", headers: { "Host" => @custom.hostname }
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert_equal @android_config.identifier, json[0]["target"]["package_name"]
+    assert_equal @android_config.sha256s, json[0]["target"]["sha256_cert_fingerprints"]
+  end
+
+  test "iOS AASA on a non-resolvable custom hostname returns 404" do
+    @custom.update!(status: "suspended")
+    get "/.well-known/apple-app-site-association", headers: { "Host" => @custom.hostname }
+    assert_response :not_found
+  end
+
+  test "Android assetlinks on a non-resolvable custom hostname returns 404" do
+    @custom.update!(status: "suspended")
+    get "/.well-known/assetlinks.json", headers: { "Host" => @custom.hostname }
+    assert_response :not_found
+  end
+
+  test "AASA on a custom hostname returns 404 when the feature flag is off" do
+    disable_custom_domains!
+    get "/.well-known/apple-app-site-association", headers: { "Host" => @custom.hostname }
+    assert_response :not_found
   end
 end

@@ -2,14 +2,12 @@ require "test_helper"
 require "csv"
 
 class ExportLinkDataJobTest < ActiveSupport::TestCase
-  fixtures :instances, :projects, :users, :instance_roles, :links, :domains, :redirect_configs
+  fixtures :instances, :projects, :users, :instance_roles, :links, :domains, :redirect_configs, :campaigns
 
   setup do
     @job = ExportLinkDataJob.new
     @project = projects(:one)
     @user = users(:admin_user)
-    # Avoid .map on string fixture data
-    Link.where(domain: @project.domain).update_all(data: nil)
     # Clear pre-existing stats so we control the numbers
     LinkDailyStatistic.where(project_id: @project.id).delete_all
   end
@@ -76,6 +74,48 @@ class ExportLinkDataJobTest < ActiveSupport::TestCase
     end
 
     assert_equal @user.id, emailed_user.id
+  end
+
+  test "completes without raising and creates no file when user has no instance role" do
+    outsider = users(:oauth_user) # no instance_role for project one's instance
+    params = { "active" => true, "sdk" => false, "start_date" => "2026-03-01", "end_date" => "2026-03-15" }
+
+    assert_no_difference "DownloadableFile.count" do
+      @job.perform(@project.id, params, outsider.id)
+    end
+  end
+
+  test "export succeeds when link.data is a string" do
+    link = links(:basic_link)
+    link.update!(data: "utm_source=newsletter")
+    params = { "active" => true, "sdk" => false, "start_date" => "2026-03-01", "end_date" => "2026-03-15" }
+
+    DownloadFileMailer.stub(:download_file, ->(_d, _u) { OpenStruct.new(deliver_now: true) }) do
+      @job.perform(@project.id, params, @user.id)
+    end
+
+    csv = CSV.parse(DownloadableFile.last.file.download, headers: true)
+    link_row = csv.find { |row| row["Link ID"].to_i == link.id }
+    assert_equal "utm_source=newsletter", link_row["Data"]
+  end
+
+  test "exports only links in the given campaign when campaign_id present" do
+    campaign = campaigns(:one)
+    in_campaign = links(:campaign_link)
+    in_campaign.update!(campaign: campaign)
+    other = links(:basic_link)
+
+    params = { "active" => true, "sdk" => false, "start_date" => "2026-03-01",
+               "end_date" => "2026-03-15", "campaign_id" => campaign.id }
+
+    DownloadFileMailer.stub(:download_file, ->(_d, _u) { OpenStruct.new(deliver_now: true) }) do
+      @job.perform(@project.id, params, @user.id)
+    end
+
+    csv = CSV.parse(DownloadableFile.last.file.download, headers: true)
+    ids = csv.map { |row| row["Link ID"].to_i }
+    assert_includes ids, in_campaign.id
+    assert_not_includes ids, other.id
   end
 
   test "returns early when project not found — no file created" do

@@ -97,3 +97,83 @@ class AppstoreServiceTest < ActiveSupport::TestCase
     REDIS.del(@title_key, @appstore_id_key)
   end
 end
+
+class AppstoreLookupTest < ActiveSupport::TestCase
+  HttpResponse = Struct.new(:code, :body)
+
+  setup do
+    @bundle_id = "com.test.lookup.#{SecureRandom.hex(4)}"
+    @keys = ["#{Grovs::RedisKeys::TITLE_PREFIX}-ios-#{@bundle_id}",
+             "#{Grovs::RedisKeys::APPSTORE_PREFIX}-ios-#{@bundle_id}"]
+  end
+
+  teardown do
+    REDIS.del(*@keys)
+    StoreImage.where(identifier: @bundle_id).destroy_all
+  end
+
+  def itunes_hit(title: "Test App", image: "https://img.example.com/a.jpg", id: 99)
+    { "resultCount" => 1,
+      "results" => [{ "trackName" => title, "artworkUrl512" => image, "trackId" => id }] }.to_json
+  end
+
+  test "lookup parses title, image and id from the iTunes response" do
+    HTTParty.stub(:get, HttpResponse.new(200, itunes_hit)) do
+      result = AppstoreService.send(:get_image_title_id_online, @bundle_id)
+      assert_equal "Test App", result[:title]
+      assert_equal "https://img.example.com/a.jpg", result[:image]
+      assert_equal 99, result[:id]
+    end
+  end
+
+  test "lookup with no results returns empty response" do
+    HTTParty.stub(:get, HttpResponse.new(200, { "resultCount" => 0, "results" => [] }.to_json)) do
+      assert_equal({ title: nil, image: nil }, AppstoreService.send(:get_image_title_id_online, @bundle_id))
+    end
+  end
+
+  test "lookup with non-200 returns empty response" do
+    HTTParty.stub(:get, HttpResponse.new(503, "down")) do
+      assert_equal({ title: nil, image: nil }, AppstoreService.send(:get_image_title_id_online, @bundle_id))
+    end
+  end
+
+  test "full fetch creates a StoreImage with the downloaded artwork attached" do
+    responder = lambda do |url|
+      url.include?("itunes.apple.com") ? HttpResponse.new(200, itunes_hit) : HttpResponse.new(200, "fake-jpg-bytes")
+    end
+
+    result = HTTParty.stub(:get, responder) do
+      AppstoreService.fetch_image_and_title_for_identifier(@bundle_id)
+    end
+
+    assert_equal "Test App", result[:title]
+    assert_equal 99, result[:appstore_id]
+    image = StoreImage.find_by(identifier: @bundle_id, platform: Grovs::Platforms::IOS)
+    assert image.image.attached?, "artwork must be attached"
+    assert_equal "#{@bundle_id}.jpg", image.image.filename.to_s
+  end
+
+  test "stale StoreImage is replaced on fetch" do
+    stale = StoreImage.create!(identifier: @bundle_id, platform: Grovs::Platforms::IOS,
+                               created_at: 2.days.ago)
+    responder = lambda do |url|
+      url.include?("itunes.apple.com") ? HttpResponse.new(200, itunes_hit) : HttpResponse.new(200, "bytes")
+    end
+
+    HTTParty.stub(:get, responder) do
+      AppstoreService.fetch_image_and_title_for_identifier(@bundle_id)
+    end
+
+    assert_not StoreImage.exists?(stale.id), "stale image row must be destroyed"
+    assert StoreImage.exists?(identifier: @bundle_id, platform: Grovs::Platforms::IOS)
+  end
+
+  test "fetch without artwork url returns nil image and creates no StoreImage" do
+    HTTParty.stub(:get, HttpResponse.new(200, itunes_hit(image: nil))) do
+      result = AppstoreService.fetch_image_and_title_for_identifier(@bundle_id)
+      assert_nil result[:image]
+    end
+    assert_not StoreImage.exists?(identifier: @bundle_id)
+  end
+end

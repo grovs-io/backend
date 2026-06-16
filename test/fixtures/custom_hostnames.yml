@@ -1,0 +1,10 @@
+acme_active:
+  project: one
+  domain: one
+  hostname: links.acme.com
+  cf_custom_hostname_id: cf_active_1
+  status: active
+  ssl_status: active
+  source: saas
+  purpose: migration
+  activated_at: <%= 1.day.ago.to_fs(:db) %>

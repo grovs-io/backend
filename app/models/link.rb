@@ -64,9 +64,7 @@ class Link < ApplicationRecord
   end
 
   def full_path(domain)
-    host = domain.full_domain
-      
-    "#{host}/#{path}"
+    "#{domain.display_host}/#{path}"
   end
 
   def access_path

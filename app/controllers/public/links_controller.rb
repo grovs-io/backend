@@ -2,6 +2,20 @@ class Public::LinksController < Public::BaseController
   def open_app_link
     link = LinksService.link_for_request(request)
     unless link
+      # Migrate-from-competitors tail fallback: if this is an old-host click (and
+      # MIGRATIONS_ENABLED is on), the resolver returns either a 301 to a freshly-materialized
+      # Link OR a project_defaults outcome. Web entry omits expected_project — the host alone
+      # determines which source/project owns this click.
+      migration_outcome = MigrationResolver.resolve(
+        request.host,
+        request.path[1..].to_s,
+        query_string: request.query_string
+      )
+      if migration_outcome
+        Grovs::Metrics.increment("migration.outcome",
+          tags: { kind: migration_outcome.kind.to_s, provider: migration_outcome.provider })
+        return execute_migration_outcome(migration_outcome)
+      end
       render_not_found
       return
     end
@@ -68,6 +82,28 @@ class Public::LinksController < Public::BaseController
   end
 
   private
+
+  # Serve a MigrationOutcome from MigrationResolver. Web entry only — SDK callers read
+  # outcome.link directly without rendering.
+  def execute_migration_outcome(outcome)
+    case outcome.kind
+    when :redirect
+      # 301 to the materialized Link (with original query string preserved). The browser
+      # follows to <project_domain>/<new_slug>?... which runs the existing native orchestration
+      # and records Event/Visitor/LinkDailyStatistic — see design §6.1 two-request analytics.
+      redirect_to outcome.url, allow_other_host: true, status: :moved_permanently
+    when :project_defaults
+      # No link material; fall back to the project's redirect_config default_fallback. A
+      # future enhancement could route per-platform, but the simple default covers the MVP
+      # case where upstream said "not found" or errored — better than returning 404.
+      default_url = outcome.project&.redirect_config&.default_fallback
+      if default_url.present?
+        redirect_to default_url, allow_other_host: true, status: :found  # 302 — not canonical
+      else
+        render_not_found
+      end
+    end
+  end
 
   def execute_render_decision(decision)
     case decision[:action]

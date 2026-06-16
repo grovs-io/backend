@@ -9,6 +9,7 @@ class Api::V1::Sdk::LinksController < Api::V1::Sdk::BaseController
 
   def data_for_device_details_and_url
     link = LinksService.link_for_url(url_param, @project)
+    link ||= resolve_via_migration(url_param)
     result = build_link_data_service.resolve_for_link(link, request, user_agent_param)
     render json: result, status: :ok
   end
@@ -41,6 +42,15 @@ class Api::V1::Sdk::LinksController < Api::V1::Sdk::BaseController
   end
 
   private
+
+  # Migrate-from-competitors fallback when the URL doesn't match a native or custom-host
+  # Link. `url` here is the SDK's :url param — a full deep-link URL on iOS / Android-Intent,
+  # OR an Android Play Store Install Referrer string in the deferred-deep-link path.
+  # MigrationResolver dispatches between the two shapes. Multi-tenant guard via @project.
+  def resolve_via_migration(url)
+    outcome = MigrationResolver.resolve_from_sdk(url, expected_project: @project)
+    outcome&.redirect? ? outcome.link : nil
+  end
 
   def build_link_data_service
     SdkLinkDataService.new(

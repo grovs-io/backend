@@ -1,6 +1,15 @@
 require "test_helper"
 
 class PurchaseQueryServiceTest < ActiveSupport::TestCase
+
+  # The query's default window is the trailing 30 days; anchor all events inside
+  # it so the suite doesn't rot as the calendar advances (the original hardcoded
+  # 2026-03-* dates started failing once they fell out of the window).
+  DAY_1 = 9.days.ago.beginning_of_day # rubocop:disable Rails/RelativeDateConstant
+  DAY_2 = DAY_1 + 1.day
+  DAY_3 = DAY_1 + 2.days
+  DAY_4 = DAY_1 + 3.days
+
   fixtures :projects, :instances, :devices, :purchase_events
 
   setup do
@@ -11,49 +20,49 @@ class PurchaseQueryServiceTest < ActiveSupport::TestCase
     PurchaseEvent.where(project: @project).delete_all
 
     # 8 events: 6 buy, 1 cancel, 1 refund — all store+validated (visible to search)
-    # Dates: 3 on 03-01, 1 on 03-02, 2 on 03-03, 2 on 03-04
+    # Dates: 3 on DAY_1, 1 on DAY_2, 2 on DAY_3, 2 on DAY_4
     # 7 have usd_price_cents set, 1 (nil_usd) has nil
     PurchaseEvent.create!(event_type: "buy", device: devices(:ios_device), project: @project,
       identifier: "com.test.app", price_cents: 999, currency: "USD", usd_price_cents: 999,
-      date: "2026-03-01 10:00:00", transaction_id: "txn_buy_001",
+      date: DAY_1 + 10.hours, transaction_id: "txn_buy_001",
       original_transaction_id: "orig_txn_001", product_id: "com.test.premium",
       webhook_validated: true, store: true, processed: true, purchase_type: "subscription",
-      store_source: "apple", expires_date: "2027-03-01 10:00:00")
+      store_source: "apple", expires_date: DAY_1 + 1.year + 10.hours)
     PurchaseEvent.create!(event_type: "buy", device: devices(:ios_device), project: @project,
       identifier: "com.test.app", price_cents: 999, currency: "USD", usd_price_cents: 999,
-      date: "2026-03-02 10:00:00", transaction_id: "txn_buy_002",
+      date: DAY_2 + 10.hours, transaction_id: "txn_buy_002",
       original_transaction_id: "orig_txn_001", product_id: "com.test.premium",
       webhook_validated: true, store: true, processed: true, purchase_type: "subscription")
     PurchaseEvent.create!(event_type: "cancel", device: devices(:ios_device), project: @project,
       identifier: "com.test.app", price_cents: 999, currency: "USD", usd_price_cents: 999,
-      date: "2026-03-03 10:00:00", transaction_id: "txn_cancel_001",
+      date: DAY_3 + 10.hours, transaction_id: "txn_cancel_001",
       original_transaction_id: "orig_txn_001", product_id: "com.test.premium",
       webhook_validated: true, store: true, processed: true, purchase_type: "subscription")
     PurchaseEvent.create!(event_type: "refund", device: devices(:ios_device), project: @project,
       identifier: "com.test.app", price_cents: 499, currency: "USD", usd_price_cents: 499,
-      date: "2026-03-03 12:00:00", transaction_id: "txn_refund_001",
+      date: DAY_3 + 12.hours, transaction_id: "txn_refund_001",
       original_transaction_id: "orig_txn_002", product_id: "com.test.onetime",
       webhook_validated: true, store: true, processed: true, purchase_type: "one_time")
     PurchaseEvent.create!(event_type: "buy", device: devices(:android_device), project: @project,
       identifier: "com.test.app", price_cents: 499, currency: "USD", usd_price_cents: 499,
-      date: "2026-03-01 14:00:00", transaction_id: "txn_buy_ot_001",
+      date: DAY_1 + 14.hours, transaction_id: "txn_buy_ot_001",
       original_transaction_id: "orig_txn_002", product_id: "com.test.onetime",
       webhook_validated: true, store: true, processed: true, purchase_type: "one_time",
       store_source: "google")
     PurchaseEvent.create!(event_type: "buy", device: devices(:ios_device), project: @project,
       identifier: "com.test.app", price_cents: 1999, currency: "USD", usd_price_cents: 1999,
-      date: "2026-03-04 10:00:00", transaction_id: "txn_buy_unprocessed",
+      date: DAY_4 + 10.hours, transaction_id: "txn_buy_unprocessed",
       original_transaction_id: "orig_txn_003", product_id: "com.test.premium",
       webhook_validated: true, store: true, processed: false, purchase_type: "subscription")
     PurchaseEvent.create!(event_type: "buy", project: @project,
       identifier: "com.test.app", price_cents: 999, currency: "USD", usd_price_cents: 999,
-      date: "2026-03-01 16:00:00", transaction_id: "txn_buy_nodev",
+      date: DAY_1 + 16.hours, transaction_id: "txn_buy_nodev",
       original_transaction_id: "orig_txn_004", product_id: "com.test.premium",
       webhook_validated: true, store: true, processed: true, purchase_type: "subscription")
     # nil_usd_buy: usd_price_cents must be nil (before_save auto-converts, so null it after)
     nil_usd = PurchaseEvent.create!(event_type: "buy", device: devices(:ios_device), project: @project,
       identifier: "com.test.app", price_cents: 500, currency: "EUR",
-      date: "2026-03-04 12:00:00", transaction_id: "txn_nil_usd",
+      date: DAY_4 + 12.hours, transaction_id: "txn_nil_usd",
       original_transaction_id: "orig_txn_005", product_id: "com.test.premium",
       webhook_validated: true, store: true, processed: false, purchase_type: "subscription")
     nil_usd.update_column(:usd_price_cents, nil)
@@ -125,22 +134,22 @@ class PurchaseQueryServiceTest < ActiveSupport::TestCase
   # --- date range filtering ---
 
   test "search filters by date range returns matching events" do
-    result = @service.search(start_date: "2026-03-01", end_date: "2026-03-01")
-    # buy_event (10:00), buy_one_time (14:00), no_device_buy (16:00) = 3 events on 2026-03-01
+    result = @service.search(start_date: DAY_1.to_date.to_s, end_date: DAY_1.to_date.to_s)
+    # buy_event (10:00), buy_one_time (14:00), no_device_buy (16:00) = 3 events on DAY_1
     assert_equal 3, result.size
     result.each do |pe|
-      assert pe.date >= Date.new(2026, 3, 1).beginning_of_day
-      assert pe.date <= Date.new(2026, 3, 1).end_of_day
+      assert pe.date >= DAY_1
+      assert pe.date <= DAY_1.end_of_day
     end
   end
 
   test "search with narrow date range returns only that day" do
-    result = @service.search(start_date: "2026-03-03", end_date: "2026-03-03")
-    # cancel_event (10:00) + refund_event (12:00) = 2 events on 2026-03-03
+    result = @service.search(start_date: DAY_3.to_date.to_s, end_date: DAY_3.to_date.to_s)
+    # cancel_event (10:00) + refund_event (12:00) = 2 events on DAY_3
     assert_equal 2, result.size
     result.each do |pe|
-      assert_equal Date.new(2026, 3, 3), pe.date.to_date,
-        "Event #{pe.transaction_id} date #{pe.date} should be on 2026-03-03"
+      assert_equal DAY_3.to_date, pe.date.to_date,
+        "Event #{pe.transaction_id} date #{pe.date} should be on DAY_3"
     end
   end
 
@@ -283,15 +292,15 @@ class PurchaseQueryServiceTest < ActiveSupport::TestCase
 
   test "search applies both date range and term filter simultaneously" do
     result = @service.search(
-      start_date: "2026-03-01", end_date: "2026-03-01",
+      start_date: DAY_1.to_date.to_s, end_date: DAY_1.to_date.to_s,
       term: "buy"
     )
-    # On 2026-03-01 there are 3 events: buy_event, buy_one_time, no_device_buy — all "buy" type
+    # On DAY_1 there are 3 events: buy_event, buy_one_time, no_device_buy — all "buy" type
     assert_equal 3, result.size
     result.each do |pe|
       assert_match(/buy/i, pe.event_type)
-      assert pe.date >= Date.new(2026, 3, 1).beginning_of_day
-      assert pe.date <= Date.new(2026, 3, 1).end_of_day
+      assert pe.date >= DAY_1
+      assert pe.date <= DAY_1.end_of_day
     end
   end
 end

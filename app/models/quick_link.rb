@@ -41,10 +41,7 @@ class QuickLink < ApplicationRecord
   end
 
   def full_path(domain)
-    subdomain = domain.subdomain
-    domain = domain.domain
-      
-    "#{subdomain}.#{domain}/#{path}"
+    "#{domain.display_host}/#{path}"
   end
 
   def access_path

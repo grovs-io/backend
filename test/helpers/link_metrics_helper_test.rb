@@ -63,6 +63,33 @@ class LinkMetricsHelperTest < ActiveSupport::TestCase
     assert_not_includes inactive_result.map(&:id), @link.id
   end
 
+  test "filters by campaign_id" do
+    campaign = campaigns(:one)
+    in_campaign = Link.create!(
+      domain: @domain, redirect_config: redirect_configs(:one),
+      path: "camp-#{SecureRandom.hex(4)}", generated_from_platform: "ios",
+      sdk_generated: false, active: true, campaign: campaign
+    )
+
+    result = fetch_links_for_search_params(@project.id, @user.id, true, false, campaign.id)
+
+    assert_includes result.map(&:id), in_campaign.id
+    assert_not_includes result.map(&:id), @link.id
+  end
+
+  test "nil campaign_id returns links regardless of campaign" do
+    in_campaign = Link.create!(
+      domain: @domain, redirect_config: redirect_configs(:one),
+      path: "camp-#{SecureRandom.hex(4)}", generated_from_platform: "ios",
+      sdk_generated: false, active: true, campaign: campaigns(:one)
+    )
+
+    result = fetch_links_for_search_params(@project.id, @user.id, true, false, nil)
+
+    assert_includes result.map(&:id), in_campaign.id
+    assert_includes result.map(&:id), @link.id
+  end
+
   test "filters by sdk_generated" do
     sdk_link = Link.create!(
       domain: @domain, redirect_config: redirect_configs(:one),
@@ -160,6 +187,61 @@ class LinkMetricsHelperTest < ActiveSupport::TestCase
     assert_equal "0", row["Open"]
     assert_equal "0", row["Install"]
     assert_equal "0", row["Time Spent"]
+  end
+
+  test "returns empty string for nil links" do
+    csv = export_links_metrics_to_csv(
+      links: nil,
+      project_id: @project.id,
+      start_date: Date.new(2026, 3, 1),
+      end_date: Date.new(2026, 3, 2)
+    )
+
+    assert_equal "", csv
+  end
+
+  test "formats hash data as key=value pairs" do
+    @link.update!(data: { "k1" => "v1", "k2" => "v2" })
+
+    csv = export_links_metrics_to_csv(
+      links: [@link], project_id: @project.id,
+      start_date: Date.new(2026, 3, 1), end_date: Date.new(2026, 3, 2)
+    )
+
+    assert_equal "k1=v1, k2=v2", CSV.parse(csv, headers: true).first["Data"]
+  end
+
+  test "merges array-of-hashes data into key=value pairs" do
+    @link.update!(data: [{ "k1" => "v1" }, { "k2" => "v2" }])
+
+    csv = export_links_metrics_to_csv(
+      links: [@link], project_id: @project.id,
+      start_date: Date.new(2026, 3, 1), end_date: Date.new(2026, 3, 2)
+    )
+
+    assert_equal "k1=v1, k2=v2", CSV.parse(csv, headers: true).first["Data"]
+  end
+
+  test "string data is exported as-is without crashing" do
+    @link.update!(data: "utm_source=newsletter")
+
+    csv = export_links_metrics_to_csv(
+      links: [@link], project_id: @project.id,
+      start_date: Date.new(2026, 3, 1), end_date: Date.new(2026, 3, 2)
+    )
+
+    assert_equal "utm_source=newsletter", CSV.parse(csv, headers: true).first["Data"]
+  end
+
+  test "numeric data is exported as string without crashing" do
+    @link.update!(data: 42)
+
+    csv = export_links_metrics_to_csv(
+      links: [@link], project_id: @project.id,
+      start_date: Date.new(2026, 3, 1), end_date: Date.new(2026, 3, 2)
+    )
+
+    assert_equal "42", CSV.parse(csv, headers: true).first["Data"]
   end
 
   test "returns empty string for empty links array" do
