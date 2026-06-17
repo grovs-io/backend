@@ -87,6 +87,68 @@ class InstancesApiTest < ActionDispatch::IntegrationTest
     assert InstanceRole.exists?(user_id: new_user.id, instance_id: @instance.id)
   end
 
+  test "self-hosted mode returns a working copyable invite_url for a new member" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    ENV["REACT_HOST_PROTOCOL"] = "https://"
+    ENV["REACT_HOST"] = "dash.example.com"
+    headers = doorkeeper_headers_for(@admin_user)
+
+    post "#{API_PREFIX}/instances/#{@instance.id}/members",
+      params: { email: "sh-invitee@example.com", role: "member" },
+      headers: headers
+
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert json["invite_url"].present?, "self-hosted response must include invite_url"
+    assert_match %r{\Ahttps://dash\.example\.com/accept-invite\?token=.+}, json["invite_url"]
+
+    # token in the URL must be a real, valid pending invitation
+    token = json["invite_url"].split("token=").last
+    found = User.find_by_invitation_token(token, true)
+    assert_equal "sh-invitee@example.com", found&.email, "invite_url token must accept the invitation"
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+    ENV.delete("REACT_HOST_PROTOCOL")
+    ENV.delete("REACT_HOST")
+  end
+
+  test "self-hosted add_member succeeds without SMTP (no synchronous invitation email)" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    ENV["REACT_HOST_PROTOCOL"] = "https://"
+    ENV["REACT_HOST"] = "dash.example.com"
+    headers = doorkeeper_headers_for(@admin_user)
+
+    # Simulate a broken mailer (no SMTP): the synchronous Devise invite email would
+    # 500 the request in production. Self-hosted must skip it and still return invite_url.
+    Devise::Mailer.stub(:invitation_instructions, ->(*) { raise "SMTP unavailable" }) do
+      post "#{API_PREFIX}/instances/#{@instance.id}/members",
+        params: { email: "no-smtp-invitee@example.com", role: "member" },
+        headers: headers
+    end
+
+    assert_response :ok
+    assert JSON.parse(response.body)["invite_url"].present?,
+           "invite_url must be returned even when the mailer is unavailable"
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+    ENV.delete("REACT_HOST_PROTOCOL")
+    ENV.delete("REACT_HOST")
+  end
+
+  test "non-self-hosted add-member response has NO invite_url (SaaS response unchanged)" do
+    ENV.delete("GROVS_SELF_HOSTED")
+    headers = doorkeeper_headers_for(@admin_user)
+
+    post "#{API_PREFIX}/instances/#{@instance.id}/members",
+      params: { email: "saas-invitee@example.com", role: "member" },
+      headers: headers
+
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert_not json.key?("invite_url"), "SaaS response must not include invite_url"
+    assert_equal "member", json["role_added"]["role"]
+  end
+
   test "member cannot add member (admin-only) and no role is created" do
     headers = doorkeeper_headers_for(@member_user)
     assert_no_difference "InstanceRole.count" do

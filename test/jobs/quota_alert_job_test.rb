@@ -255,6 +255,30 @@ class QuotaAlertJobTest < ActiveSupport::TestCase
     assert_includes emailed_users, users(:member_user).id, "Should email member user"
   end
 
+  # --- Self-hosted mode ---
+
+  test "self-hosted mode sends no quota emails and exits early" do
+    create_visitors_with_stats(@instance.production, 200) # would normally trigger an exceeded email
+
+    sent = false
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    QuotaMailer.stub(:quota_exceeded, lambda { |*_| 
+      sent = true
+      OpenStruct.new(deliver_now: true)
+    }) do
+      QuotaMailer.stub(:quota_progress, lambda { |*_| 
+        sent = true
+        OpenStruct.new(deliver_now: true)
+      }) do
+        @job.perform(@instance.id)
+      end
+    end
+
+    assert_not sent, "self-hosted must not send any quota emails"
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+  end
+
   private
 
   def create_visitors_with_stats(project, count)

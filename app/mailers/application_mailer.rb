@@ -1,4 +1,4 @@
 class ApplicationMailer < ActionMailer::Base
-  default from: 'noreply@grovs.io'
+  default from: ENV.fetch('MAILER_FROM', 'noreply@grovs.io')
   layout 'mailer'
 end

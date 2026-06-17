@@ -8,6 +8,31 @@ class WebhooksApiTest < ActionDispatch::IntegrationTest
 
   WEBHOOK_KEY = "test-quotas-webhook-key"
 
+  # --- Self-hosted mode ---
+
+  test "self-hosted mode acks stripe_webhook without verifying or processing" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    verified = false
+
+    Stripe::Webhook.stub(:construct_event, lambda { |*_| 
+      verified = true
+      raise "should not be called"
+    }) do
+      post "#{API_PREFIX}/webhooks/stripe",
+        params: { type: "invoice.paid" }.to_json,
+        headers: api_headers.merge(
+          "Content-Type" => "application/json",
+          "HTTP_STRIPE_SIGNATURE" => "irrelevant"
+        )
+    end
+
+    assert_response :ok
+    assert_equal "Ok", JSON.parse(response.body)["message"]
+    assert_not verified, "must not attempt Stripe signature verification in self-hosted mode"
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+  end
+
   # --- stripe_webhook ---
 
   test "stripe_webhook with signature verification failure returns 400" do

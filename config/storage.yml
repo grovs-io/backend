@@ -13,6 +13,11 @@ amazon:
   secret_access_key: <%= ENV['AWS_S3_ACCESS_KEY'] %>
   region: <%= ENV['AWS_S3_REGION'] %>
   bucket: <%= ENV['AWS_S3_BUCKET'] %>
+<% unless ENV['S3_ENDPOINT'].to_s.empty? %>
+  # S3-compatible (MinIO) — emitted only when set, so AWS config is unchanged.
+  endpoint: <%= ENV['S3_ENDPOINT'] %>
+  force_path_style: <%= ENV.fetch('S3_FORCE_PATH_STYLE', 'true') %>
+<% end %>
 # Remember not to checkin your GCS keyfile to a repository
 # google:
 #   service: GCS

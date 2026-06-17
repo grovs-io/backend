@@ -1,6 +1,8 @@
 class Api::V1::WebhooksController < Api::V1::ProjectsBaseController
   # Stripe webhook
   def stripe_webhook
+    return render(json: { message: "Ok" }, status: :ok) if Grovs.self_hosted? # no Stripe self-hosted
+
     sig_header = request.env['HTTP_STRIPE_SIGNATURE']
     payload = request.body.read
 
@@ -30,6 +32,8 @@ class Api::V1::WebhooksController < Api::V1::ProjectsBaseController
   end
 
   def send_stripe_quotas
+    return render(json: { message: "Ok" }, status: :ok) if Grovs.self_hosted? # no Stripe self-hosted
+
     api_key = request.headers['X-API-KEY'].to_s
     unless ActiveSupport::SecurityUtils.secure_compare(api_key, ENV.fetch('SENT_QUOTAS_WEBHOOK_KEY', ''))
       render json: {error: "Forbidden"}, status: :forbidden

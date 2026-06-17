@@ -68,6 +68,46 @@ class UsersApiTest < ActionDispatch::IntegrationTest
     assert_equal "Invalid client ID", json["error"]
   end
 
+  # --- Self-hosted: public registration closed ---
+
+  test "create is rejected with 403 in self-hosted mode" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    assert_no_difference "User.count" do
+      post "#{API_PREFIX}/users",
+        params: { client_id: @client_app.uid, email: "selfhosted-signup@example.com", password: "password123", name: "X" },
+        headers: api_headers
+    end
+    assert_response :forbidden
+    assert_equal "Sign-ups are disabled", JSON.parse(response.body)["error"]
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+  end
+
+  test "accept_invite still works in self-hosted mode (invites are not gated)" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    invited = User.invite!(email: "sh-invitee@example.com", skip_invitation: true)
+
+    post "#{API_PREFIX}/users/accept_invite",
+      params: { invitation_token: invited.raw_invitation_token,
+                password: "invited-pass-123", name: "Invitee", client_id: @client_app.uid },
+      headers: api_headers
+
+    assert_response :ok
+    assert JSON.parse(response.body)["access_token"].present?, "invited user must still be able to join"
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+  end
+
+  test "create works on SaaS/private deployments (not self-hosted) — unchanged" do
+    ENV.delete("GROVS_SELF_HOSTED")
+    assert_difference "User.count", 1 do
+      post "#{API_PREFIX}/users",
+        params: { client_id: @client_app.uid, email: "saas-signup@example.com", password: "password123", name: "Default" },
+        headers: api_headers
+    end
+    assert_response :ok
+  end
+
   # --- Current User Details ---
 
   test "current_user_details returns correct user data with roles" do

@@ -44,5 +44,8 @@ production:
   adapter: postgresql
   encoding: unicode
   url: <%= ENV['DATABASE_URL'] %>
-  pool: 50
+  # Falls back to thread count so a self-hosted box that lowers RAILS_MAX_THREADS
+  # auto-sizes the pool; default 50 (prior prod value) when neither is set, so prod
+  # — which sets neither — is unchanged.
+  pool: <%= ENV.fetch("RAILS_DB_POOL") { ENV.fetch("RAILS_MAX_THREADS", 50) }.to_i %>
   prepared_statements: false

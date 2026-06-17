@@ -2,6 +2,10 @@ class Api::V1::UsersController < ApplicationController
   before_action :doorkeeper_authorize!, except: [:create, :reset_password, :change_password, :accept_invite]
 
   def create
+    # Public registration: open on SaaS, closed when self-hosted (use invite links).
+    # Does NOT gate accept_invite — invited users are authorized by their token.
+    return render(json: { error: "Sign-ups are disabled" }, status: :forbidden) if Grovs.self_hosted?
+
     client_app = Doorkeeper::Application.find_by(uid: client_id_param)
     return render(json: { error: "Invalid client ID" }, status: :forbidden) unless client_app
 

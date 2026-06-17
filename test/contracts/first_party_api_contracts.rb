@@ -133,7 +133,9 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
     properties: { "members" => { "type" => "array", "items" => INSTANCE_ROLE_RESPONSE } }
   )
   ROLE_ENVELOPE = strict_object(required: %w[role], properties: { "role" => INSTANCE_ROLE_RESPONSE })
-  ROLE_ADDED_ENVELOPE = strict_object(required: %w[role_added], properties: { "role_added" => INSTANCE_ROLE_RESPONSE })
+  # invite_url is optional and only present in self-hosted mode (copyable invite link);
+  # SaaS/private responses omit it, so the SaaS contract is unchanged.
+  ROLE_ADDED_ENVELOPE = strict_object(required: %w[role_added], properties: { "role_added" => INSTANCE_ROLE_RESPONSE, "invite_url" => STRING })
 
   SETUP_STEP_RESPONSE = strict_object(
     required: %w[category step_identifier completed_at],

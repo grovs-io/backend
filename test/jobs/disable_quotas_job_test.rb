@@ -173,6 +173,27 @@ class DisableQuotasJobTest < ActiveSupport::TestCase
       "Instance state should persist (quota_exceeded=false) even though QuotaAlertJob raised after save"
   end
 
+  # --- Self-hosted mode ---
+
+  test "self-hosted mode skips the entire job: no Stripe call, no quota change" do
+    @instance.update!(quota_exceeded: true)
+    create_visitors_with_stats(@instance.production, 50) # would normally be evaluated
+    touched = false
+
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    StripeService.stub(:set_usage, ->(_inst) { touched = true }) do
+      QuotaAlertJob.stub(:perform_async, ->(_id) { touched = true }) do
+        @job.perform
+      end
+    end
+
+    assert_not touched, "self-hosted must not call Stripe or enqueue quota alerts"
+    @instance.reload
+    assert @instance.quota_exceeded?, "self-hosted must not modify quota_exceeded"
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+  end
+
   private
 
   def create_visitors_with_stats(project, count)

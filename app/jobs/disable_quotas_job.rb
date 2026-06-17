@@ -3,6 +3,8 @@ class DisableQuotasJob
   sidekiq_options queue: :default, retry: 3
 
   def perform
+    return if Grovs.self_hosted? # no quota enforcement when self-hosted
+
     Rails.logger.debug("Executing 'disable_quotas , send_quotas_to_stripe' Rake task...")
     # Load Rake tasks
     send_quotas_to_stripe()

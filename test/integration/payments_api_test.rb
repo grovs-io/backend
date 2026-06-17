@@ -48,6 +48,27 @@ class PaymentsApiTest < ActionDispatch::IntegrationTest
     mock_service.verify
   end
 
+  # --- Self-hosted mode ---
+
+  test "self-hosted mode returns billing-disabled (403) and never touches Stripe" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    headers = doorkeeper_headers_for(@admin_user)
+    service_built = false
+
+    SubscriptionBillingService.stub(:new, lambda { |**_args| 
+      service_built = true
+      Minitest::Mock.new
+    }) do
+      post "#{API_PREFIX}/instances/#{@instance.id}/billing/subscriptions", headers: headers
+    end
+
+    assert_response :forbidden
+    assert_equal "Billing is disabled in self-hosted mode", JSON.parse(response.body)["error"]
+    assert_not service_built, "must short-circuit before building the Stripe billing service"
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+  end
+
   # --- subscription_details ---
 
   test "subscription_details as member with no subscription returns 404" do
@@ -166,6 +187,21 @@ class PaymentsBillingActionsTest < ActionDispatch::IntegrationTest
 
     assert_response :ok
     assert_equal 1234, JSON.parse(response.body)["current_quantity"]
+  end
+
+  test "self-hosted mode does NOT gate read-only analytics (current_mau stays reachable)" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    mock = Minitest::Mock.new
+    mock.expect(:current_mau, { current_quantity: 7, total_available: "999999999" })
+
+    stub_billing(mock) do
+      get "#{API_PREFIX}/instances/#{@instance.id}/billing/mau", headers: @admin_headers
+    end
+
+    assert_response :ok, "current_mau must remain reachable in self-hosted mode (not gated)"
+    assert_equal 7, JSON.parse(response.body)["current_quantity"]
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
   end
 
   test "current_usage returns usage payload when subscribed" do

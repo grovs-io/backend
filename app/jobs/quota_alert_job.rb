@@ -3,6 +3,8 @@ class QuotaAlertJob
   sidekiq_options queue: :default, retry: 1
 
   def perform(instance_id)
+    return if Grovs.self_hosted? # no quota warnings when self-hosted
+
     project_helper = ProjectService.new
     instance = Instance.find_by(id: instance_id)
     return unless instance

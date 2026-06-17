@@ -1,8 +1,15 @@
 class Api::V1::PaymentsController < Api::V1::ProjectsBaseController
   include DashboardAuthorization
+
+  # Stripe-calling actions: admin-only, and disabled when self-hosted. The read
+  # endpoints (current_mau/subscription_details/current_usage) are intentionally
+  # left open — they serve analytics or 404 without any Stripe call.
+  STRIPE_ACTIONS = %i[create_subscription_session stripe_dashboard_url cancel_subscription].freeze
+
   before_action :doorkeeper_authorize!
   before_action :load_instance
-  before_action :check_access, only: [:create_subscription_session, :stripe_dashboard_url, :cancel_subscription]
+  before_action :check_access, only: STRIPE_ACTIONS
+  before_action :reject_if_self_hosted, only: STRIPE_ACTIONS
 
   def create_subscription_session
     result = billing_service.create_checkout_session(user: current_user)
@@ -48,6 +55,14 @@ class Api::V1::PaymentsController < Api::V1::ProjectsBaseController
   end
 
   private
+
+  # 403 disabled response for STRIPE_ACTIONS when self-hosted (no Stripe keys).
+  # { error } shape matches their existing contract. No-op on SaaS.
+  def reject_if_self_hosted
+    return unless Grovs.self_hosted?
+
+    render json: { error: "Billing is disabled in self-hosted mode" }, status: :forbidden
+  end
 
   def billing_service
     SubscriptionBillingService.new(instance: @instance)

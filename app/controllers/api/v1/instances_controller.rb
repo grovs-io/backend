@@ -69,7 +69,13 @@ class Api::V1::InstancesController < Api::V1::ProjectsBaseController
       return
     end
 
-    render json: {role_added: InstanceRoleSerializer.serialize(role)}, status: :ok
+    payload = {role_added: InstanceRoleSerializer.serialize(role)}
+    # Self-hosted only: add a copyable invite link. SaaS response is unchanged.
+    if Grovs.self_hosted? && service.last_invitation_token.present?
+      payload[:invite_url] = "#{ENV['REACT_HOST_PROTOCOL']}#{ENV['REACT_HOST']}/accept-invite?token=#{service.last_invitation_token}"
+    end
+
+    render json: payload, status: :ok
   end
 
   def remove_member_from_instance

@@ -1,4 +1,8 @@
 class InstanceProvisioningService
+  # Raw token of the last freshly-invited user (nil if they already existed);
+  # used to build the self-hosted invite link.
+  attr_reader :last_invitation_token
+
   def initialize(current_user:)
     @current_user = current_user
   end
@@ -79,13 +83,18 @@ class InstanceProvisioningService
 
     existing_role = InstanceRole.role_for_user_and_instance(user, instance)
     if existing_role
-      NewMemberMailer.new_member(instance, user).deliver_later
+      NewMemberMailer.new_member(instance, user).deliver_later unless Grovs.self_hosted?
       return nil
     end
 
-    user ||= User.invite!({ email: email }, @current_user)
+    if user.nil?
+      # Self-hosted: skip the Devise invite email — invite! sends it synchronously and
+      # would 500 the request with no SMTP. Token is still generated for the invite link.
+      user = User.invite!({ email: email, skip_invitation: Grovs.self_hosted? }, @current_user)
+      @last_invitation_token = user.raw_invitation_token # present once, in-memory
+    end
 
-    if user && !existing_role
+    if user && !existing_role && !Grovs.self_hosted?
       NewMemberMailer.new_member(instance, user).deliver_later
     end
 

@@ -1,3 +1,3 @@
-:concurrency: 40
+:concurrency: <%= ENV.fetch("SIDEKIQ_EVENTS_CONCURRENCY", 40).to_i %>
 :queues:
   - [events, 100]

@@ -2,7 +2,8 @@ class LinkOpenOrchestrationService
   class << self
     # Returns :quota_exceeded or :ok
     def call(project:, device:, link:, request:, go_to_fallback:, grovs_redirect:)
-      return :quota_exceeded if project.instance.quota_exceeded
+      # self-hosted never blocks link opens on quota
+      return :quota_exceeded if !Grovs.self_hosted? && project.instance.quota_exceeded
 
       if LinkDisplayService.should_log_view?(go_to_fallback, device, grovs_redirect)
         EventIngestionService.log_async(Grovs::Events::VIEW, project, device, nil, link)

@@ -31,6 +31,27 @@ class LinkOpenOrchestrationServiceTest < ActiveSupport::TestCase
     assert_empty side_effects, "No side effects should fire when quota exceeded"
   end
 
+  test "self-hosted mode does NOT block on quota: side effects fire and returns :ok" do
+    @project.instance.update_column(:quota_exceeded, true)
+    fired = []
+
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    EventIngestionService.stub(:log_async, ->(*_) { fired << :log }) do
+      ActionsService.stub(:create_if_needed, ->(*_) { fired << :action }) do
+        FingerprintingService.stub(:cache_device, ->(*_) { fired << :fp }) do
+          LinkDisplayService.stub(:should_log_view?, true) do
+            assert_equal :ok, call_service, "self-hosted must not return :quota_exceeded"
+          end
+        end
+      end
+    end
+
+    assert_includes fired, :action, "side effects must run even when quota_exceeded is true"
+    assert_includes fired, :fp
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+  end
+
   # ---------------------------------------------------------------------------
   # VIEW event logging
   # ---------------------------------------------------------------------------

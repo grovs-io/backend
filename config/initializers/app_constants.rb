@@ -127,6 +127,11 @@ module Grovs
     ENV.fetch("FREE_MAU_COUNT", "10000").to_i
   end
 
+  # Default false → every self-hosted branch is a no-op on SaaS/private deployments.
+  def self.self_hosted?
+    ENV["GROVS_SELF_HOSTED"] == "true"
+  end
+
   # Reads ENV per call so tests can toggle.
   def self.custom_domains_enabled?
     ENV["CUSTOM_DOMAINS_ENABLED"] == "true" &&

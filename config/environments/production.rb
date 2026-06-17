@@ -33,6 +33,9 @@ Rails.application.configure do
   # Store uploaded files on the local file system (see config/storage.yml for options).
   config.active_storage.service = :amazon
 
+  # Self-hosted serves blobs via the backend (MinIO is private); SaaS keeps redirect mode.
+  config.active_storage.resolve_model_to_route = :rails_storage_proxy if ENV['GROVS_SELF_HOSTED'] == 'true'
+
   # Mount Action Cable outside main process or domain.
   # config.action_cable.mount_path = nil
   # config.action_cable.url = 'wss://example.com/cable'
@@ -121,10 +124,25 @@ Rails.application.configure do
   # Dynamic links
   config.hosts = nil
 
-  config.action_mailer.default_options = { from: 'Grovs <noreply@grovs.io>' }
-  config.action_mailer.delivery_method = :sendgrid_actionmailer
-  config.action_mailer.sendgrid_actionmailer_settings = {
-    api_key: ENV['SENDGRID_API_KEY'],
-    mail_settings: { sandbox_mode: { enable: false }}
-  }
+  config.action_mailer.default_options = { from: ENV.fetch('MAILER_FROM', 'Grovs <noreply@grovs.io>') }
+
+  # Opt into SMTP with MAILER_DELIVERY_METHOD=smtp; default stays SendGrid (SaaS unchanged).
+  if ENV['MAILER_DELIVERY_METHOD'] == 'smtp'
+    config.action_mailer.delivery_method = :smtp
+    config.action_mailer.smtp_settings = {
+      address: ENV['SMTP_ADDRESS'],
+      port: ENV.fetch('SMTP_PORT', 587).to_i,
+      domain: ENV['SMTP_DOMAIN'],
+      user_name: ENV['SMTP_USERNAME'],
+      password: ENV['SMTP_PASSWORD'],
+      authentication: ENV.fetch('SMTP_AUTHENTICATION', 'plain'),
+      enable_starttls_auto: ENV.fetch('SMTP_ENABLE_STARTTLS_AUTO', 'true') == 'true'
+    }
+  else
+    config.action_mailer.delivery_method = :sendgrid_actionmailer
+    config.action_mailer.sendgrid_actionmailer_settings = {
+      api_key: ENV['SENDGRID_API_KEY'],
+      mail_settings: { sandbox_mode: { enable: false }}
+    }
+  end
 end
