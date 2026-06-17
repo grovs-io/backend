@@ -24,16 +24,12 @@ unless domain
 end
 
 if ENV["BOOTSTRAP_ADMIN_EMAIL"].present? && ENV["BOOTSTRAP_ADMIN_PASSWORD"].present?
-  # Self-hosted: first admin from env (no SMTP/SSO needed). Idempotent — never
-  # rotates an existing user's password or duplicates their instance.
+  # Self-hosted: first admin from env (no SMTP/SSO needed). Idempotent.
+  # No default instance/project — the admin creates their first project in the dashboard.
   admin = User.find_or_initialize_by(email: ENV["BOOTSTRAP_ADMIN_EMAIL"])
   if admin.new_record?
     admin.name = "Admin"
     admin.password = ENV["BOOTSTRAP_ADMIN_PASSWORD"]
     admin.save!
-  end
-
-  if admin.persisted? && admin.instances.empty?
-    InstanceProvisioningService.new(current_user: admin).create(name: "Default")
   end
 end
