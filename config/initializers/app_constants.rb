@@ -74,8 +74,8 @@ module Grovs
 
   module Links
     VALIDITY_MINUTES = 5
-    LOGO = ENV.fetch("DEFAULT_LOGO_URL", "")
-    SOCIAL_PREVIEW = ENV.fetch("DEFAULT_SOCIAL_PREVIEW_URL", "")
+    LOGO = ENV.fetch("DEFAULT_LOGO_URL", "https://appssemble-assets.s3.eu-north-1.amazonaws.com/linksquared/logo-square-new.svg")
+    SOCIAL_PREVIEW = ENV.fetch("DEFAULT_SOCIAL_PREVIEW_URL", "https://appssemble-assets.s3.eu-north-1.amazonaws.com/linksquared/social-media-placeholder.jpg")
     DEFAULT_TITLE = ENV.fetch("DEFAULT_LINK_TITLE", "grovs")
     DEFAULT_SUBTITLE = ENV.fetch("DEFAULT_LINK_SUBTITLE", "Dynamic links, attributions, and referrals across mobile and web platforms.")
   end
