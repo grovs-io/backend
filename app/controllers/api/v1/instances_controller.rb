@@ -104,8 +104,8 @@ class Api::V1::InstancesController < Api::V1::ProjectsBaseController
 
   def instance_details
     prod_fallback = @instance.production&.redirect_config&.default_fallback != nil
-    links = @instance.production&.domain&.links&.exists? || @instance.test&.domain&.links&.exists?
-    campaigns = @instance.production&.campaigns&.exists? || @instance.test&.campaigns&.exists?
+    links = @instance.production&.domain&.links&.exists? || @instance.test&.domain&.links&.exists? || false
+    campaigns = @instance.production&.campaigns&.exists? || @instance.test&.campaigns&.exists? || false
 
     get_started_setup = {}
     get_started_setup[:ios_sdk] = @instance.ios_application&.configuration != nil
