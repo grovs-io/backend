@@ -51,13 +51,20 @@ class Public::PublicLinkController < ActionController::Base
     Domain.find_by(domain: Grovs::Domains::LIVE, subdomain: Grovs::Subdomains::GO)
   end
 
+  # Escalating lengths + bounded attempts: 16^5 is only ~1M paths, so an
+  # exhausted namespace must degrade to longer paths, never spin forever.
+  # "create" is reserved (routes collide with the create action).
   def generate_random_path
-    loop do
-      # generate a random token string and return it,
-      # unless there is already another token with the same string
-      path = SecureRandom.hex(32)[0, 5]
-      break path unless QuickLink.exists?(path: path) && path != "create"
+    [5, 8, 10, 12].each do |length|
+      5.times do
+        path = SecureRandom.hex((length + 1) / 2)[0, length]
+        next if path == "create"
+
+        return path unless QuickLink.exists?(path: path)
+      end
     end
+
+    raise LinksService::PathGenerationError, "could not generate a unique quick-link path"
   end
 
   def render_not_found

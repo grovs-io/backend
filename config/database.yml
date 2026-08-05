@@ -49,3 +49,12 @@ production:
   # — which sets neither — is unchanged.
   pool: <%= ENV.fetch("RAILS_DB_POOL") { ENV.fetch("RAILS_MAX_THREADS", 50) }.to_i %>
   prepared_statements: false
+  # The DB is reached via a floating alias IP (10.0.0.100). If the private-net
+  # path blips, established sockets die silently and, without these, the kernel
+  # retransmits for ~15 min while every Puma thread blocks in poll() — full outage.
+  connect_timeout: 5
+  keepalives: 1
+  keepalives_idle: 10
+  keepalives_interval: 5
+  keepalives_count: 3
+  tcp_user_timeout: 10000

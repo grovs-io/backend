@@ -3,6 +3,8 @@ require 'public_suffix'
 
 class LinksService
 
+  class PathGenerationError < StandardError; end
+
   class << self
 
     # Short-circuits on MAIN hosts so scanner traffic on *.sqd.link doesn't fire a second
@@ -273,17 +275,25 @@ class LinksService
       
     end
 
-    def generate_valid_path(domain)
-      loop do
-        # generate a random token string and return it,
-        # unless there is already another token with the same string
-        path = SecureRandom.hex(4)[0,6]
-        if domain.project.test?
-          path += "-test"
-        end
+    # Path lengths escalate on collision streaks: a domain that has exhausted a
+    # namespace (16^6 is only ~16.7M — links.helsi.me filled it entirely, which
+    # wedged the whole fleet in infinite loops on 2026-08-05) silently graduates
+    # to longer paths instead of spinning forever.
+    PATH_LENGTHS = [6, 8, 10, 12].freeze
+    ATTEMPTS_PER_LENGTH = 5
 
-        break path unless Link.exists?(domain: domain, path: path)
+    def generate_valid_path(domain)
+      suffix = domain.project.test? ? "-test" : ""
+
+      PATH_LENGTHS.each do |length|
+        ATTEMPTS_PER_LENGTH.times do
+          path = SecureRandom.hex((length + 1) / 2)[0, length] + suffix
+
+          return path unless Link.exists?(domain: domain, path: path)
+        end
       end
+
+      raise PathGenerationError, "could not generate a unique path for domain #{domain.id}"
     end
 
   end

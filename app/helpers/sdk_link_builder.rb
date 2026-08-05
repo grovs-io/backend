@@ -49,7 +49,16 @@ module SdkLinkBuilder
       link.show_preview_android = show_preview_android_param
     end
 
-    link.save!
+    begin
+      attempts ||= 0
+      link.save!
+    rescue ActiveRecord::RecordNotUnique
+      # Lost a race on (domain_id, path) with a concurrent worker.
+      raise if (attempts += 1) > 3
+
+      link.path = LinksService.generate_valid_path(domain)
+      retry
+    end
 
     # Update custom redirects
     update_custom_redirects_for_link(link)
