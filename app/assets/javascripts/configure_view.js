@@ -44,54 +44,54 @@ function handleShowPreviewPage(
   hasAppInstalled,
   openAppIfInstalled
 ) {
-    // The "Open" button should actually try to open the app, not just skip
-    // straight to the store/fallback. Previously this ignored `deeplink` entirely
-    // (it was accepted as a parameter but never referenced), so the preview
-    // page's "Open" button always ended up at appstore/fallback via
-    // appendRedirectParam + the preview redirect, even when the app was installed.
-    if (isValidString(deeplink)) {
-      setPreviewAppData(title, image, "Open", deeplink);
+  // The "Open" button should actually try to open the app, not just skip
+  // straight to the store/fallback. Previously this ignored `deeplink` entirely
+  // (it was accepted as a parameter but never referenced), so the preview
+  // page's "Open" button always ended up at appstore/fallback via
+  // appendRedirectParam + the preview redirect, even when the app was installed.
+  if (isValidString(deeplink)) {
+    setPreviewAppData(title, image, "Open", deeplink);
 
-      const buttonElement = document.getElementById("open-app-button");
-      if (buttonElement) {
-        buttonElement.onclick = function () {
-          handleRedirectWithAppInstalled(
-            deeplink,
-            appstore,
-            fallback,
-            openInAppstoreText
-          );
-        };
-      }
-
-      appStoreButtonHidden(true);
-      openAppButtonHidden(false);
-      return;
+    const buttonElement = document.getElementById("open-app-button");
+    if (buttonElement) {
+      buttonElement.onclick = function () {
+        handleRedirectWithAppInstalled(
+          deeplink,
+          appstore,
+          fallback,
+          openInAppstoreText
+        );
+      };
     }
-
-    // Here i should navigate to appstore // fallback whatever that might be
-    var linkToRedirectToInCaseAppNotOpen = null;
-
-    if (isValidString(fallback)) {
-      linkToRedirectToInCaseAppNotOpen = fallback;
-    }
-
-    if (
-      isValidString(appstore) &&
-      (openAppIfInstalled === true || openAppIfInstalled === null)
-    ) {
-      linkToRedirectToInCaseAppNotOpen = appstore;
-    }
-
-    var newLink = linkToRedirectToInCaseAppNotOpen;
-    if (openAppIfInstalled === true || openAppIfInstalled === null) {
-      newLink = appendRedirectParam(linkToRedirectToInCaseAppNotOpen);
-    }
-
-    setPreviewAppData(title, image, "Open", newLink);
 
     appStoreButtonHidden(true);
     openAppButtonHidden(false);
+    return;
+  }
+
+  // Here i should navigate to appstore // fallback whatever that might be
+  var linkToRedirectToInCaseAppNotOpen = null;
+
+  if (isValidString(fallback)) {
+    linkToRedirectToInCaseAppNotOpen = fallback;
+  }
+
+  if (
+    isValidString(appstore) &&
+    (openAppIfInstalled === true || openAppIfInstalled === null)
+  ) {
+    linkToRedirectToInCaseAppNotOpen = appstore;
+  }
+
+  var newLink = linkToRedirectToInCaseAppNotOpen;
+  if (openAppIfInstalled === true || openAppIfInstalled === null) {
+    newLink = appendRedirectParam(linkToRedirectToInCaseAppNotOpen);
+  }
+
+  setPreviewAppData(title, image, "Open", newLink);
+
+  appStoreButtonHidden(true);
+  openAppButtonHidden(false);
 }
 
 function handleAutoRedirects(
