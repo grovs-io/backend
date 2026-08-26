@@ -74,27 +74,26 @@ function handleFallbackForUninstalledApp(appstore, fallback, openDeepLinkText) {
 }
 
 function handleRedirectIfNeeded(
-  deeplink,
-  appstore,
-  fallback,
-  openDeepLinkText,
-  hasAppInstalled
-) {
-  if (hasAppInstalled) {
-    handleRedirectWithAppInstalled(
       deeplink,
       appstore,
       fallback,
-      openDeepLinkText
-    );
-  } else {
-    handleRedirectWithAppNotInstalled(
-      null,
-      appstore,
-      fallback,
-      openDeepLinkText
-    );
-  }
+      openDeepLinkText,
+      hasAppInstalled
+    ) {
+      // Always attempt the deeplink first, regardless of hasAppInstalled.
+      // hasAppInstalled is only ever true within the ~5 minute install-attribution
+      // matching window (see FingerprintingService / VALIDITY_MINUTES) and is
+      // therefore false for the vast majority of returning users who already have
+      // the app but weren't matched to a fresh install event. Attempting the
+      // deeplink unconditionally lets the app-open/blur detection in
+      // handleRedirectWithAppInstalled decide the real outcome instead of
+      // short-circuiting straight to the store based on an unreliable signal.
+      handleRedirectWithAppInstalled(
+              deeplink,
+              appstore,
+              fallback,
+              openDeepLinkText
+            );
 }
 
 function handleRedirectWithAppNotInstalled(
