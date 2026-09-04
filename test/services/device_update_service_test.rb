@@ -169,6 +169,18 @@ class DeviceUpdateServiceTest < ActiveSupport::TestCase
     assert_nil result
   end
 
+  test "update_device_sync does not re-save when nothing changed and device is fresh" do
+    @device.update!(ip: "9.9.9.9", remote_ip: "8.8.8.8", user_agent: "SameUA/1.0")
+    @device.update_column(:updated_at, Time.current)
+    request = OpenStruct.new(ip: "9.9.9.9", remote_ip: "8.8.8.8", user_agent: "SameUA/1.0", env: @base_env)
+
+    called = false
+    @device.define_singleton_method(:save!) { |*| called = true }
+    DeviceUpdateService.update_device_sync(@device, request, nil)
+
+    assert_not called, "sync path must skip save! when ip/remote_ip/user_agent are unchanged"
+  end
+
   # --- set_device_data_async: enqueue ---
 
   test "set_device_data_async enqueues job when model changes" do

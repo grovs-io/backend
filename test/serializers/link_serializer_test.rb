@@ -136,4 +136,13 @@ class LinkSerializerTest < ActiveSupport::TestCase
     assert_nil result["android_custom_redirect"]
     assert_nil result["desktop_custom_redirect"]
   end
+
+  test "serializes copy_to_clipboard toggles" do
+    link = links(:basic_link)
+    link.update!(copy_to_clipboard_ios: true)
+    result = LinkSerializer.serialize(link)
+
+    assert_equal true, result["copy_to_clipboard_ios"]
+    assert_nil result["copy_to_clipboard_android"]
+  end
 end

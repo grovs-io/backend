@@ -441,4 +441,112 @@ class MigrationSourceTest < ActiveSupport::TestCase
     end
     assert_equal 0, call_count
   end
+
+  test "provider_hosted source is valid WITHOUT any CustomHostname" do
+    src = MigrationSource.new(
+      project: projects(:two), old_host: "xyz.app.link",
+      provider: Grovs::Migrations::PROVIDER_BRANCH,
+      credentials: { "branch_key" => "x" },
+      provider_hosted: true
+    )
+    assert_nil CustomHostname.redis_find_by(:hostname, "xyz.app.link")
+    assert src.valid?, "expected valid without CH: #{src.errors.full_messages.join('; ')}"
+  end
+
+  test "non-provider_hosted source still requires a CustomHostname" do
+    src = MigrationSource.new(
+      project: projects(:two), old_host: "xyz.app.link",
+      provider: Grovs::Migrations::PROVIDER_BRANCH,
+      credentials: { "branch_key" => "x" }
+    )
+    assert_not src.valid?
+    assert_match(/must first be added as a migration-purpose custom domain/, src.errors[:old_host].join)
+  end
+
+  test "extra_hosts are normalized: case, port, trailing dot, dedupe, old_host dropped" do
+    src = MigrationSource.new(
+      project: projects(:two), old_host: "xyz.app.link",
+      provider: Grovs::Migrations::PROVIDER_BRANCH,
+      credentials: { "branch_key" => "x" },
+      provider_hosted: true,
+      extra_hosts: ["XYZ-Alternate.App.Link", "xyz-alternate.app.link:443", "xyz-alternate.app.link.", "xyz.app.link", ""]
+    )
+    assert src.valid?, src.errors.full_messages.join("; ")
+    assert_equal ["xyz-alternate.app.link"], src.extra_hosts
+  end
+
+  test "extra_hosts rejected on a non-provider_hosted source" do
+    @source.extra_hosts = ["xyz-alternate.app.link"]
+    assert_not @source.valid?
+    assert_match(/only supported on provider-hosted/, @source.errors[:extra_hosts].join)
+  end
+
+  test "hostnames longer than 253 chars are rejected" do
+    long_host = "#{'a' * 60}.#{'b' * 60}.#{'c' * 60}.#{'d' * 60}.#{'e' * 20}.app.link"
+    assert long_host.length > 253, "test precondition"
+    src = MigrationSource.new(
+      project: projects(:two), old_host: "xyz.app.link",
+      provider: Grovs::Migrations::PROVIDER_BRANCH,
+      credentials: { "branch_key" => "x" },
+      provider_hosted: true, extra_hosts: [long_host]
+    )
+    assert_not src.valid?
+    assert src.errors[:extra_hosts].any?
+
+    src2 = MigrationSource.new(
+      project: projects(:two), old_host: long_host,
+      provider: Grovs::Migrations::PROVIDER_BRANCH,
+      credentials: { "branch_key" => "x" }, provider_hosted: true
+    )
+    assert_not src2.valid?
+    assert src2.errors[:old_host].any?
+  end
+
+  test "extra_hosts with an invalid hostname is rejected" do
+    src = MigrationSource.new(
+      project: projects(:two), old_host: "xyz.app.link",
+      provider: Grovs::Migrations::PROVIDER_BRANCH,
+      credentials: { "branch_key" => "x" },
+      provider_hosted: true, extra_hosts: ["bad_host/with/path"]
+    )
+    assert_not src.valid?
+    assert src.errors[:extra_hosts].any?
+  end
+
+  test "extra_hosts colliding with another source's old_host is rejected" do
+    src = MigrationSource.new(
+      project: projects(:two), old_host: "xyz.app.link",
+      provider: Grovs::Migrations::PROVIDER_BRANCH,
+      credentials: { "branch_key" => "x" },
+      provider_hosted: true, extra_hosts: [@source.old_host]
+    )
+    assert_not src.valid?
+    assert_match(/already in use/, src.errors[:extra_hosts].join)
+  end
+
+  test "old_host colliding with another source's extra_hosts is rejected" do
+    ch_less = MigrationSource.create!(
+      project: projects(:two), old_host: "xyz.app.link",
+      provider: Grovs::Migrations::PROVIDER_BRANCH,
+      credentials: { "branch_key" => "x" },
+      provider_hosted: true, extra_hosts: ["xyz-alternate.app.link"]
+    )
+    src = MigrationSource.new(
+      project: @project, old_host: "xyz-alternate.app.link",
+      provider: Grovs::Migrations::PROVIDER_BRANCH,
+      credentials: { "branch_key" => "x" },
+      provider_hosted: true
+    )
+    assert_not src.valid?
+    assert_match(/already in use/, src.errors[:old_host].join)
+  ensure
+    ch_less&.destroy
+  end
+
+  test "matches_host? matches old_host and extra_hosts only" do
+    src = MigrationSource.new(old_host: "xyz.app.link", extra_hosts: ["xyz-alternate.app.link"])
+    assert src.matches_host?("xyz.app.link")
+    assert src.matches_host?("xyz-alternate.app.link")
+    assert_not src.matches_host?("other.app.link")
+  end
 end

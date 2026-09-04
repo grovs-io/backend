@@ -18,6 +18,29 @@ class CustomDomainLifecycleJobTest < ActiveSupport::TestCase
                              status: "active", source: "saas" }.merge(attrs))
   end
 
+  test "a manual hostname with no subscription is never put into billing grace" do
+    enable_manual_custom_domains!
+    ch = CustomDomainProvisioningService.create(project: projects(:two), hostname: "links.selfhosted.com").custom_hostname
+
+    CustomDomainLifecycleJob.new.perform
+
+    assert_nil ch.reload.grace_until
+  end
+
+  test "a manual active hostname survives the grace window with its branding intact" do
+    enable_manual_custom_domains!
+    ch = CustomDomainProvisioningService.create(project: projects(:two), hostname: "links.selfhosted2.com").custom_hostname
+    ch.update!(status: "active")
+    domains(:two).update!(active_custom_host: ch.hostname)
+
+    CustomDomainLifecycleJob.new.perform
+    travel(8.days) { CustomDomainLifecycleJob.new.perform }
+
+    assert CustomHostname.exists?(id: ch.id), "a self-hosted row must never be torn down for non-payment"
+    assert_equal "active", ch.reload.status
+    assert_equal ch.hostname, domains(:two).reload.active_custom_host
+  end
+
   test "saas hostname on an unentitled instance enters grace and keeps resolving" do
     ch = unentitled_hostname
     CustomDomainLifecycleJob.new.perform

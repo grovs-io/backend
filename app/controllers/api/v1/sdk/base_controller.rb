@@ -57,7 +57,7 @@ class Api::V1::Sdk::BaseController < Api::V1::ProjectsBaseController
     @device = nil
 
     if linkedsquared_id
-      @visitor = Visitor.fetch_by_hash_id(linkedsquared_id, nil)
+      @visitor = Visitor.fetch_by_hash_id(linkedsquared_id, @project&.id)
       if @visitor
         @device = @visitor.device
       end

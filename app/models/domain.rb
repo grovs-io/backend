@@ -22,6 +22,13 @@ class Domain < ApplicationRecord
   def cache_keys_to_clear
     keys = super
     keys << multi_condition_cache_key({domain: self.domain, subdomain: subdomain}) if self.domain.present?
+
+    if previous_changes.key?('domain') || previous_changes.key?('subdomain')
+      old_domain = previous_changes.dig('domain', 0) || self.domain
+      old_subdomain = previous_changes.key?('subdomain') ? previous_changes.dig('subdomain', 0) : subdomain
+      keys << multi_condition_cache_key({domain: old_domain, subdomain: old_subdomain}) if old_domain.present?
+    end
+
     keys
   end
 

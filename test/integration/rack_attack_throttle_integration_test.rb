@@ -81,7 +81,36 @@ class RackAttackThrottleIntegrationTest < ActionDispatch::IntegrationTest
     assert_includes @matched, "req/ip"
   end
 
+  test "audit_export/token bucket fires per export token on the api host" do
+    register_audit_export_bucket(limit: 1)
+    headers = { "Host" => "api.sqd.link", "Authorization" => "Bearer aet_abc" }
+
+    2.times { get "/api/v1/instances/1/audit_events", headers: headers }
+
+    assert_equal 503, response.status, "second pull with the same export token should be throttled"
+    assert_includes @matched, "audit_export/token"
+  end
+
+  test "audit_export/token bucket does NOT fire for a Doorkeeper bearer" do
+    register_audit_export_bucket(limit: 1)
+    headers = { "Host" => "api.sqd.link", "Authorization" => "Bearer notanexporttoken" }
+
+    3.times { get "/api/v1/instances/1/audit_events", headers: headers }
+
+    assert_not_equal 503, response.status, "dashboard sessions must not count against the export bucket"
+    assert_not_includes @matched, "audit_export/token"
+  end
+
   private
+
+  def register_audit_export_bucket(limit:)
+    Rack::Attack.throttle("audit_export/token", limit: limit, period: 60) do |req|
+      if Rack::Attack.reserved_main_host?(req.host, Grovs::Subdomains::API) && req.path.match?(%r{/api/v1/instances/\w+/audit_events})
+        auth = req.env["HTTP_AUTHORIZATION"].to_s
+        Digest::SHA256.hexdigest(auth) if auth.include?("aet_")
+      end
+    end
+  end
 
   # 60s window, not prod's 1s — a second boundary between requests resets the counter.
   def register_sdk_bucket(limit:)

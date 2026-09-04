@@ -3,9 +3,13 @@ require 'rqrcode'
 class WebConfigurationService
   PLATFORM_CONFIG = {
     ios: {
-      show_preview: lambda { |link, rc| 
+      show_preview: lambda { |link, rc|
         v = link.show_preview_ios
         v.nil? ? rc.show_preview_ios : v
+      },
+      copy_to_clipboard: lambda { |link, rc|
+        v = link.copy_to_clipboard_ios
+        v.nil? ? rc.copy_to_clipboard_ios : v
       },
       custom_redirect: ->(link) { link.ios_custom_redirect },
       phone_redirect: ->(rc) { rc.ios_phone_redirect },
@@ -25,9 +29,13 @@ class WebConfigurationService
       }
     },
     android: {
-      show_preview: lambda { |link, rc| 
+      show_preview: lambda { |link, rc|
         v = link.show_preview_android
         v.nil? ? rc.show_preview_android : v
+      },
+      copy_to_clipboard: lambda { |link, rc|
+        v = link.copy_to_clipboard_android
+        v.nil? ? rc.copy_to_clipboard_android : v
       },
       custom_redirect: ->(link) { link.android_custom_redirect },
       phone_redirect: ->(rc) { rc.android_phone_redirect },
@@ -65,8 +73,11 @@ class WebConfigurationService
       project = redirect_config.project
 
       show_preview = pc[:show_preview].call(link, redirect_config)
+      copy_to_clipboard = (show_preview && pc[:copy_to_clipboard].call(link, redirect_config)) || false
+      copy_payload = copy_to_clipboard ? clipboard_copy_payload(link, device) : nil
 
-      custom_redirect = config_for_custom_redirect(pc[:custom_redirect].call(link), show_preview, redirect_config, link, project)
+      custom_redirect = config_for_custom_redirect(pc[:custom_redirect].call(link), show_preview, redirect_config, link, project,
+                                                   copy_to_clipboard: copy_to_clipboard, copy_payload: copy_payload)
       return custom_redirect if custom_redirect
 
       phone_redirect = pc[:phone_redirect].call(redirect_config)
@@ -99,10 +110,10 @@ class WebConfigurationService
         appstore_link = uri.to_s
       end
 
-      phone_config = map_redirect_to_configuration(name, image, appstore_link, deeplink, phone_redirect, default_fallback, device, project, show_preview, 
-redirect_config, link)
-      tablet_config = map_redirect_to_configuration(name, image, appstore_link, deeplink, tablet_redirect, default_fallback, device, project, show_preview, 
-redirect_config, link)
+      phone_config = map_redirect_to_configuration(name, image, appstore_link, deeplink, phone_redirect, default_fallback, device, project, show_preview,
+redirect_config, link, copy_to_clipboard: copy_to_clipboard, copy_payload: copy_payload)
+      tablet_config = map_redirect_to_configuration(name, image, appstore_link, deeplink, tablet_redirect, default_fallback, device, project, show_preview,
+redirect_config, link, copy_to_clipboard: copy_to_clipboard, copy_payload: copy_payload)
 
       return nil if phone_config.nil? || tablet_config.nil?
       tablet_config = phone_config if phone_redirect && tablet_redirect.nil?
@@ -130,7 +141,7 @@ redirect_config, link)
       if desktop_application
         configuration = desktop_application.configuration
 
-        if configuration.fallback_url
+        if configuration.fallback_url.present?
           has_fallback_explicitly_set = true
           default_fallback = configuration.fallback_url
         end

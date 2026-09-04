@@ -94,7 +94,78 @@ class VisitorsApiTest < ActionDispatch::IntegrationTest
     assert_kind_of Integer, json["number_of_generated_links"], "must return link count as integer"
   end
 
+  test "visitor details returns zero-filled metrics for a visitor with no daily stats" do
+    visitor = create_visitor
+
+    get "#{API_PREFIX}/projects/#{@project.id}/visitors/#{visitor.id}", headers: @headers
+
+    assert_response :ok
+    json = JSON.parse(response.body)
+
+    metrics = json["metrics"]
+    assert_kind_of Hash, metrics, "metrics must be zero-filled, not null"
+    assert_equal visitor.uuid, metrics["uuid"]
+    assert_equal "ios", metrics["platform"]
+    VisitorDailyStatistic::METRIC_COLUMNS.each do |col|
+      assert_equal 0, metrics["total_#{col}"], "total_#{col} must be 0"
+    end
+
+    aggregated = json["aggregated_metrics"]
+    assert_kind_of Hash, aggregated, "aggregated_metrics must be zero-filled, not null"
+    assert_equal visitor.uuid, aggregated["uuid"]
+    VisitorDailyStatistic::METRIC_COLUMNS.each do |col|
+      assert_equal 0, aggregated["invited_#{col}"], "invited_#{col} must be 0"
+    end
+  end
+
+  test "zero-filled metrics and aggregated_metrics shapes match the populated shapes" do
+    empty_visitor = create_visitor
+    populated_visitor = create_visitor
+    VisitorDailyStatistic.create!(visitor: populated_visitor, project_id: @project.id,
+                                  event_date: Date.current, platform: "ios", views: 1)
+    VisitorDailyStatistic.create!(visitor: empty_visitor, invited_by_id: populated_visitor.id,
+                                  project_id: @project.id, event_date: Date.current, platform: "ios", views: 1)
+
+    get "#{API_PREFIX}/projects/#{@project.id}/visitors/#{populated_visitor.id}", headers: @headers
+    populated = JSON.parse(response.body)
+    assert_equal 1, populated["metrics"]["total_views"], "populated path must be exercised"
+    assert_equal 1, populated["aggregated_metrics"]["invited_views"], "populated referral path must be exercised"
+
+    # empty_visitor has an own-stats row but zero referral rows → metrics populated, aggregated zero-filled
+    get "#{API_PREFIX}/projects/#{@project.id}/visitors/#{empty_visitor.id}", headers: @headers
+    mixed = JSON.parse(response.body)
+
+    zero_only = create_visitor
+    get "#{API_PREFIX}/projects/#{@project.id}/visitors/#{zero_only.id}", headers: @headers
+    zeroed = JSON.parse(response.body)
+
+    assert_equal populated["metrics"].keys.sort, zeroed["metrics"].keys.sort,
+                 "zero-filled and populated metrics must expose identical keys"
+    assert_equal populated["aggregated_metrics"].keys.sort, zeroed["aggregated_metrics"].keys.sort,
+                 "zero-filled and populated aggregated_metrics must expose identical keys"
+    assert_equal populated["aggregated_metrics"].keys.sort, mixed["aggregated_metrics"].keys.sort
+  end
+
+  test "zero-filled metrics keep the platform key when device platform is null" do
+    device = Device.create!(user_agent: "x", ip: "10.2.2.3", remote_ip: "10.2.2.3",
+                            vendor: "zf-#{SecureRandom.hex(4)}")
+    visitor = Visitor.create!(project: @project, device: device, uuid: SecureRandom.uuid)
+
+    get "#{API_PREFIX}/projects/#{@project.id}/visitors/#{visitor.id}", headers: @headers
+
+    metrics = JSON.parse(response.body)["metrics"]
+    assert metrics.key?("platform"), "platform key must be present even when the value is null"
+    assert_nil metrics["platform"]
+  end
+
   # --- Nonexistent Visitor ---
+
+  test "visitor details rejects a non-numeric id with 400 (uuid would integer-cast to a wrong visitor)" do
+    get "#{API_PREFIX}/projects/#{@project.id}/visitors/550e8400-e29b-41d4-a716-446655440001",
+      headers: @headers
+    assert_response :bad_request
+    assert_equal "visitor_id must be numeric", JSON.parse(response.body)["error"]
+  end
 
   test "visitor details for nonexistent ID returns 404 with no data leak" do
     get "#{API_PREFIX}/projects/#{@project.id}/visitors/999999999",
@@ -159,6 +230,14 @@ class VisitorsApiTest < ActionDispatch::IntegrationTest
     assert_equal "Forbidden", json["error"]
     assert_not json.key?("visitors"), "403 must not leak visitor data"
     assert_not json.key?("visitor"), "403 must not leak visitor data"
+  end
+
+  private
+
+  def create_visitor
+    device = Device.create!(user_agent: "x", ip: "10.2.2.1", remote_ip: "10.2.2.1",
+                            platform: "ios", vendor: "zf-#{SecureRandom.hex(4)}")
+    Visitor.create!(project: @project, device: device, uuid: SecureRandom.uuid)
   end
 end
 

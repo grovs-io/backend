@@ -17,6 +17,9 @@ require "rails/test_unit/railtie"
 require 'rack'
 require 'rack/cors'
 require_relative '../app/middleware/active_storage_error_handler'
+require_relative '../app/middleware/trusted_client_ip'
+# Required before the environment files so cache_store can use it.
+require_relative '../lib/grovs/redis_ssl'
 
 # Require the gems listed in Gemfile, including any gems
 # you've limited to :test, :development, or :production.
@@ -43,20 +46,23 @@ module Linksquared
 
     config.active_job.queue_adapter = :sidekiq
     config.action_mailer.deliver_later_queue_name = :default
+    config.action_mailer.delivery_job = "MailDeliveryJob"
 
     # Add the lib files
     config.autoload_paths << Rails.root.join("lib").to_s
     config.autoload_paths << Rails.root.join("app/services").to_s
 
-    # Enterprise Edition: conditionally load IAP/revenue features from ee/
+    # Enterprise Edition: conditionally load IAP/revenue and audit-log features from ee/
     if ENV.fetch("GROVS_EE", "false") == "true"
-      %w[controllers jobs services serializers].each do |subdir|
+      %w[controllers jobs models services serializers].each do |subdir|
         path = Rails.root.join("ee", "app", subdir)
         if Dir.exist?(path)
           config.autoload_paths << path.to_s
           config.eager_load_paths << path.to_s
         end
       end
+      ee_tasks = Rails.root.join("ee/lib/tasks")
+      config.paths["lib/tasks"] << ee_tasks.to_s if Dir.exist?(ee_tasks)
     end
 
     # Private extensions: load modules from an external directory.
@@ -74,7 +80,7 @@ module Linksquared
     end
 
     config.middleware.use ActionDispatch::Cookies
-    config.middleware.use ActionDispatch::Session::CookieStore, key: '_linksquared'
+    config.middleware.use ActionDispatch::Session::CookieStore, key: '_linksquared', secure: !Rails.env.local?, same_site: :lax
 
     # Make sure CloudFlare IP addresses are
     # removed from the X-Forwarded-For header
@@ -121,6 +127,17 @@ module Linksquared
     # This is not necessarly good, but we want to have the source of the IP address for the user
     config.action_dispatch.trusted_proxies = [IPAddr.new("0.0.0.0/0")]
 
+    # Pin remote_ip to the proxy's real-client header (X-Forwarded-For is spoofable).
+    config.middleware.insert_after ActionDispatch::RemoteIp, TrustedClientIp
+
+
+    # ClickHouse feature flags (runtime-toggleable via Rails console)
+    config.clickhouse_write_enabled = ENV.fetch('CLICKHOUSE_WRITE_ENABLED', 'false') == 'true'
+    config.clickhouse_read_enabled = ENV.fetch('CLICKHOUSE_READ_ENABLED', 'false') == 'true'
+    config.clickhouse_analytics_rollups_read_enabled =
+      ENV.fetch('CLICKHOUSE_ANALYTICS_ROLLUPS_READ_ENABLED', 'false') == 'true'
+    config.clickhouse_attribution_read_enabled =
+      ENV.fetch('CLICKHOUSE_ATTRIBUTION_READ_ENABLED', 'false') == 'true'
 
     config.lograge.enabled = true
     config.lograge.formatter = Lograge::Formatters::Json.new

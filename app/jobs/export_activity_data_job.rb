@@ -9,14 +9,15 @@ class ExportActivityDataJob
     current_user = User.find_by(id: current_user_id)
     return unless current_user
 
-    # Extract params
-    start_date_param = safe_params["start_date"]
-    end_date_param = safe_params["end_date"]
+    end_date = DateParamParser.call(safe_params["end_date"], default: Date.current)
+    start_date = DateParamParser.call(safe_params["start_date"], default: instance.created_at.to_date)
+    # An end_date sent alone can precede the default start; the report rejects an inverted range.
+    start_date = [start_date, end_date].min
 
     csv_string = ActiveUsersReport.new(
         project_ids: [instance.production.id, instance.test.id],
-        start_date: start_date_param,
-        end_date:   end_date_param
+        start_date: start_date,
+        end_date:   end_date
       ).call
 
     # Create downloadable file

@@ -73,6 +73,14 @@ class LinkManagementService
     link
   end
 
+  # update_columns, not update_column: reconciliation finds work by updated_at, so it must bump.
+  def set_hidden(link:, hidden:)
+    link.update_columns(sdk_generated: hidden, updated_at: Time.current)
+    link.reload
+    LinkDimensionSyncService.sync(link)
+    link
+  end
+
   # Returns Boolean
   def path_available?(path:, domain:)
     return false if contains_special_characters?(path)
@@ -92,14 +100,26 @@ class LinkManagementService
   def apply_tags(link, tags)
     return unless tags
 
-    parsed_tags = JSON.parse(tags)
+    parsed_tags = json_param(tags)
     raise ArgumentError, "Tags must be a JSON array" unless parsed_tags.is_a?(Array)
 
     link.tags = parsed_tags
   end
 
   def apply_data(link, data)
-    link.data = data ? JSON.parse(data) : nil
+    parsed = json_param(data)
+    raise ArgumentError, "Data must be a JSON array or object" unless parsed.nil? || parsed.is_a?(Array) || parsed.is_a?(Hash)
+
+    link.data = parsed
+  end
+
+  # The dashboard sends tags/data as JSON strings; an MCP tool sends the parsed structure.
+  def json_param(value)
+    return nil if value.nil? || (value.is_a?(String) && value.strip.empty?)
+    return JSON.parse(value) if value.is_a?(String)
+    return value.map { |v| v.respond_to?(:to_unsafe_h) ? v.to_unsafe_h : v } if value.is_a?(Array)
+
+    value.respond_to?(:to_unsafe_h) ? value.to_unsafe_h : value
   end
 
   def apply_image(link, image)

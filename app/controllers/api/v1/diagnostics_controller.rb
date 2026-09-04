@@ -92,6 +92,16 @@ class Api::V1::DiagnosticsController < ApplicationController
     }
   end
 
+  MONITORED_QUEUES = %w[events batch_events default maintenance device_updates].freeze
+
+  # Machine-readable health numbers for external monitoring (CloudWatch, etc.).
+  # Each subsystem reports independently — an outage becomes data, never a 500.
+  def health_metrics
+    render json: { timestamp: Time.current.iso8601 }
+      .merge(queue_health)
+      .merge(clickhouse: clickhouse_health)
+  end
+
   # Diagnostics endpoint - exercises PostgreSQL and Redis for metrics testing
   # Uses REAL database tables to generate actual PostgreSQL metrics
   # Usage: GET/POST /api/v1/diagnostics/test_diagnostics
@@ -194,7 +204,7 @@ class Api::V1::DiagnosticsController < ApplicationController
 
   def run_redis_diagnostics(results, iterations, test_run_key)
     redis_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    redis = Redis.new(url: ENV['REDIS_URL'] || 'redis://localhost:6379/0')
+    redis = Redis.new(url: ENV['REDIS_URL'] || 'redis://localhost:6379/0', ssl_params: Grovs::RedisSsl.params)
 
     iterations.times do |i|
       test_key = "diagnostics:test:#{test_run_key}:#{i}"
@@ -286,6 +296,28 @@ class Api::V1::DiagnosticsController < ApplicationController
       summary: results[:summary],
       hostname: results[:hostname]
     }.to_json)
+  end
+
+  def queue_health
+    {
+      events_pending: REDIS.llen(BatchEventProcessorJob::REDIS_KEY),
+      sidekiq_queues: MONITORED_QUEUES.index_with { |q| REDIS.llen("queue:#{q}") }
+    }
+  rescue StandardError => e
+    { events_pending: nil, sidekiq_queues: nil, redis_error: e.class.name }
+  end
+
+  def clickhouse_health
+    return { up: nil, disk_free_pct: nil, disabled: true } unless Clickhouse.read_enabled?
+
+    disk = Clickhouse.with_request_timeout(5) do
+      Clickhouse.with do |c|
+        c.select_value("SELECT round(100 * free_space / total_space, 1) FROM system.disks WHERE name = 'default'")
+      end
+    end
+    { up: true, disk_free_pct: disk&.to_f }
+  rescue StandardError => e
+    { up: false, disk_free_pct: nil, error: e.class.name }
   end
 
   def authenticate_diagnostics_api

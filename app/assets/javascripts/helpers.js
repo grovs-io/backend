@@ -109,3 +109,73 @@ function createRedirectUrl(link) {
 
   return redirectUrl;
 }
+
+var grovsCopyPayload = null;
+
+function registerClipboardCopy(config) {
+  if (config && config.copy_to_clipboard === true && isValidString(config.copy_payload)) {
+    grovsCopyPayload = config.copy_payload;
+  }
+}
+
+function copyThenGo(navigate) {
+  if (grovsCopyPayload == null) {
+    navigate();
+    return;
+  }
+
+  var done = false;
+  function go() {
+    if (!done) {
+      done = true;
+      navigate();
+    }
+  }
+
+  // Sync copy first: it finishes inside the tap gesture, so the app-switch cannot cancel it mid-write.
+  var ta = null;
+  var copied = false;
+  try {
+    ta = document.createElement('textarea');
+    ta.value = grovsCopyPayload;
+    ta.contentEditable = true;
+    ta.readOnly = false;
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    var range = document.createRange();
+    range.selectNodeContents(ta);
+    var selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    ta.focus(); // iOS: without focus execCommand reports success but writes nothing
+    ta.setSelectionRange(0, ta.value.length);
+    copied = document.execCommand('copy');
+    selection.removeAllRanges();
+  } catch (e) {
+    // fall through to the async API
+  } finally {
+    if (ta && ta.parentNode) { ta.parentNode.removeChild(ta); }
+  }
+
+  if (copied) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try { navigator.clipboard.writeText(grovsCopyPayload).catch(function () {}); } catch (e) {}
+    }
+    go();
+    return;
+  }
+
+  if (!navigator.clipboard || !navigator.clipboard.writeText) {
+    go();
+    return;
+  }
+
+  try {
+    navigator.clipboard.writeText(grovsCopyPayload).then(go, go);
+    setTimeout(go, 1000);
+  } catch (e) {
+    go();
+  }
+}

@@ -42,6 +42,9 @@ class Api::V1::WebhooksController < Api::V1::ProjectsBaseController
 
     Instance.find_each(batch_size: 100) do |instance|
       StripeService.set_usage(instance)
+    rescue ProjectService::MauReadUnavailable => e
+      # Skip this instance, keep the loop going: no usage pushed from a failed CH read.
+      Rails.logger.error("clickhouse.mau.read_failed instance=#{instance.id} — usage not sent: #{e.message}")
     end
 
     render json: {message: "Ok"}, status: :ok

@@ -11,6 +11,55 @@ class CustomDomainProvisioningServiceTest < ActiveSupport::TestCase
   end
   teardown { disable_custom_domains! }
 
+  test "manual mode create makes no Cloudflare call and lands pending" do
+    enable_manual_custom_domains!
+    called = false
+    CloudflareCustomHostnameService.stub(:create, lambda { |**|
+      called = true
+      { success: false }
+    }) do
+      result = CustomDomainProvisioningService.create(project: projects(:one), hostname: "links.selfhosted.com")
+      assert result.ok, result.error
+      ch = result.custom_hostname
+      assert_equal "pending", ch.status
+      assert_nil ch.cf_custom_hostname_id
+      assert ch.manual?
+    end
+    assert_not called, "manual mode must not contact Cloudflare"
+  end
+
+  # SOURCE_ENTERPRISE is what keeps the row out of CustomDomainLifecycleJob's teardown scope.
+  test "manual mode create mints an enterprise-source row" do
+    enable_manual_custom_domains!
+    result = CustomDomainProvisioningService.create(project: projects(:one), hostname: "links.selfhosted2.com")
+    assert result.ok, result.error
+    assert_equal "enterprise", result.custom_hostname.source
+  end
+
+  test "manual mode create needs no subscription" do
+    enable_manual_custom_domains!
+    StripeSubscription.delete_all
+    EnterpriseSubscription.delete_all
+    result = CustomDomainProvisioningService.create(project: projects(:one), hostname: "links.selfhosted3.com")
+    assert result.ok, result.error
+  end
+
+  test "manual mode destroy removes the row" do
+    enable_manual_custom_domains!
+    ch = CustomDomainProvisioningService.create(project: projects(:one), hostname: "links.selfhosted4.com").custom_hostname
+
+    assert CustomDomainProvisioningService.destroy(ch)
+    assert_nil CustomHostname.find_by(id: ch.id)
+  end
+
+  # Why destroy/reap/teardown need no manual branch at all.
+  test "Cloudflare delete short-circuits on a blank cf id without issuing a request" do
+    enable_manual_custom_domains!
+    HTTParty.stub(:delete, ->(*) { raise "no HTTP request expected" }) do
+      assert CloudflareCustomHostnameService.delete(cf_id: nil)
+    end
+  end
+
   test "create reserves the row then provisions at Cloudflare" do
     CloudflareCustomHostnameService.stub(:create, { success: true, cf_id: "cf_new", status: "pending", ssl_status: "pending_validation" }) do
       result = CustomDomainProvisioningService.create(project: projects(:one), hostname: "links.acmeco.com")

@@ -14,6 +14,55 @@ class SdkVisitorsTest < ActionDispatch::IntegrationTest
     @headers = sdk_headers_for(@project, @visitor, platform: "ios")
   end
 
+  # Without this the CH-served visitor sort/search keeps the old identifier until the next event.
+  test "changing the identifier enqueues a ClickHouse profile sync" do
+    enqueued = capture_profile_syncs do
+      post "#{SDK_PREFIX}/visitor_attributes",
+           params: { sdk_identifier: "user-renamed" }, headers: @headers
+    end
+
+    assert_response :success
+    assert_equal [@visitor.id], enqueued
+  end
+
+  test "clearing the identifier also enqueues a ClickHouse profile sync" do
+    @visitor.update!(sdk_identifier: "was-set")
+
+    enqueued = capture_profile_syncs do
+      post "#{SDK_PREFIX}/visitor_attributes", params: {}, headers: @headers
+    end
+
+    assert_equal [@visitor.id], enqueued
+    assert_nil @visitor.reload.sdk_identifier
+  end
+
+  # "" must land as NULL, or CH's blank bucket and PG's NULL bucket order it differently.
+  test "an empty-string identifier is stored as NULL, not an empty string" do
+    @visitor.update!(sdk_identifier: "was-set")
+
+    post "#{SDK_PREFIX}/visitor_attributes", params: { sdk_identifier: "" }, headers: @headers
+
+    assert_response :success
+    assert_nil @visitor.reload.sdk_identifier
+  end
+
+  test "a push-token-only update does not enqueue a profile sync" do
+    @visitor.update!(sdk_identifier: nil, sdk_attributes: nil)
+
+    enqueued = capture_profile_syncs do
+      post "#{SDK_PREFIX}/visitor_attributes",
+           params: { push_token: "tok-123" }, headers: @headers
+    end
+
+    assert_empty enqueued
+  end
+
+  def capture_profile_syncs(&block)
+    enqueued = []
+    SyncVisitorProfileJob.stub(:perform_later, ->(id) { enqueued << id }, &block)
+    enqueued
+  end
+
   # --- Unauthenticated ---
 
   test "get visitor attributes without SDK headers returns 403 with no data" do

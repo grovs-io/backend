@@ -6,11 +6,11 @@ class Api::V1::IapController < Api::V1::ProjectsBaseController
   before_action :verify_google_pubsub_token, only: [:google_handling]
 
   def apple_prod
-    handle_apple_notification
+    handle_apple_notification(Grovs::Apple::ENV_PRODUCTION)
   end
 
   def apple_test
-    handle_apple_notification
+    handle_apple_notification(Grovs::Apple::ENV_SANDBOX)
   end
 
   def google_handling
@@ -53,14 +53,14 @@ class Api::V1::IapController < Api::V1::ProjectsBaseController
 
   private
 
-  def handle_apple_notification
+  def handle_apple_notification(expected_environment)
     unless @instance&.revenue_collection_enabled?
       return render json: { result: "revenue collection not enabled" }, status: :ok
     end
 
     notification = JSON.parse(request.body.read)
 
-    value = @apple.handle_notification(notification, @project)
+    value = @apple.handle_notification(notification, @project, expected_environment: expected_environment)
     if value
       render json: { result: "ok" }, status: :ok
     else

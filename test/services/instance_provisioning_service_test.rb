@@ -202,6 +202,198 @@ class InstanceProvisioningServiceTest < ActiveSupport::TestCase
     end
   end
 
+  def count_new_member_mails(&block)
+    sent = 0
+    NewMemberMailer.stub(:new_member, lambda { |*| 
+      sent += 1
+      OpenStruct.new(deliver_later: true)
+    }, &block)
+    sent
+  end
+
+  test "add_member self-hosted without smtp skips all invite emails but keeps the token" do
+    instance = instances(:one)
+    new_email = "sh_nosmtp_#{SecureRandom.hex(4)}@test.com"
+    service = build_service
+
+    Grovs.stub(:self_hosted?, true) do
+      Grovs.stub(:smtp_enabled?, false) do
+        sent = count_new_member_mails do
+          assert_no_difference "ActionMailer::Base.deliveries.size" do
+            assert service.add_member(new_email, Grovs::Roles::MEMBER, instance)
+          end
+        end
+        assert_equal 0, sent
+        assert service.last_invitation_token.present?
+      end
+    end
+  end
+
+  test "add_member self-hosted with smtp sends the devise invite only, no member email" do
+    instance = instances(:one)
+    new_email = "sh_smtp_#{SecureRandom.hex(4)}@test.com"
+    service = build_service
+
+    Grovs.stub(:self_hosted?, true) do
+      Grovs.stub(:smtp_enabled?, true) do
+        sent = count_new_member_mails do
+          assert_difference "ActionMailer::Base.deliveries.size", 1 do
+            assert service.add_member(new_email, Grovs::Roles::MEMBER, instance)
+          end
+        end
+        assert_equal 0, sent, "an invitee gets invitation instructions, not the added-to-project mail"
+        assert service.last_invitation_token.present?
+      end
+    end
+  end
+
+  test "add_member self-hosted re-notifies an already-invited user only when smtp is on" do
+    instance = instances(:one)
+    other_user = User.create!(email: "sh_renotify_#{SecureRandom.hex(4)}@test.com", password: "password123")
+    InstanceRole.create!(role: Grovs::Roles::MEMBER, instance_id: instance.id, user_id: other_user.id)
+
+    Grovs.stub(:self_hosted?, true) do
+      Grovs.stub(:smtp_enabled?, false) do
+        sent = count_new_member_mails do
+          assert_nil build_service.add_member(other_user.email, Grovs::Roles::MEMBER, instance)
+        end
+        assert_equal 0, sent
+      end
+
+      Grovs.stub(:smtp_enabled?, true) do
+        sent = count_new_member_mails do
+          assert_nil build_service.add_member(other_user.email, Grovs::Roles::MEMBER, instance)
+        end
+        assert_equal 1, sent
+      end
+    end
+  end
+
+  test "add_member survives a rejected invite email and still returns the role and token" do
+    instance = instances(:one)
+    new_email = "sh_smtpfail_#{SecureRandom.hex(4)}@test.com"
+    service = build_service
+
+    Grovs.stub(:self_hosted?, true) do
+      Grovs.stub(:smtp_enabled?, true) do
+        boom = ->(*) { raise Net::SMTPFatalError, "554 Message rejected: Email address is not verified" }
+        sent = count_new_member_mails do
+          Devise::Mailer.stub(:invitation_instructions, boom) do
+            assert service.add_member(new_email, Grovs::Roles::MEMBER, instance)
+          end
+        end
+        assert_equal 0, sent
+        assert service.last_invitation_token.present?
+      end
+    end
+  end
+
+  test "add_member on SaaS ignores the smtp flag and sends emails as before" do
+    instance = instances(:one)
+    new_email = "saas_smtp_#{SecureRandom.hex(4)}@test.com"
+
+    Grovs.stub(:self_hosted?, false) do
+      Grovs.stub(:smtp_enabled?, true) do
+        sent = count_new_member_mails do
+          assert_difference "ActionMailer::Base.deliveries.size", 1 do
+            assert build_service.add_member(new_email, Grovs::Roles::MEMBER, instance)
+          end
+        end
+        assert_equal 0, sent
+      end
+    end
+  end
+
+  test "add_member re-invites a pending invitee added to a second instance" do
+    pending = User.invite!({ email: "sh_pending_#{SecureRandom.hex(4)}@test.com", skip_invitation: true }, @user)
+    first_token = pending.raw_invitation_token
+    InstanceRole.create!(role: Grovs::Roles::MEMBER, instance_id: instances(:one).id, user_id: pending.id)
+
+    Grovs.stub(:self_hosted?, true) do
+      Grovs.stub(:smtp_enabled?, true) do
+        service = build_service
+        sent = count_new_member_mails do
+          assert_difference "ActionMailer::Base.deliveries.size", 1 do
+            assert service.add_member(pending.email, Grovs::Roles::MEMBER, instances(:two))
+          end
+        end
+        assert_equal 0, sent, "a pending invitee gets only the re-invite, not the added-to-project mail"
+        token = service.invitation_tokens[pending.email]
+        assert token.present?
+        assert_not_equal first_token, token, "re-invite must issue a fresh token"
+        assert_equal pending.id, User.find_by_invitation_token(token, true)&.id
+      end
+    end
+  end
+
+  test "add_member re-adding a pending invitee to the same instance resends the invitation" do
+    pending = User.invite!({ email: "sh_resend_#{SecureRandom.hex(4)}@test.com", skip_invitation: true }, @user)
+    first_token = pending.raw_invitation_token
+    InstanceRole.create!(role: Grovs::Roles::MEMBER, instance_id: instances(:one).id, user_id: pending.id)
+
+    Grovs.stub(:self_hosted?, true) do
+      Grovs.stub(:smtp_enabled?, true) do
+        service = build_service
+        sent = count_new_member_mails do
+          assert_difference "ActionMailer::Base.deliveries.size", 1 do
+            assert_nil service.add_member(pending.email, Grovs::Roles::MEMBER, instances(:one))
+          end
+        end
+        assert_equal 0, sent, "a passwordless invitee must get the invitation again, not the project mail"
+        token = service.invitation_tokens[pending.email]
+        assert token.present?
+        assert_not_equal first_token, token
+      end
+    end
+  end
+
+  test "add_member self-hosted without smtp re-invites a pending invitee with token only" do
+    pending = User.invite!({ email: "sh_pending_ns_#{SecureRandom.hex(4)}@test.com", skip_invitation: true }, @user)
+
+    Grovs.stub(:self_hosted?, true) do
+      Grovs.stub(:smtp_enabled?, false) do
+        service = build_service
+        sent = count_new_member_mails do
+          assert_no_difference "ActionMailer::Base.deliveries.size" do
+            assert service.add_member(pending.email, Grovs::Roles::MEMBER, instances(:one))
+          end
+        end
+        assert_equal 0, sent
+        assert service.invitation_tokens[pending.email].present?
+      end
+    end
+  end
+
+  test "add_member does not re-invite a user who accepted or signed up normally" do
+    normal = User.create!(email: "sh_normal_#{SecureRandom.hex(4)}@test.com", password: "password123")
+
+    Grovs.stub(:self_hosted?, true) do
+      Grovs.stub(:smtp_enabled?, true) do
+        service = build_service
+        assert_no_difference "ActionMailer::Base.deliveries.size" do
+          count_new_member_mails do
+            assert service.add_member(normal.email, Grovs::Roles::MEMBER, instances(:one))
+          end
+        end
+        assert_empty service.invitation_tokens
+      end
+    end
+  end
+
+  test "add_member self-hosted with smtp emails an existing user granted a role" do
+    instance = instances(:one)
+    other_user = User.create!(email: "sh_existing_#{SecureRandom.hex(4)}@test.com", password: "password123")
+
+    Grovs.stub(:self_hosted?, true) do
+      Grovs.stub(:smtp_enabled?, true) do
+        sent = count_new_member_mails do
+          assert build_service.add_member(other_user.email, Grovs::Roles::MEMBER, instance)
+        end
+        assert_equal 1, sent
+      end
+    end
+  end
+
   # === generate_* helpers (implicitly tested) ===
 
   test "generate helpers produce correctly formatted values" do

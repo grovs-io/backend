@@ -35,6 +35,15 @@ class CustomHostname < ApplicationRecord
     status == "active"
   end
 
+  # Row state, not env state, so a CLOUDFLARE_* change never reinterprets existing rows.
+  def cloudflare?
+    cf_custom_hostname_id.present? || status == "provisioning"
+  end
+
+  def manual?
+    !cloudflare?
+  end
+
   def saas?
     source == SOURCE_SAAS
   end
@@ -85,7 +94,7 @@ class CustomHostname < ApplicationRecord
 
     parsed = PublicSuffix.parse(hostname)
     errors.add(:hostname, "must be a subdomain") if parsed.trd.blank?
-    errors.add(:hostname, "is reserved") if Grovs::Domains::MAIN.include?(parsed.domain)
+    errors.add(:hostname, "is reserved") if LinksService.deployment_host?(hostname.to_s.downcase)
   rescue PublicSuffix::Error
     errors.add(:hostname, "is invalid")
   end

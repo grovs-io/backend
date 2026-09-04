@@ -103,7 +103,7 @@ class FingerprintingService
     end
     
     def fingerprint_key(request_ip, remote_ip)
-      "fp:#{remote_ip}:#{remote_ip}"
+      "fp:#{request_ip}:#{remote_ip}"
     end
     
     def reverse_index_key(device_id, project_id)

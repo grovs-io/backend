@@ -1,9 +1,87 @@
 class VisitorStatisticsQuery < VisitorStatisticsQueryBase
   SORTABLE_VISITOR_FIELDS = %w[sdk_identifier uuid created_at].freeze
+  # Served from user_profiles, so the candidate id cap no longer gates these sorts.
+  CH_IDENTITY_FIELDS = %w[sdk_identifier uuid].freeze
+  PG_ORDERED_FIELDS = [].freeze
+
+  def call
+    if Clickhouse.analytics_rollups_read_enabled? && ch_orderable?
+      ch = ch_call
+      return ch if ch
+    end
+
+    result = super
+    # PG paths display ledger revenue too; a revenue SORT skips the overlay so
+    # order and values stay consistent (both stat-sourced until cutover).
+    overlay_ledger_revenue!(result) unless sort_by == "revenue"
+    result
+  end
 
   private
 
   def sortable_visitor_fields = SORTABLE_VISITOR_FIELDS
+  def pg_ordered_fields = PG_ORDERED_FIELDS
+  def ch_identity_fields = CH_IDENTITY_FIELDS
+
+  def ch_identity_page(order:, direction:, limit:, offset:, ids:)
+    ClickhouseReadService.visitor_metrics_page_by_identity(
+      project.id, start_date: start_date, end_date: end_date,
+      order: order, direction: direction, platform: platform,
+      limit: limit, offset: offset, visitor_ids: ids, term: term
+    )
+  end
+  def ch_metric_prefix = "total_"
+  def ch_hydration_scope = Visitor.includes(:device).where(project_id: project.id)
+
+  def decorate_ch_row(row, visitor)
+    row["platform"] = visitor.device&.platform
+  end
+
+  def ch_metrics_page(order:, direction:, limit:, offset:, ids:)
+    ClickhouseReadService.visitor_metrics_page(
+      project.id, start_date: start_date, end_date: end_date,
+      order: order, direction: direction, platform: platform,
+      limit: limit, offset: offset, visitor_ids: ids
+    )
+  end
+
+  def ch_active_ids(ids)
+    ClickhouseReadService.visitor_active_ids(
+      project.id, visitor_ids: ids, start_date: start_date, end_date: end_date, platform: platform
+    )
+  end
+
+  def ch_page_revenue(page_ids) = page_visitor_revenue(page_ids)
+
+  def overlay_ledger_revenue!(result)
+    return unless RevenueLedger.reads_enabled? && project
+
+    rows = result[:visitors]
+    return if rows.blank?
+
+    ledger = RevenueLedgerQuery.by_visitor_ids(
+      project.id, visitor_ids: rows.map { |r| r["id"] },
+      start_date: start_date, end_date: end_date, platform: platform
+    )
+    return if ledger.nil?
+
+    rows.each { |r| r["total_revenue"] = ledger.fetch(r["id"], 0) }
+  end
+
+  # Revenue never moves to CH: ledger when flagged, stat table otherwise/fallback.
+  def page_visitor_revenue(page_ids)
+    if RevenueLedger.reads_enabled?
+      ledger = RevenueLedgerQuery.by_visitor_ids(
+        project.id, visitor_ids: page_ids,
+        start_date: start_date, end_date: end_date, platform: platform
+      )
+      return ledger unless ledger.nil?
+    end
+
+    rel = VisitorDailyStatistic.where(visitor_id: page_ids, event_date: date_range)
+    rel = rel.where(platform: platform) if platform
+    rel.group(:visitor_id).sum(:revenue)
+  end
 
   def apply_joins(scope)
     scope.joins(:visitor_daily_statistics, :device)

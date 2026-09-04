@@ -1,7 +1,12 @@
 class Api::V1::CampaignsController < Api::V1::ProjectsBaseController
   include DashboardAuthorization
+  include Api::V1::Concerns::AnalyticsRetentionGate
+  # wrap_parameters nests JSON bodies under :campaign, breaking the strict request contract.
+  wrap_parameters false
   before_action :doorkeeper_authorize!
   before_action :authorize_and_load_project
+  # current_project_campaigns is excluded: sorted_by_campaigns is PG-only, no ClickHouse branch.
+  before_action :enforce_ch_retention_window!, only: %i[current_project_campaigns_v2 metrics_for_overview]
 
   def current_project_campaigns_v2
     campaigns = CampaignStatisticsQuery.new(project: @project, params: params).call
@@ -9,7 +14,11 @@ class Api::V1::CampaignsController < Api::V1::ProjectsBaseController
     render json: PaginatedResponse.new(campaigns, data: serialized), status: :ok
   end
 
+  # DEPRECATED / MARKED FOR DELETION (2026-07-15): superseded by current_project_campaigns_v2
+  # (campaigns/search_v2). Backed by EventMetricsQuery#sorted_by_campaigns — 2x raw-events scans
+  # + COUNT(DISTINCT device_id). FE no longer calls campaigns/search. Remove after zero-traffic check.
   def current_project_campaigns
+    Grovs::Metrics.increment("deprecated_endpoint.hit", tags: { endpoint: "campaigns/search" })
     campaigns = campaigns_for_search_params
     return unless campaigns
 
@@ -45,19 +54,28 @@ asc: asc_param, start_date: start_date, end_date: end_date)
     render json: { campaign: CampaignSerializer.serialize(archived) }, status: :ok
   end
 
+  # DEPRECATED (2026-07-25): remove with its route after zero external/MCP traffic check.
   def metrics_for_overview
     campaigns = campaigns_for_search_params
 
     start_date = DateParamParser.call(start_date_param, default: Date.today - 30)
     end_date = DateParamParser.call(end_date_param, default: Date.today)
 
-    events = Event.for_project(@project.id)
-                  .where(created_at: start_date.beginning_of_day..end_date.end_of_day)
-
     period = "day"
     campaign_ids = campaigns.ids
     query = EventMetricsQuery.new(project: @project)
-    metrics = query.overview(events, period, nil, false, nil, campaign_ids)
+
+    # active is never filtered here, so CH is eligible when the flag is on;
+    # overview_ch returns nil when CH is unavailable → fall back to PG.
+    metrics = nil
+    if Clickhouse.analytics_rollups_read_enabled?
+      metrics = query.overview_ch([@project.id], start_date, end_date, sdk_generated: false, campaign_ids: campaign_ids)
+    end
+    if metrics.nil?
+      events = Event.for_project(@project.id)
+                    .where(created_at: start_date.beginning_of_day..end_date.end_of_day)
+      metrics = query.overview(events, period, nil, false, nil, campaign_ids)
+    end
     metrics = query.fill_gaps(metrics, start_date, end_date, period)
 
     render json: metrics, status: :ok

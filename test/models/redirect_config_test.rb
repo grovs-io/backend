@@ -3,6 +3,21 @@ require "test_helper"
 class RedirectConfigTest < ActiveSupport::TestCase
   fixtures :redirect_configs, :projects, :redirects, :applications, :instances, :domains, :links, :custom_redirects
 
+  test "destroying redirect config preserves purchase ledger link attribution" do
+    link = links(:basic_link)
+    pe = PurchaseEvent.create!(
+      project: projects(:one), link_id: link.id, usd_price_cents: 100,
+      event_type: Grovs::Purchases::EVENT_BUY, transaction_id: "txn_rc_ledger"
+    )
+    link_ids = redirect_configs(:one).links.pluck(:id)
+    VisitorLastVisit.where(link_id: link_ids).delete_all
+
+    redirect_configs(:one).destroy!
+
+    assert_equal link.id, pe.reload.link_id, "ledger snapshot survives link deletion"
+    assert_nil pe.link, "association resolves to nil for the deleted link"
+  end
+
   # === associations ===
 
   test "has_many redirects with dependent delete_all" do

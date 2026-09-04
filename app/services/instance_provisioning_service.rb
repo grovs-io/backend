@@ -1,10 +1,14 @@
 class InstanceProvisioningService
-  # Raw token of the last freshly-invited user (nil if they already existed);
+  # Raw token of the most recent invitation issued (nil when none was);
   # used to build the self-hosted invite link.
   attr_reader :last_invitation_token
 
+  # email => raw token for every user freshly invited by this service instance.
+  attr_reader :invitation_tokens
+
   def initialize(current_user:)
     @current_user = current_user
+    @invitation_tokens = {}
   end
 
   # Creates Instance + 2 Projects + 2 Domains + 2 RedirectConfigs + InstanceRole + DesktopConfig
@@ -70,31 +74,46 @@ class InstanceProvisioningService
       InstanceRole.where(instance_id: instance.id).delete_all
     end
 
-    DeleteInstanceJob.perform_async(instance.id)
+    # Deferred: a caller's wrapping transaction may still roll back, and the enqueue must not survive it.
+    ActiveRecord.after_all_transactions_commit do
+      DeleteInstanceJob.perform_async(instance.id)
+    end
   end
 
   # 5-branch member invitation: self-check, already invited, new user invite, create role
   # Returns InstanceRole or nil
   def add_member(email, role, instance)
-    user = User.find_by(email: email)
+    user = User.find_for_email(email)
     if user && user.id == @current_user.id
       return
     end
 
+    skip_invite_emails = Grovs.self_hosted? && !Grovs.smtp_enabled?
+
     existing_role = InstanceRole.role_for_user_and_instance(user, instance)
     if existing_role
-      NewMemberMailer.new_member(instance, user).deliver_later unless Grovs.self_hosted?
+      # Re-adding a pending invitee is the "resend invite" gesture — the project mail would strand them.
+      if pending_invitee?(user)
+        reinvite(user, skip_invite_emails)
+      elsif !skip_invite_emails
+        NewMemberMailer.new_member(instance, user).deliver_later
+      end
       return nil
     end
 
+    freshly_invited = false
     if user.nil?
-      # Self-hosted: skip the Devise invite email — invite! sends it synchronously and
-      # would 500 the request with no SMTP. Token is still generated for the invite link.
-      user = User.invite!({ email: email, skip_invitation: Grovs.self_hosted? }, @current_user)
-      @last_invitation_token = user.raw_invitation_token # present once, in-memory
+      # Always skip Devise's synchronous send; deliver separately so an SMTP failure can't 500.
+      user = User.invite!({ email: email, skip_invitation: true }, @current_user)
+      issue_invitation(user, skip_invite_emails)
+      freshly_invited = true
+    elsif pending_invitee?(user)
+      reinvite(user, skip_invite_emails)
+      freshly_invited = true
     end
 
-    if user && !existing_role && !Grovs.self_hosted?
+    # Invitees get only the invitation instructions; the project mail is for established accounts.
+    if user && !existing_role && !skip_invite_emails && !freshly_invited
       NewMemberMailer.new_member(instance, user).deliver_later
     end
 
@@ -102,6 +121,29 @@ class InstanceProvisioningService
   end
 
   private
+
+  def pending_invitee?(user)
+    user.created_by_invite? && !user.invitation_accepted?
+  end
+
+  # Fresh token (the old link dies) + non-fatal delivery for a still-passwordless user.
+  def reinvite(user, skip_delivery)
+    user.skip_invitation = true
+    user.invite!
+    issue_invitation(user, skip_delivery)
+  end
+
+  def issue_invitation(user, skip_delivery)
+    @last_invitation_token = user.raw_invitation_token # present once, in-memory
+    @invitation_tokens[user.email] = user.raw_invitation_token
+    deliver_invitation_safely(user) unless skip_delivery
+  end
+
+  def deliver_invitation_safely(user)
+    user.deliver_invitation
+  rescue StandardError => e
+    Rails.logger.error("[InstanceProvisioningService] invite email to user #{user.id} failed: #{e.class}: #{e.message}")
+  end
 
   def generate_api_key(name)
     cleaned_name = name.gsub(/[^0-9a-z]/i, '').downcase.slice(0, 6)

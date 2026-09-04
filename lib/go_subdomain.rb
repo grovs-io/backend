@@ -1,5 +1,6 @@
 class GoSubdomain
   def self.matches?(request)
-    request.subdomain == Grovs::Subdomains::GO && Grovs::Domains::MAIN.include?(request.domain)
+    label, = Grovs::Domains.split(request.host)
+    label == Grovs::Subdomains::GO
   end
 end

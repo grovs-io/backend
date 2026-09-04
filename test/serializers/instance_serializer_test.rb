@@ -102,8 +102,18 @@ class InstanceSerializerTest < ActiveSupport::TestCase
   test "top-level keys include expected fields" do
     result = InstanceSerializer.serialize(instances(:one))
 
-    expected_keys = %w[api_key get_started_dismissed hash_id id production quota_exceeded revenue_collection_enabled test updated_at uri_scheme]
+    expected_keys = %w[analytics_retention api_key get_started_dismissed hash_id id production quota_exceeded revenue_collection_enabled test updated_at uri_scheme]
     assert_equal expected_keys, result.keys.sort
+  end
+
+  test "analytics_retention exposes the plan's queryable window" do
+    result = InstanceSerializer.serialize(instances(:one))
+    retention = result["analytics_retention"]
+
+    assert_equal %w[can_query_cold cold_after_days plan queryable_days], retention.keys.sort
+    assert_includes %w[free paid enterprise], retention["plan"]
+    assert_kind_of Integer, retention["queryable_days"]
+    assert_kind_of Integer, retention["cold_after_days"]
   end
 
   # ---------------------------------------------------------------------------

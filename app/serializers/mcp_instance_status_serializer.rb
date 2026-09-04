@@ -57,6 +57,10 @@ class McpInstanceStatusSerializer
     Rails.cache.fetch(cache_key, expires_in: 10.minutes) do
       ProjectService.new.current_mau(instance)
     end
+  rescue ProjectService::MauReadUnavailable => e
+    # Null usage beats 500ing /mcp/status for every instance.
+    Rails.logger.error("clickhouse.mau.read_failed instance=#{instance.id} — MCP usage degraded: #{e.message}")
+    nil
   end
 
   def app_configured?(platform)

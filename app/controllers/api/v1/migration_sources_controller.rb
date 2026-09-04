@@ -17,14 +17,21 @@ class Api::V1::MigrationSourcesController < Api::V1::ProjectsBaseController
   end
 
   def update
-    @source.update!(update_params)
+    ActiveRecord::Base.transaction do
+      @source.update!(update_params)
+      audit!("migration_source.updated", instance_id: @project.instance_id, target: migration_source_target(@source), changes: audit_diff(@source))
+    end
     render json: { migration_source: MigrationSourceSerializer.serialize(@source) }, status: :ok
   rescue ActiveRecord::RecordInvalid => e
     render json: { error: e.record.errors.full_messages.join(", ") }, status: :unprocessable_entity
   end
 
   def destroy
-    @source.destroy!
+    target = migration_source_target(@source)
+    ActiveRecord::Base.transaction do
+      @source.destroy!
+      audit!("migration_source.deleted", instance_id: @project.instance_id, target: target)
+    end
     render json: { message: "Migration source removed" }, status: :ok
   end
 
@@ -52,6 +59,10 @@ class Api::V1::MigrationSourcesController < Api::V1::ProjectsBaseController
 
   private
 
+  def migration_source_target(source)
+    audit_target(source).merge("provider" => source.provider, "hostname" => source.old_host)
+  end
+
   def load_source
     @source = @project.migration_source
     return if @source
@@ -76,7 +87,7 @@ class Api::V1::MigrationSourcesController < Api::V1::ProjectsBaseController
   }.freeze
 
   def update_params
-    raw = params.permit(:enabled, credentials: {})
+    raw = params.permit(:enabled, credentials: {}, extra_hosts: [])
     if raw[:credentials].present? && @source
       raw[:credentials] = slice_credentials(raw[:credentials], @source.provider)
     end

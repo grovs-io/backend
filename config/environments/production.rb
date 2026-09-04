@@ -31,7 +31,7 @@ Rails.application.configure do
   # config.action_dispatch.x_sendfile_header = 'X-Accel-Redirect' # for NGINX
 
   # Store uploaded files on the local file system (see config/storage.yml for options).
-  config.active_storage.service = :amazon
+  config.active_storage.service = ENV.fetch("ACTIVE_STORAGE_SERVICE", "amazon").to_sym
 
   # Self-hosted serves blobs via the backend (MinIO is private); SaaS keeps redirect mode.
   config.active_storage.resolve_model_to_route = :rails_storage_proxy if ENV['GROVS_SELF_HOSTED'] == 'true'
@@ -47,15 +47,18 @@ Rails.application.configure do
 
   # Include generic and useful information about system operation, but avoid logging too much
   # information to avoid inadvertent exposure of personally identifiable information (PII).
+  # Defaults to :error, so unset RAILS_LOG_LEVEL keeps existing behaviour. Lets a
+  # self-hosted operator raise verbosity without rebuilding the image.
+  config.log_level = ENV.fetch('RAILS_LOG_LEVEL', 'error').to_sym
   config.logger = Logger.new($stdout)
-  config.logger.level = Logger::ERROR
-  config.log_level = :error
+  config.logger.level = config.log_level
 
 
   # Use a different cache store in production.
   config.cache_store = :redis_cache_store, {
     url: ENV.fetch("REDIS_URL") { "redis://localhost:6379/1" },
-    namespace: 'grovs:cache'
+    namespace: 'grovs:cache',
+    ssl_params: Grovs::RedisSsl.params
   }
   # Use a real queuing backend for Active Job (and separate queues per environment).
   # config.active_job.queue_adapter     = :resque

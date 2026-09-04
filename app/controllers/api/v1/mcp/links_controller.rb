@@ -1,5 +1,11 @@
 class Api::V1::Mcp::LinksController < Api::V1::Mcp::BaseController
+  # wrap_parameters nests JSON bodies under :link, breaking the strict request contract.
+  wrap_parameters false
+  include Api::V1::Concerns::AnalyticsRetentionGate
+
   before_action :load_mcp_project
+  before_action :validate_campaign_id!, only: [:create, :index]
+  before_action :enforce_ch_retention_window!, only: [:index]
 
   # POST /api/v1/mcp/links
   def create
@@ -7,22 +13,25 @@ class Api::V1::Mcp::LinksController < Api::V1::Mcp::BaseController
     # Link model has no name validation — other create paths (SDK, dashboard) allow blank names.
     params.require(:name)
 
-    link = LinkManagementService.new(project: @project).create(
-      link_attrs: link_params,
-      tags: params[:tags],
-      data: params[:data],
-      image: params[:image],
-      image_url: params[:image_url],
-      campaign_id: params[:campaign_id],
-      custom_redirects: mcp_custom_redirect_params
-    )
-    # hidden=true maps to sdk_generated=true, hiding the link from the dashboard.
-    # Default is visible (sdk_generated=false, set by LinkManagementService).
-    # update_column bypasses callbacks intentionally — no cache or callbacks needed for this flag.
-    link.update_column(:sdk_generated, true) if params[:hidden] == true
+    link = ActiveRecord::Base.transaction do
+      created = LinkManagementService.new(project: @project).create(
+        link_attrs: link_params,
+        tags: params[:tags],
+        data: params[:data],
+        image: params[:image],
+        image_url: params[:image_url],
+        campaign_id: campaign_id_param,
+        custom_redirects: mcp_custom_redirect_params
+      )
+      # hidden=true maps to sdk_generated=true, hiding the link from the dashboard.
+      LinkManagementService.new(project: @project).set_hidden(link: created, hidden: true) if params[:hidden] == true
+      audit!("link.created", instance_id: @project.instance_id, target: audit_target(created).merge("path" => created.path),
+             changes: { "after" => link_params.to_h })
+      created
+    end
 
     render json: { link: LinkSerializer.serialize(link.reload) }, status: :created
-  rescue ArgumentError => e
+  rescue ArgumentError, JSON::ParserError => e
     render json: { error: e.message }, status: :bad_request
   rescue ActiveRecord::RecordInvalid => e
     render json: { error: e.message }, status: :unprocessable_entity
@@ -54,21 +63,30 @@ class Api::V1::Mcp::LinksController < Api::V1::Mcp::BaseController
       return
     end
 
-    updated = LinkManagementService.new(project: @project).update(
-      link: link,
-      link_attrs: link_params,
-      tags: params[:tags],
-      data: params[:data],
-      image: params[:image],
-      campaign_id: params[:campaign_id],
-      custom_redirects: mcp_custom_redirect_params
-    )
-    # On update, hidden can be true (hide) or false (show) — only skip if not provided.
-    # update_column bypasses callbacks intentionally — see CLAUDE.md gotcha #5.
-    updated.update_column(:sdk_generated, params[:hidden]) unless params[:hidden].nil?
+    validate_campaign_id!
+    return if performed?
+
+    tracked = link_params.to_h.keys
+    before = link.attributes.slice(*tracked)
+    updated = ActiveRecord::Base.transaction do
+      u = LinkManagementService.new(project: @project).update(
+        link: link,
+        link_attrs: link_params,
+        tags: params[:tags],
+        data: params[:data],
+        image: params[:image],
+        campaign_id: campaign_id_param,
+        custom_redirects: mcp_custom_redirect_params
+      )
+      # hidden can be true (hide) or false (show) on update — only skip if not provided.
+      LinkManagementService.new(project: @project).set_hidden(link: u, hidden: params[:hidden]) unless params[:hidden].nil?
+      audit!("link.updated", instance_id: @project.instance_id, target: audit_target(u).merge("path" => u.path),
+             changes: { "before" => before, "after" => u.attributes.slice(*tracked) })
+      u
+    end
 
     render json: { link: LinkSerializer.serialize(updated.reload) }, status: :ok
-  rescue ArgumentError => e
+  rescue ArgumentError, JSON::ParserError => e
     render json: { error: e.message }, status: :bad_request
   rescue ActiveRecord::RecordInvalid => e
     render json: { error: e.message }, status: :unprocessable_entity
@@ -82,7 +100,11 @@ class Api::V1::Mcp::LinksController < Api::V1::Mcp::BaseController
       return
     end
 
-    archived = LinkManagementService.new(project: @project).archive(link: link)
+    archived = ActiveRecord::Base.transaction do
+      a = LinkManagementService.new(project: @project).archive(link: link)
+      audit!("link.deleted", instance_id: @project.instance_id, target: audit_target(a).merge("path" => a.path))
+      a
+    end
     render json: { link: LinkSerializer.serialize(archived) }, status: :ok
   rescue ActiveRecord::RecordInvalid => e
     render json: { error: e.message }, status: :unprocessable_entity
@@ -93,7 +115,7 @@ class Api::V1::Mcp::LinksController < Api::V1::Mcp::BaseController
     result = LinkStatisticsQuery.new(
       params: params,
       project: @project,
-      campaign_id: params[:campaign_id]
+      campaign_id: campaign_id_param
     ).call
 
     render json: result, status: :ok
@@ -103,7 +125,8 @@ class Api::V1::Mcp::LinksController < Api::V1::Mcp::BaseController
 
   def link_params
     params.permit(:name, :title, :subtitle, :path, :image_url, :show_preview_ios,
-                  :show_preview_android, :ads_platform, :tracking_campaign,
+                  :show_preview_android, :copy_to_clipboard_ios, :copy_to_clipboard_android,
+                  :ads_platform, :tracking_campaign,
                   :tracking_medium, :tracking_source)
   end
 

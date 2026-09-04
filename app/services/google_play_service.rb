@@ -4,55 +4,63 @@ class GooglePlayService
 
   class << self
     def fetch_image_and_title_for_identifier(identifier)
-      empty_response = {title: nil, image: nil}
+      return {title: nil, image: nil} unless identifier
 
-      unless identifier
-        return empty_response
-      end
-
-      title_key = redis_title_key(identifier)
-
-      title = REDIS.get(title_key)
-
-      if title.nil?
-        result = get_image_and_title_online(identifier)
-        unless result
-          return empty_response
-        end
-
-        title = result[:title]
-
-        REDIS.set(title_key, title, ex: 24 * 3600)
-      end
-
+      title = REDIS.get(redis_title_key(identifier))
       store_image = StoreImage.find_by(identifier: identifier, platform: Grovs::Platforms::ANDROID)
-      if store_image.nil? || store_image.created_at < 24.hours.ago
-        store_image = create_new_store_image(identifier, store_image)
+
+      if title.nil? || store_image.nil? || store_image.created_at < 24.hours.ago
+        enqueue_refresh(identifier)
       end
 
       {title: title, image: store_image&.image_access_url}
     end
 
-    private
+    def refresh!(identifier)
+      return unless identifier
 
-    def create_new_store_image(identifier, old_image)
       result = get_image_and_title_online(identifier)
-      return nil if result.blank? || result[:image].blank?
+      return unless result
 
-      store_image = nil
-      ActiveRecord::Base.transaction do
-        if old_image
-          old_image.destroy!
-        end
-
-        store_image = StoreImage.create!(identifier: identifier, platform: Grovs::Platforms::ANDROID)
-
-        response = HTTParty.get(result[:image])
-        downloaded_file = StringIO.new(response.body)
-        store_image.image.attach(io: downloaded_file, filename: "#{identifier}.jpg", content_type: 'image/jpg')
+      # Download the artwork BEFORE writing the cache: if the download fails transiently
+      # we must not pin a title-with-no-image entry for 24h (fetch_* would stop retrying).
+      image_bytes = nil
+      if result[:image].present?
+        image_bytes = download_image(result[:image])
+        return if image_bytes.nil? # transient download failure — cache nothing, retry later
       end
 
-      store_image
+      REDIS.set(redis_title_key(identifier), result[:title], ex: 24 * 3600)
+
+      return if image_bytes.nil? # app genuinely has no artwork — title cached, done
+
+      # Idempotent: reuse the single (identifier, platform) row and re-attach so concurrent
+      # refreshes can't leave duplicate StoreImage rows (destroy+create always would). A DB
+      # unique index on (identifier, platform) would fully close the narrow create race.
+      store_image = StoreImage.find_or_create_by!(identifier: identifier, platform: Grovs::Platforms::ANDROID)
+      store_image.image.purge if store_image.image.attached?
+      store_image.image.attach(io: StringIO.new(image_bytes), filename: "#{identifier}.jpg", content_type: 'image/jpg')
+      # Restart the 24h freshness window (fetch_* keys off created_at) on the reused row.
+      store_image.update_column(:created_at, Time.current)
+    end
+
+    private
+
+    def download_image(url)
+      response = HTTParty.get(url)
+      return nil unless response.code == 200
+
+      response.body
+    rescue Net::OpenTimeout, Net::ReadTimeout, SocketError,
+           Errno::ECONNREFUSED, Errno::ECONNRESET, OpenSSL::SSL::SSLError => e
+      Rails.logger.warn("GooglePlayService: failed to download image #{url}: #{e.class} - #{e.message}")
+      nil
+    end
+
+    def enqueue_refresh(identifier)
+      return unless REDIS.set("store_meta_refresh:android:#{identifier}", "1", nx: true, ex: 300)
+
+      RefreshStoreMetadataJob.perform_async(Grovs::Platforms::ANDROID, identifier)
     end
 
     def get_image_and_title_online(identifier)

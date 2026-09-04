@@ -25,6 +25,22 @@ class PurchaseEventEeTest < ActiveSupport::TestCase
     assert_match(/\A[0-9a-f-]{36}\z/, pe.transaction_id)
   end
 
+  test "assign_unique_transaction_id sets uuid when transaction_id is an empty string" do
+    # An empty-string transaction_id (e.g. a webhook sending "") must also get a unique id —
+    # otherwise PG's (project_id, transaction_id, event_type) unique index allows only ONE
+    # no-id purchase per type and CH collapses distinct no-id purchases.
+    pe = PurchaseEvent.new(
+      event_type: Grovs::Purchases::EVENT_BUY,
+      project: projects(:one),
+      price_cents: 100, currency: "USD", usd_price_cents: 100,
+      date: Time.current, transaction_id: ""
+    )
+    CurrencyConversionService.stub(:to_usd_cents, 100) do
+      pe.save!
+    end
+    assert_match(/\A[0-9a-f-]{36}\z/, pe.transaction_id, "blank (empty-string) transaction_id must get a unique id")
+  end
+
   # === serialization ===
 
   test "serializer excludes device_id project_id timestamps" do

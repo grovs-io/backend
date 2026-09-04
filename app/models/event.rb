@@ -10,9 +10,10 @@ class Event < ApplicationRecord
 
   validates :event, inclusion: { in: Grovs::Events::ALL }
 
+  # Negative values would fail CH's UInt64 parse and poison the whole insert batch.
   def self.clamp_engagement_time(value)
     return nil if value.nil?
-    value.to_i
+    [value.to_i, 0].max
   end
 
   APP_SPECIFIC_EVENTS = [Grovs::Events::APP_OPEN, Grovs::Events::INSTALL, Grovs::Events::REINSTALL, Grovs::Events::REACTIVATION].freeze

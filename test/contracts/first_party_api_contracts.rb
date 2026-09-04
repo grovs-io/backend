@@ -19,6 +19,7 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
     "term" => STRING_OR_NULL,
     "sort_by" => STRING_OR_NULL,
     "ascendent" => { "type" => %w[boolean string null] },
+    "ascending" => { "type" => %w[boolean string null] },
     "archived" => { "type" => %w[boolean string null] },
     "active" => { "type" => %w[boolean string null] },
     "sdk" => { "type" => %w[boolean string null] },
@@ -33,6 +34,10 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
   ).freeze
 
   SEARCH_REQUEST = strict_object(required: [], properties: SEARCH_FILTERS)
+  # Search endpoints 400 both on Rails param errors and on our own campaign_id validation.
+  SEARCH_BAD_REQUEST = { "oneOf" => [ERROR, RAILS_EXCEPTION_RESPONSE] }.freeze
+  CODED_UNAVAILABLE = strict_object(required: %w[error error_code],
+                                    properties: { "error" => STRING, "error_code" => STRING })
 
   USER_RESPONSE = strict_object(
     required: %w[id email name otp_required_for_login provider uid invitation_accepted_at invitation_sent_at],
@@ -75,10 +80,20 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
     }
   )
 
+  ANALYTICS_RETENTION = strict_object(
+    required: %w[plan queryable_days cold_after_days can_query_cold],
+    properties: {
+      "plan" => STRING,
+      "queryable_days" => NUMBER,
+      "cold_after_days" => NUMBER,
+      "can_query_cold" => BOOL
+    }
+  )
+
   INSTANCE_RESPONSE = strict_object(
     required: %w[
       id api_key uri_scheme updated_at get_started_dismissed quota_exceeded
-      revenue_collection_enabled production test hash_id
+      revenue_collection_enabled production test hash_id analytics_retention
     ],
     properties: {
       "id" => ID,
@@ -90,11 +105,18 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
       "revenue_collection_enabled" => BOOL,
       "production" => PROJECT_RESPONSE.merge("type" => %w[object null]),
       "test" => PROJECT_RESPONSE.merge("type" => %w[object null]),
-      "hash_id" => STRING
+      "hash_id" => STRING,
+      "analytics_retention" => ANALYTICS_RETENTION
     }
   )
 
   INSTANCE_ENVELOPE = strict_object(required: %w[instance], properties: { "instance" => INSTANCE_RESPONSE })
+  # invite_urls (email => copyable invite link) is optional: self-hosted creation-time invites only.
+  INSTANCE_CREATED_ENVELOPE = strict_object(
+    required: %w[instance],
+    properties: { "instance" => INSTANCE_RESPONSE,
+                  "invite_urls" => { "type" => "object", "additionalProperties" => STRING } }
+  )
   INSTANCE_PROJECT_ENVELOPE = strict_object(required: %w[project], properties: { "project" => INSTANCE_RESPONSE })
   INSTANCES_ENVELOPE = strict_object(
     required: %w[instances],
@@ -195,7 +217,9 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
     "properties" => {
       "default_fallback" => STRING_OR_NULL,
       "show_preview_android" => BOOL_OR_NULL,
-      "show_preview_ios" => BOOL_OR_NULL
+      "show_preview_ios" => BOOL_OR_NULL,
+      "copy_to_clipboard_android" => BOOL,
+      "copy_to_clipboard_ios" => BOOL
     }
   }.freeze
   REDIRECT_CONFIG_ENVELOPE = strict_object(required: %w[redirect_config], properties: { "redirect_config" => REDIRECT_CONFIG_RESPONSE })
@@ -216,6 +240,29 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
   LINKS_ENVELOPE = strict_object(
     required: %w[links],
     properties: { "links" => { "type" => "array", "items" => LINK_RESPONSE } }
+  )
+
+  LINK_STAT_TOTAL_FIELDS = %w[views opens installs reinstalls time_spent reactivations app_opens user_referred revenue].map { |f| "total_#{f}" }.freeze
+  SEARCH_V2_LINK_RESPONSE = strict_object(
+    required: SLIM_LINK_RESPONSE.fetch("required") + LINK_STAT_TOTAL_FIELDS,
+    properties: SLIM_LINK_RESPONSE.fetch("properties").merge(
+      LINK_STAT_TOTAL_FIELDS.index_with { { "type" => "integer" } }
+    )
+  )
+  SEARCH_V2_LINKS_RESPONSE = strict_object(
+    required: %w[links meta],
+    properties: {
+      "links" => { "type" => "array", "items" => SEARCH_V2_LINK_RESPONSE },
+      "meta" => strict_object(
+        required: %w[page total_pages per_page total_entries],
+        properties: {
+          "page" => { "type" => "integer" },
+          "total_pages" => { "type" => "integer" },
+          "per_page" => { "type" => "integer" },
+          "total_entries" => { "type" => "integer" }
+        }
+      )
+    }
   )
   LINK_ENVELOPE = strict_object(required: %w[link], properties: { "link" => LINK_RESPONSE })
   GENERATED_PATH_RESPONSE = strict_object(required: %w[valid_path], properties: { "valid_path" => STRING })
@@ -327,10 +374,11 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
     }
   )
   DASHBOARD_METRICS_RESPONSE = strict_object(
-    required: %w[current previous],
+    required: %w[current previous previous_available],
     properties: {
       "current" => DASHBOARD_METRIC_BUCKET,
-      "previous" => DASHBOARD_METRIC_BUCKET
+      "previous" => DASHBOARD_METRIC_BUCKET,
+      "previous_available" => BOOL
     }
   )
   EVENT_COUNT_BUCKET = strict_object(
@@ -344,7 +392,9 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
       "avg_engagement_time" => NUMBER,
       "user_referred" => NUMBER,
       "app_open" => NUMBER,
-      "time_spent" => NUMBER
+      "time_spent" => NUMBER,
+      "custom" => NUMBER,
+      "screen_view" => NUMBER
     }
   )
   EVENT_TIMESERIES_RESPONSE = {
@@ -359,7 +409,8 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
     required: %w[
       id active ads_platform campaign_id created_at data domain_id generated_from_platform
       image_url name path redirect_config_id sdk_generated show_preview_android
-      show_preview_ios subtitle tags title tracking_campaign tracking_medium tracking_source
+      show_preview_ios copy_to_clipboard_android copy_to_clipboard_ios
+      subtitle tags title tracking_campaign tracking_medium tracking_source
       updated_at visitor_id view_count
     ],
     properties: {
@@ -379,6 +430,8 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
       "sdk_generated" => BOOL,
       "show_preview_android" => BOOLEAN_OR_NULL,
       "show_preview_ios" => BOOLEAN_OR_NULL,
+      "copy_to_clipboard_android" => BOOLEAN_OR_NULL,
+      "copy_to_clipboard_ios" => BOOLEAN_OR_NULL,
       "subtitle" => STRING_OR_NULL,
       "tags" => ARRAY_OR_NULL,
       "title" => STRING_OR_NULL,
@@ -426,13 +479,37 @@ properties: { "link" => SORTED_LINK_RAW_RESPONSE, "metrics" => EVENT_COUNT_BUCKE
       )
     }
   )
+  VISITOR_STAT_FIELDS = %w[views opens installs reinstalls time_spent revenue reactivations app_opens user_referred].freeze
+  VISITOR_SLIM_PROPERTIES = {
+    "id" => ID,
+    "uuid" => STRING,
+    "sdk_identifier" => STRING_OR_NULL,
+    "sdk_attributes" => SDK_ATTRIBUTES,
+    "inviter_id" => INTEGER_OR_NULL,
+    "web_visitor" => BOOL,
+    "created_at" => STRING,
+    "updated_at" => STRING
+  }.freeze
+  # Both blocks are never null: the controller zero-fills when no daily stats exist.
+  VISITOR_OWN_METRICS_RESPONSE = strict_object(
+    required: VISITOR_SLIM_PROPERTIES.keys + %w[platform] + VISITOR_STAT_FIELDS.map { |c| "total_#{c}" },
+    properties: VISITOR_SLIM_PROPERTIES
+      .merge("platform" => STRING_OR_NULL)
+      .merge(VISITOR_STAT_FIELDS.to_h { |c| ["total_#{c}", NUMBER] })
+  )
+  VISITOR_REFERRAL_METRICS_RESPONSE = strict_object(
+    required: VISITOR_SLIM_PROPERTIES.keys + VISITOR_STAT_FIELDS.map { |c| "invited_#{c}" },
+    properties: VISITOR_SLIM_PROPERTIES
+      .merge(VISITOR_STAT_FIELDS.to_h { |c| ["invited_#{c}", NUMBER] })
+  )
   VISITOR_DETAIL_RESPONSE = strict_object(
-    required: %w[visitor metrics aggregated_metrics number_of_generated_links],
+    required: %w[visitor metrics aggregated_metrics number_of_generated_links metrics_since],
     properties: {
       "visitor" => VISITOR_RESPONSE,
-      "metrics" => { "type" => %w[object null] },
-      "aggregated_metrics" => { "type" => %w[object null] },
-      "number_of_generated_links" => { "type" => "integer" }
+      "metrics" => VISITOR_OWN_METRICS_RESPONSE,
+      "aggregated_metrics" => VISITOR_REFERRAL_METRICS_RESPONSE,
+      "number_of_generated_links" => { "type" => "integer" },
+      "metrics_since" => STRING
     }
   )
   DATE_NUMBER_MAP_RESPONSE = {
@@ -568,7 +645,7 @@ next_payment_attempt],
     required: %w[id event_type purchase_type product_id identifier transaction_id
                  original_transaction_id price_cents usd_price_cents currency
                  date expires_date processed store store_source webhook_validated
-                 quantity order_id platform link_id],
+                 quantity order_id platform link_id session_id],
     properties: {
       "id" => { "type" => "integer" },
       "event_type" => STRING,
@@ -589,7 +666,8 @@ next_payment_attempt],
       "quantity" => INTEGER_OR_NULL,
       "order_id" => STRING_OR_NULL,
       "platform" => STRING_OR_NULL,
-      "link_id" => INTEGER_OR_NULL
+      "link_id" => INTEGER_OR_NULL,
+      "session_id" => STRING_OR_NULL
     }
   )
   PURCHASES_RESPONSE = paginated(PURCHASE_EVENT)
@@ -745,22 +823,25 @@ next_payment_attempt],
     }
   )
 
-  # Users
+  # Users. A 403 carries sso_connection_id when an enterprise SSO connection enforces the domain.
+  SSO_REFUSAL_OR_ERROR = strict_object(required: %w[error],
+                                       properties: { "error" => STRING, "sso_connection_id" => { "type" => "integer" } })
+
   register "Api::V1::UsersController#create",
            request: strict_object(required: %w[email password client_id], 
 properties: { "email" => STRING, "password" => STRING, "name" => STRING_OR_NULL, "client_id" => STRING }),
-           responses: { 200 => AUTH_TOKEN_RESPONSE, 403 => ERROR, 409 => ERROR }
+           responses: { 200 => AUTH_TOKEN_RESPONSE, 403 => SSO_REFUSAL_OR_ERROR, 409 => ERROR }
   register "Api::V1::UsersController#accept_invite",
            request: strict_object(required: %w[password invitation_token client_id], 
 properties: { "password" => STRING, "invitation_token" => STRING, "name" => STRING_OR_NULL, "client_id" => STRING }),
-           responses: { 200 => AUTH_TOKEN_RESPONSE, 403 => ERROR, 422 => ERROR }
+           responses: { 200 => AUTH_TOKEN_RESPONSE, 403 => SSO_REFUSAL_OR_ERROR, 422 => ERROR }
   register "Api::V1::UsersController#reset_password",
            request: strict_object(required: %w[email], properties: { "email" => STRING }),
-           responses: { 200 => MESSAGE }
+           responses: { 200 => MESSAGE, 403 => SSO_REFUSAL_OR_ERROR }
   register "Api::V1::UsersController#change_password",
            request: strict_object(required: %w[new_password reset_token], 
 properties: { "new_password" => STRING, "reset_token" => STRING, "user" => ANY_OBJECT }),
-           responses: { 200 => MESSAGE, 404 => ERROR }
+           responses: { 200 => MESSAGE, 403 => SSO_REFUSAL_OR_ERROR, 404 => ERROR }
   register "Api::V1::UsersController#current_user_details", request: NO_PARAMS, responses: { 200 => USER_ENVELOPE, 401 => AUTH_ERROR }
   register "Api::V1::UsersController#edit_user",
            request: strict_object(required: [], properties: { "name" => STRING_OR_NULL }),
@@ -777,7 +858,7 @@ properties: { "new_password" => STRING, "reset_token" => STRING, "user" => ANY_O
   # Instances
   register "Api::V1::InstancesController#create_instance",
            request: strict_object(required: %w[name], properties: { "name" => STRING, "members" => ARRAY_OR_NULL }),
-           responses: { 200 => INSTANCE_ENVELOPE, 400 => ERROR, 401 => AUTH_ERROR }
+           responses: { 200 => INSTANCE_CREATED_ENVELOPE, 400 => ERROR, 401 => AUTH_ERROR }
   register "Api::V1::InstancesController#delete_instance", request: NO_PARAMS, responses: { 200 => MESSAGE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
   register "Api::V1::InstancesController#set_revenue_collection_enabled",
            request: strict_object(required: %w[revenue_collection_enabled], properties: { "revenue_collection_enabled" => BOOL }),
@@ -860,7 +941,8 @@ properties: { "enabled" => BOOL, "generated_page" => BOOL_OR_NULL, "fallback_url
   register "Api::V1::RedirectsController#redirect_config", request: NO_PARAMS, responses: { 200 => REDIRECT_CONFIG_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR }
   register "Api::V1::RedirectsController#set_redirect_config",
            request: strict_object(required: [], 
-properties: { "default_fallback" => STRING_OR_NULL, "show_preview_android" => BOOL, "show_preview_ios" => BOOL }),
+properties: { "default_fallback" => STRING_OR_NULL, "show_preview_android" => BOOL, "show_preview_ios" => BOOL,
+              "copy_to_clipboard_android" => BOOL, "copy_to_clipboard_ios" => BOOL }),
            responses: { 200 => REDIRECT_CONFIG_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR, 422 => ERROR }
   register "Api::V1::RedirectsController#set_redirect",
            request: strict_object(required: %w[platform variation], 
@@ -870,17 +952,20 @@ properties: { "platform" => STRING, "variation" => STRING, "appstore" => BOOL, "
   # Campaigns, links, dashboard, events.
   %w[
     Api::V1::CampaignsController#current_project_campaigns
-    Api::V1::CampaignsController#current_project_campaigns_v2
     Api::V1::LinksController#current_project_links
-    Api::V1::LinksController#current_project_links_v2
-  ].each do |action| 
-    register action, request: SEARCH_REQUEST, 
-  responses: { 200 => PAGINATED_RESPONSE, 400 => RAILS_EXCEPTION_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
+  ].each do |action|
+    register action, request: SEARCH_REQUEST,
+  responses: { 200 => PAGINATED_RESPONSE, 400 => SEARCH_BAD_REQUEST, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
   end
+  register "Api::V1::CampaignsController#current_project_campaigns_v2", request: SEARCH_REQUEST,
+           responses: { 200 => PAGINATED_RESPONSE, 400 => SEARCH_BAD_REQUEST, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => CODED_UNAVAILABLE }
+  # search_v2 returns { links:, meta: } (slim links + total_* stats), not the flat paginated envelope.
+  register "Api::V1::LinksController#current_project_links_v2", request: SEARCH_REQUEST,
+           responses: { 200 => SEARCH_V2_LINKS_RESPONSE, 400 => SEARCH_BAD_REQUEST, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => CODED_UNAVAILABLE }
   register "Api::V1::CampaignsController#create", request: strict_object(required: %w[name], properties: { "name" => STRING }), responses: { 200 => CAMPAIGN_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
   register "Api::V1::CampaignsController#update", request: strict_object(required: [], properties: { "campaign_id" => ID, "name" => STRING_OR_NULL }), responses: { 200 => CAMPAIGN_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
   register "Api::V1::CampaignsController#archive", request: strict_object(required: [], properties: { "campaign_id" => ID }), responses: { 200 => CAMPAIGN_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
-  register "Api::V1::CampaignsController#metrics_for_overview", request: SEARCH_REQUEST, responses: { 200 => EVENT_TIMESERIES_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR }
+  register "Api::V1::CampaignsController#metrics_for_overview", request: SEARCH_REQUEST, responses: { 200 => EVENT_TIMESERIES_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 422 => CODED_UNAVAILABLE }
 
   register "Api::V1::LinksController#create_link", request: DASHBOARD_LINK_REQUEST, responses: { 200 => LINK_ENVELOPE, 400 => ERROR, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => RAILS_EXCEPTION_RESPONSE }
   register "Api::V1::LinksController#update_link", request: DASHBOARD_LINK_REQUEST, responses: { 200 => LINK_ENVELOPE, 400 => ERROR, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => ERROR }
@@ -889,12 +974,12 @@ properties: { "platform" => STRING, "variation" => STRING, "appstore" => BOOL, "
   register "Api::V1::LinksController#generate_path", request: NO_PARAMS, responses: { 200 => GENERATED_PATH_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR }
   register "Api::V1::LinksController#links_by_ids", request: strict_object(required: %w[ids], properties: { "ids" => ARRAY }), responses: { 200 => LINKS_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR }
 
-  register "Api::V1::DashboardController#metrics_overview", request: SEARCH_REQUEST, responses: { 200 => strict_object(required: %w[metrics], properties: { "metrics" => DASHBOARD_METRICS_RESPONSE }), 401 => AUTH_ERROR, 403 => ERROR }
-  register "Api::V1::DashboardController#links_views", request: SEARCH_REQUEST, responses: { 200 => strict_object(required: %w[metrics], properties: { "metrics" => DATE_NUMBER_MAP_RESPONSE }), 401 => AUTH_ERROR, 403 => ERROR }
-  register "Api::V1::EventsController#events_for_search_params", request: SEARCH_REQUEST, responses: { 200 => strict_object(required: %w[metrics], properties: { "metrics" => LINK_EVENT_METRICS_MAP }), 401 => AUTH_ERROR, 403 => ERROR }
-  register "Api::V1::DashboardController#best_performing_links", request: SEARCH_REQUEST, responses: { 200 => TOP_LINKS_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR }
-  register "Api::V1::EventsController#events_sorted_by_param", request: SEARCH_REQUEST, responses: { 200 => EVENTS_SORTED_RESPONSE, 400 => RAILS_EXCEPTION_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR }
-  register "Api::V1::EventsController#events_for_overview", request: SEARCH_REQUEST, responses: { 200 => EVENT_TIMESERIES_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR }
+  register "Api::V1::DashboardController#metrics_overview", request: SEARCH_REQUEST, responses: { 200 => strict_object(required: %w[metrics], properties: { "metrics" => DASHBOARD_METRICS_RESPONSE }), 401 => AUTH_ERROR, 403 => ERROR, 422 => CODED_UNAVAILABLE, 503 => CODED_UNAVAILABLE }
+  register "Api::V1::DashboardController#links_views", request: SEARCH_REQUEST, responses: { 200 => strict_object(required: %w[metrics], properties: { "metrics" => DATE_NUMBER_MAP_RESPONSE }), 401 => AUTH_ERROR, 403 => ERROR, 410 => CODED_UNAVAILABLE }
+  register "Api::V1::EventsController#events_for_search_params", request: SEARCH_REQUEST, responses: { 200 => strict_object(required: %w[metrics], properties: { "metrics" => LINK_EVENT_METRICS_MAP }), 400 => SEARCH_BAD_REQUEST, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => CODED_UNAVAILABLE }
+  register "Api::V1::DashboardController#best_performing_links", request: SEARCH_REQUEST, responses: { 200 => TOP_LINKS_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 422 => CODED_UNAVAILABLE }
+  register "Api::V1::EventsController#events_sorted_by_param", request: SEARCH_REQUEST, responses: { 200 => EVENTS_SORTED_RESPONSE, 400 => SEARCH_BAD_REQUEST, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => CODED_UNAVAILABLE }
+  register "Api::V1::EventsController#events_for_overview", request: SEARCH_REQUEST, responses: { 200 => EVENT_TIMESERIES_RESPONSE, 400 => ERROR, 401 => AUTH_ERROR, 403 => ERROR, 422 => CODED_UNAVAILABLE }
   register "Api::V1::EventsController#events_for_payment_screen", request: SEARCH_REQUEST, responses: { 200 => PAYMENT_SCREEN_EVENTS_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
   register "Api::V1::EventsController#metrics_values", request: NO_PARAMS, responses: { 200 => METRICS_VALUES_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR }
 
@@ -923,12 +1008,15 @@ properties: { "title" => STRING_OR_NULL, "html" => STRING_OR_NULL, "subtitle" =>
   end
   register "Api::V1::PaymentsController#current_mau", request: SEARCH_REQUEST, responses: { 200 => CURRENT_MAU_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
   register "Api::V1::PaymentsController#current_usage", request: SEARCH_REQUEST, responses: { 200 => BILLING_USAGE_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
-  register "Api::V1::PurchasesController#purchases", request: SEARCH_REQUEST, responses: { 200 => PURCHASES_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
-  register "Api::V1::PurchasesController#revenue_metrics", request: SEARCH_REQUEST, responses: { 200 => REVENUE_METRICS_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
+  if ENV.fetch("GROVS_EE", "false") == "true"
+    register "Api::V1::PurchasesController#purchases", request: SEARCH_REQUEST, responses: { 200 => PURCHASES_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
+    register "Api::V1::PurchasesController#revenue_metrics", request: SEARCH_REQUEST, responses: { 200 => REVENUE_METRICS_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => CODED_UNAVAILABLE }
+  end
 
   register "Api::V1::ExportController#export_link_data",
            request: SEARCH_REQUEST,
-           responses: { 202 => MESSAGE, 400 => ERROR, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
+           responses: { 202 => MESSAGE, 400 => ERROR, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR,
+                        422 => CODED_UNAVAILABLE }
   register "Api::V1::ExportController#export_usage_data",
            request: strict_object(required: [], properties: DATE_FILTERS.merge("instance_id" => STRING_OR_NULL)),
            responses: { 202 => MESSAGE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
@@ -942,27 +1030,70 @@ properties: { "level" => STRING_OR_NULL, "message" => STRING_OR_NULL, "count" =>
   register "Api::V1::DiagnosticsController#test_diagnostics",
            request: strict_object(required: [], 
 properties: { "iterations" => { "type" => %w[integer string null] }, "include_slow" => BOOL_OR_NULL, "cleanup" => BOOL_OR_NULL }),
-           responses: { 200 => DIAGNOSTICS_RESPONSE, 401 => AUTH_ERROR, 
+           responses: { 200 => DIAGNOSTICS_RESPONSE, 401 => AUTH_ERROR,
 500 => strict_object(required: %w[error backtrace timestamp], properties: { "error" => STRING, "backtrace" => ARRAY, "timestamp" => STRING }) }
-  register "Api::V1::Identity::Sso::SessionsController#passthru",
-           request: strict_object(required: [], properties: { "provider" => STRING_OR_NULL }),
-           responses: { 200 => SSO_REDIRECT_URL_RESPONSE, 422 => ERROR }
-  register "Api::V1::Identity::Sso::SessionsController#omniauth_failure",
+  register "Api::V1::DiagnosticsController#health_metrics",
+           request: strict_object(required: [], properties: { "api_key" => STRING_OR_NULL }),
+           responses: {
+             200 => strict_object(
+               required: %w[timestamp events_pending sidekiq_queues clickhouse],
+               properties: {
+                 "timestamp" => STRING,
+                 "events_pending" => { "type" => %w[integer null] },
+                 "sidekiq_queues" => { "type" => %w[object null],
+                                       "additionalProperties" => { "type" => "integer" } },
+                 "redis_error" => STRING_OR_NULL,
+                 "clickhouse" => strict_object(
+                   required: %w[up disk_free_pct],
+                   properties: { "up" => { "type" => %w[boolean null] },
+                                 "disk_free_pct" => NUMBER_OR_NULL,
+                                 "disabled" => { "type" => %w[boolean null] },
+                                 "error" => STRING_OR_NULL }
+                 )
+               }
+             ),
+             401 => AUTH_ERROR
+           }
+  SSO_PROVIDERS_RESPONSE = strict_object(
+    required: %w[sso_enabled providers],
+    properties: {
+      "sso_enabled" => { "type" => "boolean" },
+      "providers" => {
+        "type" => "array",
+        "items" => { "type" => "string", "enum" => %w[google_oauth2 microsoft_graph] }
+      }
+    }
+  )
+
+  register "Api::V1::Identity::Sso::SessionsController#providers",
            request: NO_PARAMS,
+           responses: { 200 => SSO_PROVIDERS_RESPONSE }
+  register "Api::V1::Identity::Sso::SessionsController#passthru",
+           request: strict_object(required: [], 
+properties: { "provider" => STRING_OR_NULL, "connection_id" => { "type" => %w[integer string null] }, "email" => STRING_OR_NULL }),
+           responses: { 200 => SSO_REDIRECT_URL_RESPONSE, 404 => ERROR, 422 => ERROR }
+  register "Api::V1::Identity::Sso::SessionsController#discover",
+           request: strict_object(required: [], properties: { "email" => STRING_OR_NULL }),
+           responses: { 200 => strict_object(required: %w[connection_id],
+                                             properties: { "connection_id" => INTEGER_OR_NULL, "enforce" => { "type" => "boolean" } }) }
+  register "Api::V1::Identity::Sso::SessionsController#omniauth_failure",
+           request: nil, # carries whatever the IdP or OmniAuth put on the failed request
            responses: { 302 => REDIRECT_RESPONSE }
   register "Api::V1::Identity::Sso::SessionsController#create",
-           request: strict_object(required: [], properties: { "state" => STRING_OR_NULL }),
+           request: strict_object(required: [], properties: { "state" => STRING_OR_NULL, "code" => STRING_OR_NULL, "session_state" => STRING_OR_NULL }),
            responses: { 302 => REDIRECT_RESPONSE, 422 => ERROR }
   register "Api::V1::Identity::Sso::TokensController#refresh_token",
            request: strict_object(required: [], properties: { "refresh_token" => STRING_OR_NULL }),
            responses: { 200 => SSO_TOKEN_RESPONSE, 400 => NON_JSON_RESPONSE, 401 => ERROR }
-  %w[
-    Api::V1::IapController#apple_prod
-    Api::V1::IapController#apple_test
-    Api::V1::IapController#google_handling
-  ].each do |action| 
-    register action, request: DYNAMIC_OBJECT_RESPONSE, 
-  responses: { 200 => DYNAMIC_OBJECT_RESPONSE, 400 => ERROR, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => ERROR, 500 => ERROR }
+  if ENV.fetch("GROVS_EE", "false") == "true"
+    %w[
+      Api::V1::IapController#apple_prod
+      Api::V1::IapController#apple_test
+      Api::V1::IapController#google_handling
+    ].each do |action|
+      register action, request: DYNAMIC_OBJECT_RESPONSE,
+                       responses: { 200 => DYNAMIC_OBJECT_RESPONSE, 400 => ERROR, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => ERROR, 500 => ERROR }
+    end
   end
 
   register "Api::V1::AdminController#create_enterprise_subscription",
@@ -982,6 +1113,15 @@ properties: { "file" => JSON_VALUE, "project_id" => ID, "deeplink_prefix" => STR
   register "Api::V1::AdminController#flush_events",
            request: strict_object(required: [], properties: { "aggregate_days" => { "type" => %w[integer string null] } }),
            responses: { 200 => FLUSH_EVENTS_RESPONSE, 403 => ERROR, 500 => ERROR }
+  register "Api::V1::AdminController#update_instance_retention",
+           request: strict_object(required: %w[instance_id],
+                                  properties: { "instance_id" => ID,
+                                                "cold_storage_days" => { "type" => %w[integer string null] },
+                                                "delete_days" => { "type" => %w[integer string null] } }),
+           responses: { 200 => strict_object(required: %w[cold_storage_days delete_days],
+                                             properties: { "cold_storage_days" => { "type" => "integer" },
+                                                           "delete_days" => { "type" => "integer" } }),
+                        403 => ERROR, 404 => ERROR, 422 => ERROR }
 
   register "Api::V1::AutomationController#metrics_for_user",
            request: strict_object(required: %w[key vendor_id test], 
@@ -1004,7 +1144,11 @@ properties: { "link" => LINK_RESPONSE.merge("type" => %w[object null]),
   %w[
     Api::V1::VisitorsController#visitors
     Api::V1::VisitorsController#aggregated_visitors
-  ].each { |action| register action, request: SEARCH_REQUEST, responses: { 200 => VISITOR_QUERY_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR } }
+  ].each do |action|
+    register action, request: SEARCH_REQUEST,
+             responses: { 200 => VISITOR_QUERY_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR,
+                          422 => CODED_UNAVAILABLE }
+  end
   # Legacy metrics endpoints return a flat envelope (page serialized as a string).
   LEGACY_VISITOR_METRICS_RESPONSE = strict_object(
     required: %w[metrics page total_pages per_page total_entries],
@@ -1027,5 +1171,5 @@ properties: { "link" => LINK_RESPONSE.merge("type" => %w[object null]),
     register action, request: LEGACY_VISITOR_METRICS_REQUEST, 
   responses: { 200 => LEGACY_VISITOR_METRICS_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
   end
-  register "Api::V1::VisitorsController#visitor_details", request: SEARCH_REQUEST, responses: { 200 => VISITOR_DETAIL_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
+  register "Api::V1::VisitorsController#visitor_details", request: SEARCH_REQUEST, responses: { 200 => VISITOR_DETAIL_RESPONSE, 400 => ERROR, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
 end

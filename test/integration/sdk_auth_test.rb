@@ -1,5 +1,6 @@
 require "test_helper"
 require_relative "auth_test_helper"
+require "sidekiq/testing"
 
 class SdkAuthTest < ActionDispatch::IntegrationTest
   include AuthTestHelper
@@ -119,6 +120,27 @@ class SdkAuthTest < ActionDispatch::IntegrationTest
 
   # --- Authenticate Endpoint (No Device Auth) ---
 
+  # --- Cross-tenant visitor scoping ---
+
+  test "LINKSQUARED id belonging to another project is rejected" do
+    other_project = projects(:two)
+    other_device = Device.create!(vendor: "victim-vendor-#{SecureRandom.hex(4)}",
+                                  platform: "ios", user_agent: "TestApp/1.0 iPhone",
+                                  ip: "192.168.9.9", remote_ip: "10.0.9.9")
+    other_visitor = Visitor.create!(project: other_project, device: other_device)
+
+    headers = sdk_auth_headers_for(@project, platform: "ios")
+    headers["LINKSQUARED"] = other_visitor.hashid
+
+    post "#{SDK_PREFIX}/event",
+      params: { event: "app_open" },
+      headers: headers
+
+    assert_response :forbidden
+    json = JSON.parse(response.body)
+    assert_equal "Invalid linksquared id", json["error"]
+  end
+
   test "SDK authenticate creates visitor and device, returns hashid" do
     headers = sdk_auth_headers_for(@project, platform: "ios")
     assert_difference "Visitor.count" do
@@ -135,6 +157,112 @@ class SdkAuthTest < ActionDispatch::IntegrationTest
     visitor = Visitor.find_by_hashid(json["linksquared"])
     assert_not_nil visitor, "returned hashid must resolve to an actual visitor"
     assert_equal @project.id, visitor.project_id
+  end
+
+  # The mobile SDKs send the model under `device`; older/server callers use `model`.
+  test "SDK authenticate stores the model sent as device" do
+    headers = sdk_auth_headers_for(@project, platform: "ios")
+    vendor = "model-vendor-#{SecureRandom.hex(4)}"
+
+    post "#{SDK_PREFIX}/authenticate",
+      params: { vendor_id: vendor, user_agent: "TestApp/2.0", app_version: "2.0",
+                device: "iPhone 15 Pro" },
+      headers: headers
+
+    assert_response :ok
+    assert_equal "iPhone 15 Pro", Device.find_by(vendor: vendor).model
+  end
+
+  test "SDK authenticate stores the model sent as model" do
+    headers = sdk_auth_headers_for(@project, platform: "ios")
+    vendor = "model-vendor-#{SecureRandom.hex(4)}"
+
+    post "#{SDK_PREFIX}/authenticate",
+      params: { vendor_id: vendor, user_agent: "TestApp/2.0", app_version: "2.0",
+                model: "Pixel 8" },
+      headers: headers
+
+    assert_response :ok
+    assert_equal "Pixel 8", Device.find_by(vendor: vendor).model
+  end
+
+  test "SDK authenticate maps a raw Apple identifier to its marketing name" do
+    headers = sdk_auth_headers_for(@project, platform: "ios")
+    vendor = "model-vendor-#{SecureRandom.hex(4)}"
+
+    post "#{SDK_PREFIX}/authenticate",
+      params: { vendor_id: vendor, user_agent: "TestApp/2.0", app_version: "2.0",
+                device: "iPhone17,3" },
+      headers: headers
+
+    assert_response :ok
+    assert_equal "iPhone 16", Device.find_by(vendor: vendor).model
+  end
+
+  test "SDK authenticate passes an unknown Apple identifier through untouched" do
+    headers = sdk_auth_headers_for(@project, platform: "ios")
+    vendor = "model-vendor-#{SecureRandom.hex(4)}"
+
+    post "#{SDK_PREFIX}/authenticate",
+      params: { vendor_id: vendor, user_agent: "TestApp/2.0", app_version: "2.0",
+                device: "iPhone99,9" },
+      headers: headers
+
+    assert_response :ok
+    assert_equal "iPhone99,9", Device.find_by(vendor: vendor).model
+  end
+
+  test "SDK authenticate maps an Android model through the CSV table" do
+    REDIS.with { |conn| conn.hset(AndroidDeviceModels::KEY, "SM-S928B" => "Samsung Galaxy S24 Ultra") }
+    headers = sdk_auth_headers_for(@project, platform: "android")
+    vendor = "model-vendor-#{SecureRandom.hex(4)}"
+
+    post "#{SDK_PREFIX}/authenticate",
+      params: { vendor_id: vendor, user_agent: "TestApp/2.0", app_version: "2.0",
+                device: "SM-S928B" },
+      headers: headers
+
+    assert_response :ok
+    assert_equal "Samsung Galaxy S24 Ultra", Device.find_by(vendor: vendor).model
+  ensure
+    REDIS.del(AndroidDeviceModels::KEY, AndroidDeviceModels::REFRESH_LOCK)
+  end
+
+  test "SDK authenticate passes an unmapped Android model through untouched" do
+    REDIS.with { |conn| conn.hset(AndroidDeviceModels::KEY, "SM-S928B" => "Samsung Galaxy S24 Ultra") }
+    headers = sdk_auth_headers_for(@project, platform: "android")
+    vendor = "model-vendor-#{SecureRandom.hex(4)}"
+
+    post "#{SDK_PREFIX}/authenticate",
+      params: { vendor_id: vendor, user_agent: "TestApp/2.0", app_version: "2.0",
+                device: "Google Pixel 8" },
+      headers: headers
+
+    assert_response :ok
+    assert_equal "Google Pixel 8", Device.find_by(vendor: vendor).model
+  ensure
+    REDIS.del(AndroidDeviceModels::KEY, AndroidDeviceModels::REFRESH_LOCK)
+  end
+
+  test "SDK authenticate backfills the model on an already known device" do
+    device = @visitor.device
+    device.update_columns(model: nil)
+    device.send(:clear_cache)
+    # 300s-TTL update dedup keys are keyed by DB id, which fixtures reuse every run
+    dedup_keys = ["dev_upd_basic:#{device.id}", "dev_upd_full:#{device.id}"]
+    REDIS.del(*dedup_keys)
+
+    Sidekiq::Testing.inline! do
+      post "#{SDK_PREFIX}/authenticate",
+        params: { vendor_id: device.vendor, user_agent: device.user_agent, app_version: "2.0",
+                  device: "iPhone 15 Pro" },
+        headers: sdk_auth_headers_for(@project, platform: "ios")
+    end
+
+    assert_response :ok
+    assert_equal "iPhone 15 Pro", device.reload.model
+  ensure
+    REDIS.del(*dedup_keys) if dedup_keys
   end
 end
 

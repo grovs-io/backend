@@ -20,19 +20,25 @@ class DeviceUpdateService
     end
 
     def update_device_sync(device, request, user_agent)
+      return unless device
+
       request_ip = request.ip
       request_remote_ip = request.remote_ip
-      request_user_agent = request.user_agent
+      effective_ua = user_agent.presence || request.user_agent
 
-      return unless device
+      if device.ip == request_ip &&
+         device.remote_ip == request_remote_ip &&
+         device.user_agent == effective_ua
+        device.update_column(:updated_at, Time.current) if device.updated_at < 1.minute.ago
+        return
+      end
 
       device.assign_attributes(
         ip: request_ip,
         remote_ip: request_remote_ip,
+        user_agent: effective_ua,
         updated_at: Time.current
       )
-
-      device.user_agent = user_agent.presence || request_user_agent
       device.save!
     end
 

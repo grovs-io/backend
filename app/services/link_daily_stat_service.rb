@@ -1,6 +1,7 @@
 class LinkDailyStatService
   def self.increment_link_event(event_type:, project_id:, link_id:, platform:, event_date: Date.current, value: 1)
     raise ArgumentError, "Invalid event type: #{event_type}" unless LinkDailyStatistic::METRIC_COLUMNS.include?(event_type)
+    return unless Grovs.pg_shadow_writes?
 
     conditions = {
       project_id: project_id,
@@ -42,6 +43,7 @@ class LinkDailyStatService
 
   def self.bulk_upsert_link_stats(link_stats)
     return if link_stats.blank?
+    return unless Grovs.pg_shadow_writes?
 
     # Group by project_id + link_id + event_date and sum the metrics
     grouped = Hash.new { |h, k| h[k] = Hash.new(0) }

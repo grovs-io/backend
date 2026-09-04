@@ -7,6 +7,7 @@
     <script type="text/javascript">
         document.addEventListener('DOMContentLoaded', function() {
           const fallbackUrl = <%= json_escape(@redirect_url.to_json).html_safe %>;
+          const copyPayload = <%= json_escape(@copy_payload.to_json).html_safe %>;
           // Check if the 'url' parameter exists and is not empty
           if (fallbackUrl && fallbackUrl.trim() !== "") {
             // Perform the redirect
@@ -14,7 +15,10 @@
             document.getElementById('mobile-view').style.display = 'block';
 
             document.getElementById('open-app-button').addEventListener('click', function() {
-                window.location.href = fallbackUrl;
+                if (copyPayload) { grovsCopyPayload = copyPayload; }
+                copyThenGo(function () {
+                  window.location.href = fallbackUrl;
+                });
             });
           } else {
             // Show the invalid URL message

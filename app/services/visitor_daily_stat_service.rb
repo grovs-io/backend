@@ -1,6 +1,7 @@
 class VisitorDailyStatService
   def self.increment_visitor_event(visitor:, event_type:, platform:, event_date: Date.current, project_id: nil, link_id: nil, value: 1)
     raise ArgumentError, "Invalid event type: #{event_type}" unless VisitorDailyStatistic::METRIC_COLUMNS.include?(event_type)
+    return unless Grovs.pg_shadow_writes?
 
     ActiveRecord::Base.with_connection do |conn|
       now = conn.quote(Time.current)
@@ -42,6 +43,7 @@ class VisitorDailyStatService
 
   def self.bulk_upsert_visitor_stats(visitor_stats)
     return if visitor_stats.blank?
+    return unless Grovs.pg_shadow_writes?
 
     # Group by ON CONFLICT key: (project_id, visitor_id, event_date, platform).
     # invited_by_id is NOT part of the conflict key, so it must not be in

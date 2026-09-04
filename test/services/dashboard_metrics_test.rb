@@ -396,4 +396,19 @@ class DashboardMetricsTest < ActiveSupport::TestCase
     assert_equal 1, android_result[:current][:returning_users]
     assert_equal 1.0, android_result[:current][:returning_rate]
   end
+
+  test "cache_ttl defaults to 5 minutes and honors DASHBOARD_CACHE_TTL_SECONDS" do
+    original = ENV["DASHBOARD_CACHE_TTL_SECONDS"]
+    ENV.delete("DASHBOARD_CACHE_TTL_SECONDS")
+    assert_equal 300.seconds, DashboardMetrics.cache_ttl
+
+    ENV["DASHBOARD_CACHE_TTL_SECONDS"] = "10"
+    assert_equal 10.seconds, DashboardMetrics.cache_ttl
+    assert_equal 10.seconds, Analytics::OverviewStatsService.cache_ttl
+
+    ENV["DASHBOARD_CACHE_TTL_SECONDS"] = "5m"
+    assert_equal 300.seconds, DashboardMetrics.cache_ttl
+  ensure
+    original.nil? ? ENV.delete("DASHBOARD_CACHE_TTL_SECONDS") : ENV["DASHBOARD_CACHE_TTL_SECONDS"] = original
+  end
 end

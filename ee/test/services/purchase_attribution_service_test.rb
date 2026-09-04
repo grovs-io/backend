@@ -1,7 +1,8 @@
 require "test_helper"
 
 class PurchaseAttributionServiceTest < ActiveSupport::TestCase
-  fixtures :instances, :projects, :devices, :visitors, :purchase_events, :subscription_states
+  fixtures :instances, :projects, :devices, :visitors, :purchase_events, :subscription_states,
+           :domains, :redirect_configs
 
   include PurchaseAttributionService
 

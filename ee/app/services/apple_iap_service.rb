@@ -56,7 +56,7 @@ class AppleIapService
     @event_creator = PurchaseEventCreator.new
   end
 
-  def handle_notification(notification, project)
+  def handle_notification(notification, project, expected_environment: nil)
     return false unless notification && notification["signedPayload"]
 
     data = notification["signedPayload"]
@@ -67,7 +67,7 @@ class AppleIapService
       # Log the notification for debugging
       @logger.info "Processing Apple notification: #{verified_receipt['notificationType']}"
 
-      handle_apple_notification(verified_receipt, data, project)
+      handle_apple_notification(verified_receipt, data, project, expected_environment)
 
     rescue JWT::DecodeError, OpenSSL::OpenSSLError, JSON::ParserError => e
       @logger.error "Apple notification decode error: #{e.class} - #{e.message}"
@@ -77,7 +77,7 @@ class AppleIapService
 
   private
 
-  def handle_apple_notification(verified_receipt, data, project)
+  def handle_apple_notification(verified_receipt, data, project, expected_environment = nil)
     type = verified_receipt["notificationType"]
     subtype = verified_receipt["subtype"]
     identifier = verified_receipt.dig("data", "bundleId")
@@ -85,6 +85,23 @@ class AppleIapService
     unless identifier
       @logger.error "No identifier (bundleId) found in notification"
       return false
+    end
+
+    # Signature proves the notification is genuine, not which project it targets.
+    unless bundle_matches_project?(identifier, project)
+      @logger.error "Apple notification bundleId #{identifier.inspect} does not match " \
+                    "project #{project.id}'s configured iOS app — rejecting"
+      return false
+    end
+
+    # Sandbox receipts are free to mint — reject an environment/endpoint mismatch.
+    if expected_environment.present?
+      environment = verified_receipt.dig("data", "environment")
+      unless environment == expected_environment
+        @logger.error "Apple notification environment #{environment.inspect} does not match " \
+                      "endpoint #{expected_environment.inspect} — rejecting"
+        return false
+      end
     end
 
     # Log unknown notification types but still acknowledge receipt
@@ -107,6 +124,12 @@ class AppleIapService
   rescue ActiveRecord::RecordInvalid, NoMethodError, KeyError, ArgumentError => e
     @logger.error "Apple notification processing error: #{e.class} - #{e.message}"
     false
+  end
+
+  # Fails closed: a blank or mismatched configured bundle is rejected.
+  def bundle_matches_project?(bundle_id, project)
+    configured = project.instance.ios_application&.ios_configuration&.bundle_id
+    configured.present? && bundle_id == configured
   end
 
   def handle_transaction(type, subtype, verified_receipt, project)

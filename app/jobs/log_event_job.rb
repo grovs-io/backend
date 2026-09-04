@@ -19,10 +19,16 @@ class LogEventJob
   include Sidekiq::Job
   sidekiq_options queue: :events, retry: 5
 
-  def perform(type, project_id, device_id, data, link_id, engagement_time = nil, created_at_iso = nil)
-    project = Project.find(project_id)
-    device = Device.find(device_id)
+  # Extra args default for queued-job compatibility across deploys.
+  def perform(type, project_id, device_id, data, link_id, engagement_time = nil, created_at_iso = nil, # rubocop:disable Metrics/ParameterLists -- Sidekiq positional args, frozen for queued-job compatibility
+              event_name = "", session_id = "", tags = [], ch_meta = nil)
+    project = Project.find_by(id: project_id)
+    device = Device.find_by(id: device_id)
+    return unless project && device
+
     link = Link.find_by(id: link_id) if link_id
+    # Sidekiq round-trips JSON, so keys come back as strings; resolve_ch_source keys off symbols.
+    frozen = ch_meta&.symbolize_keys
 
     parsed_at = nil
     if created_at_iso.present?
@@ -33,6 +39,19 @@ class LogEventJob
       end
     end
 
-    EventIngestionService.log_event_without_view_duplicates(type, project, device, data, link, engagement_time, created_at: parsed_at)
+    if Clickhouse.primary?
+      # Sidekiq ran us, so Redis is back — re-enter the batch pipeline
+      EventIngestionService.log_async(
+        type, project, device, data, link, engagement_time,
+        created_at: parsed_at, event_name: event_name, session_id: session_id, tags: tags,
+        sidekiq_fallback: false, ch_meta: frozen
+      )
+      return
+    end
+
+    EventIngestionService.log_event_without_view_duplicates(
+      type, project, device, data, link, engagement_time,
+      created_at: parsed_at, event_name: event_name, session_id: session_id, tags: tags, ch_meta: frozen
+    )
   end
 end

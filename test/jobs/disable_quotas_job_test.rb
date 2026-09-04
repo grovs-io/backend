@@ -32,6 +32,16 @@ class DisableQuotasJobTest < ActiveSupport::TestCase
     @saved_env.each { |k, v| ENV[k] = v }
   end
 
+  test "runs when FREE_PASS_PROJECT_IDS is unset" do
+    ENV.delete('FREE_PASS_PROJECT_IDS')
+
+    StripeService.stub(:set_usage, ->(_inst) { nil }) do
+      QuotaAlertJob.stub(:perform_async, ->(_id) { nil }) do
+        assert_nothing_raised { @job.perform }
+      end
+    end
+  end
+
   # --- Real MAU computation via VisitorDailyStatistic ---
 
   test "sets quota_exceeded true when real MAU exceeds free limit" do
@@ -138,6 +148,21 @@ class DisableQuotasJobTest < ActiveSupport::TestCase
 
   # --- StripeService called ---
 
+  # Enforcement runs first, so a Stripe outage cannot skip a whole 30-minute cycle.
+  test "a Stripe failure does not suppress quota enforcement" do
+    @instance.update!(quota_exceeded: false)
+    create_visitors_with_stats(@instance.production, 11)
+
+    StripeService.stub(:set_usage, ->(_inst) { raise ActiveRecord::StatementInvalid, "boom" }) do
+      QuotaAlertJob.stub(:perform_async, ->(_id) { nil }) do
+        assert_raises(ActiveRecord::StatementInvalid) { @job.perform }
+      end
+    end
+
+    @instance.reload
+    assert @instance.quota_exceeded?, "quota enforcement must complete before the Stripe push"
+  end
+
   test "calls StripeService.set_usage for each instance" do
     called_instance_ids = []
 
@@ -194,7 +219,55 @@ class DisableQuotasJobTest < ActiveSupport::TestCase
     ENV.delete("GROVS_SELF_HOSTED")
   end
 
+  # --- CH-primary MAU failure (caller-shaped degradation) ---
+
+  test "primary-mode CH MAU failure skips the instance without touching quota_exceeded" do
+    @instance.update!(quota_exceeded: true)
+    failing_ids = [@instance.production.id, @instance.test.id]
+    alerted = []
+
+    with_primary_mode do
+      # Fail only this instance's read; others (if any compute) still succeed.
+      ch_stub = ->(project_ids, **_k) { (project_ids & failing_ids).any? ? nil : 3 }
+      ClickhouseReadService.stub(:billing_active_visitors_exact, ch_stub) do
+        ClickhouseReadService.stub(:billing_active_visitors, ch_stub) do
+          StripeService.stub(:set_usage, ->(_inst) { nil }) do
+            QuotaAlertJob.stub(:perform_async, ->(id) { alerted << id }) do
+              @job.perform # must not raise
+            end
+          end
+        end
+      end
+    end
+
+    @instance.reload
+    assert @instance.quota_exceeded?, "quota_exceeded must stay untouched on a failed CH MAU read"
+    assert_not_includes alerted, @instance.id, "no quota alert from a failed read"
+  end
+
+  test "a MAU failure for one instance does not abort sending usage for the rest" do
+    attempted = []
+
+    StripeService.stub(:set_usage, lambda { |inst|
+      attempted << inst.id
+      raise ProjectService::MauReadUnavailable, "CH down" if inst.id == @instance.id
+    }) do
+      @job.send_quotas_to_stripe # must not raise
+    end
+
+    assert_includes attempted, @instance.id
+    assert_operator attempted.size, :>, 1, "later instances must still get usage attempts"
+  end
+
   private
+
+  def with_primary_mode
+    prev = Rails.application.config.clickhouse_primary
+    Rails.application.config.clickhouse_primary = true
+    yield
+  ensure
+    Rails.application.config.clickhouse_primary = prev
+  end
 
   def create_visitors_with_stats(project, count)
     count.times do

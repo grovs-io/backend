@@ -1,5 +1,8 @@
 class Api::V1::Mcp::CampaignsController < Api::V1::Mcp::BaseController
+  include Api::V1::Concerns::AnalyticsRetentionGate
+
   before_action :load_mcp_project
+  before_action :enforce_ch_retention_window!, only: [:index]
 
   # POST /api/v1/mcp/campaigns
   def create
@@ -20,7 +23,7 @@ class Api::V1::Mcp::CampaignsController < Api::V1::Mcp::BaseController
       project: @project
     ).call
 
-    campaigns = result.map { |c| CampaignSerializer.serialize(c) }
+    campaigns = CampaignSerializer.serialize(result)
 
     render json: {
       campaigns: campaigns,

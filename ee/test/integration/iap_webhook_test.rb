@@ -38,7 +38,7 @@ class IapWebhookTest < ActionDispatch::IntegrationTest
 
   test "Apple webhook with valid hashid and revenue enabled processes notification" do
     mock_service = Minitest::Mock.new
-    mock_service.expect(:handle_notification, true, [Hash, Project])
+    mock_service.expect(:handle_notification, true, [Hash, Project], expected_environment: Grovs::Apple::ENV_PRODUCTION)
 
     AppleIapService.stub(:new, mock_service) do
       post "#{IAP_PREFIX}/apple/production/#{@project.hashid}",
@@ -179,7 +179,7 @@ class IapGoogleWebhookFlowTest < ActionDispatch::IntegrationTest
 
   test "Apple webhook returning unprocessed still acknowledges with 200" do
     mock_service = Minitest::Mock.new
-    mock_service.expect(:handle_notification, false, [Hash, Project])
+    mock_service.expect(:handle_notification, false, [Hash, Project], expected_environment: Grovs::Apple::ENV_PRODUCTION)
 
     AppleIapService.stub(:new, mock_service) do
       post "#{IAP_PREFIX}/apple/production/#{projects(:one).hashid}",

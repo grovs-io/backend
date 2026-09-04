@@ -432,4 +432,134 @@ class SdkPaymentServiceTest < ActiveSupport::TestCase
     assert result[:error].present?
     assert_equal :unprocessable_entity, result[:status]
   end
+
+  test "stores the session id reported by the SDK" do
+    params = valid_params(session_id: "sess-purchase")
+
+    build_service.create_or_update(event_params: params)
+
+    assert_equal "sess-purchase", PurchaseEvent.find_by(transaction_id: params[:transaction_id]).session_id
+  end
+
+  test "leaves session id blank when the SDK omits one" do
+    params = valid_params
+
+    build_service.create_or_update(event_params: params)
+
+    assert_equal "", PurchaseEvent.find_by(transaction_id: params[:transaction_id]).session_id
+  end
+
+  test "keeps the first session id when the same purchase is re-reported" do
+    params = valid_params(session_id: "sess-first")
+    build_service.create_or_update(event_params: params)
+
+    build_service.create_or_update(event_params: valid_params(
+      transaction_id: params[:transaction_id], session_id: "sess-second"
+    ))
+
+    assert_equal "sess-first", PurchaseEvent.find_by(transaction_id: params[:transaction_id]).session_id
+  end
+
+  test "webhook validation does not erase a session id" do
+    params = valid_params(session_id: "sess-kept")
+    build_service.create_or_update(event_params: params)
+    event = PurchaseEvent.find_by(transaction_id: params[:transaction_id])
+    event.update!(webhook_validated: true)
+
+    build_service.create_or_update(event_params: valid_params(transaction_id: params[:transaction_id]))
+
+    assert_equal "sess-kept", event.reload.session_id
+  end
+
+  test "a webhook-validated purchase can still gain a session id" do
+    params = valid_params
+    build_service.create_or_update(event_params: params)
+    event = PurchaseEvent.find_by(transaction_id: params[:transaction_id])
+    event.update!(webhook_validated: true)
+
+    build_service.create_or_update(event_params: valid_params(
+      transaction_id: params[:transaction_id], session_id: "sess-late"
+    ))
+
+    assert_equal "sess-late", event.reload.session_id
+  end
+
+  test "a session filled on a processed purchase re-delivers the ClickHouse row" do
+    params = valid_params
+    build_service.create_or_update(event_params: params)
+    event = PurchaseEvent.find_by(transaction_id: params[:transaction_id])
+    event.update!(webhook_validated: true, processed: true)
+
+    refreshed_id = nil
+    RefreshPurchaseClickhouseRowJob.stub(:perform_async, ->(id) { refreshed_id = id }) do
+      build_service.create_or_update(event_params: valid_params(
+        transaction_id: params[:transaction_id], session_id: "sess-late"
+      ))
+    end
+
+    assert_equal event.id, refreshed_id
+  end
+
+  test "an unchanged session on a processed purchase does not re-deliver to ClickHouse" do
+    params = valid_params(session_id: "sess-first")
+    build_service.create_or_update(event_params: params)
+    event = PurchaseEvent.find_by(transaction_id: params[:transaction_id])
+    event.update!(processed: true)
+
+    refreshed = false
+    RefreshPurchaseClickhouseRowJob.stub(:perform_async, ->(*_args) { refreshed = true }) do
+      build_service.create_or_update(event_params: valid_params(
+        transaction_id: params[:transaction_id], session_id: "sess-second"
+      ))
+    end
+
+    assert_not refreshed
+  end
+
+  test "the duplicate-creation race still records the session" do
+    params = valid_params(session_id: "sess-race")
+    winner = PurchaseEvent.create!(
+      event_type: params[:event_type], price_cents: 100, currency: "USD",
+      transaction_id: params[:transaction_id], product_id: params[:product_id],
+      project: @project, device: @device, identifier: "com.test.app",
+      store: true, purchase_type: params[:purchase_type]
+    )
+
+    # Hide the winner from the first lookup only, so save! really trips the unique index.
+    lookups = 0
+    real_find_by = PurchaseEvent.method(:find_by)
+    PurchaseEvent.stub(:find_by, ->(**kw) { (lookups += 1) == 1 ? nil : real_find_by.call(**kw) }) do
+      ValidatePurchaseEventJob.stub(:perform_async, true) do
+        build_service.create_or_update(event_params: params)
+      end
+    end
+
+    assert_equal 2, lookups, "the rescue path must have re-looked-up the winner"
+    assert_equal "sess-race", winner.reload.session_id
+  end
+
+  test "a session claim lost to a concurrent writer does not enqueue a second CH refresh" do
+    params = valid_params
+    build_service.create_or_update(event_params: params)
+    event = PurchaseEvent.find_by(transaction_id: params[:transaction_id])
+    event.update!(processed: true)
+
+    # Stale in memory, winner already committed — the shape a real concurrent claim sees.
+    stale = PurchaseEvent.find(event.id)
+    PurchaseEvent.where(id: event.id).update_all(session_id: "sess-winner")
+
+    refreshed = false
+    PurchaseEvent.stub(:find_by, ->(**kw) { kw.key?(:transaction_id) ? stale : PurchaseEvent.find_by!(**kw) }) do
+      RefreshPurchaseClickhouseRowJob.stub(:perform_async, ->(*_args) { refreshed = true }) do
+        ValidatePurchaseEventJob.stub(:perform_async, true) do
+          build_service.create_or_update(event_params: valid_params(
+            transaction_id: params[:transaction_id], session_id: "sess-loser"
+          ))
+        end
+      end
+    end
+
+    assert_not refreshed, "the loser must not race a second refresh"
+    assert_equal "sess-winner", event.reload.session_id, "the loser must not clobber the winner"
+  end
 end

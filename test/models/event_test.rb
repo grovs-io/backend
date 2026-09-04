@@ -50,8 +50,12 @@ class EventTest < ActiveSupport::TestCase
     assert_equal 0, Event.clamp_engagement_time(0)
   end
 
-  test "clamp_engagement_time handles negative values" do
-    assert_equal(-5, Event.clamp_engagement_time(-5))
+  test "clamp_engagement_time clamps negative values to zero" do
+    assert_equal 0, Event.clamp_engagement_time(-5)
+  end
+
+  test "clamp_engagement_time clamps negative strings to zero" do
+    assert_equal 0, Event.clamp_engagement_time("-300")
   end
 
   # === platform_for_metrics ===

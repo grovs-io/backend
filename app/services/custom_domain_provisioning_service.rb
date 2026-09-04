@@ -28,18 +28,24 @@ class CustomDomainProvisioningService
       return Result.new(ok: false, error: "This domain is not available", status: :unprocessable_entity)
     end
 
-    # A self-serve create is always SaaS even for instances with an enterprise subscription —
-    # only the admin path (as_enterprise) mints enterprise hostnames.
-    source = as_enterprise ? CustomHostname::SOURCE_ENTERPRISE : CustomHostname::SOURCE_SAAS
+    # Self-serve creates are SaaS-sourced; only admin (as_enterprise) and manual mint enterprise.
+    manual = Grovs.manual_custom_domains?
+    if manual && Grovs.ingress_host.blank?
+      return Result.new(ok: false, status: :unprocessable_entity,
+                        error: "Set SERVER_HOST or SELF_HOSTED_INGRESS_HOST before adding a domain")
+    end
+    source = as_enterprise || manual ? CustomHostname::SOURCE_ENTERPRISE : CustomHostname::SOURCE_SAAS
 
     custom_hostname = ActiveRecord::Base.transaction do
       raise Conflict if project.custom_hostnames.where(purpose: purpose).exists?
 
       CustomHostname.create!(
         project: project, domain: project.domain, hostname: hostname,
-        status: "provisioning", source: source, purpose: purpose
+        status: manual ? "pending" : "provisioning", source: source, purpose: purpose
       )
     end
+
+    return Result.new(ok: true, custom_hostname: custom_hostname) if manual
 
     cf = CloudflareCustomHostnameService.create(hostname: hostname, ssl_method: "txt")
     unless cf[:success] && cf[:cf_id].present?

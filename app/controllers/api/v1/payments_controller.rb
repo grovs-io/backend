@@ -11,6 +11,12 @@ class Api::V1::PaymentsController < Api::V1::ProjectsBaseController
   before_action :check_access, only: STRIPE_ACTIONS
   before_action :reject_if_self_hosted, only: STRIPE_ACTIONS
 
+  # CH-primary MAU read failed: surface an explicit 503, never a zero MAU.
+  rescue_from ProjectService::MauReadUnavailable do |e|
+    Rails.logger.error("clickhouse.mau.read_failed instance=#{@instance&.id} — #{e.message}")
+    render json: { error: "Usage data temporarily unavailable" }, status: :service_unavailable
+  end
+
   def create_subscription_session
     result = billing_service.create_checkout_session(user: current_user)
     render json: { url: result[:url] }, status: :ok

@@ -5,6 +5,10 @@ class Instance < ApplicationRecord
   validates :uri_scheme, presence: true
   validates :api_key, presence: true
 
+  validates :cold_storage_days, :delete_days,
+            numericality: { only_integer: true, greater_than: 0 }
+  validate :delete_days_not_below_cold_storage
+
   has_many :instance_roles, dependent: :delete_all
   has_many :users, through: :instance_roles
   has_many :setup_progress_steps, dependent: :delete_all
@@ -13,6 +17,8 @@ class Instance < ApplicationRecord
 
   has_one :test, -> {where(test: true)}, class_name: 'Project', dependent: :destroy
   has_one :production, -> {where(test: false)}, class_name: 'Project', dependent: :destroy
+  # The seeded public go instance and rows mid-deletion lack a project; the dashboard cannot operate on them.
+  scope :with_both_projects, -> { where(id: Project.where(test: true).select(:instance_id)).where(id: Project.where(test: false).select(:instance_id)) }
 
   has_one :ios_application, -> {where(platform: Grovs::Platforms::IOS)}, class_name: 'Application'
   has_one :android_application, -> {where(platform: Grovs::Platforms::ANDROID)}, class_name: 'Application'
@@ -22,24 +28,35 @@ class Instance < ApplicationRecord
   before_destroy :execute_before_destroy
 
   has_many :stripe_subscriptions
+  has_many :audit_export_tokens, dependent: :delete_all if defined?(AuditExportToken)
+  has_one :sso_connection, dependent: :destroy if defined?(SsoConnection)
   has_many :stripe_payment_intents
 
-  has_one :enterprise_subscription, dependent: :nullify
+  has_one :enterprise_subscription, dependent: :destroy
 
   # Methods
     
+  # Query, not the has_one: a renewal leaves an inactive row beside the active one; has_one picks either.
+  # end_date checked at read time — no job flips active when the term lapses.
   def valid_enterprise_subscription
-    if enterprise_subscription && enterprise_subscription.active
-      enterprise_subscription
-    end
+    EnterpriseSubscription.where(instance_id: id, active: true)
+                          .where("end_date >= ?", Time.current).first
   end
 
-  # Entitlement gate for self-serve custom domains: an active Stripe subscription
-  # or a valid enterprise subscription. Explicit so it does not depend on the
-  # paused-subscription behaviour of #subscription.
+  # Explicit subscription checks so this does not depend on #subscription's paused behaviour.
   def custom_domains_entitled?
+    return true if Grovs.self_hosted?
+
     stripe_subscriptions.exists?(active: true) || valid_enterprise_subscription.present?
   end
+
+  def audit_log_enabled?
+    return true if Grovs.self_hosted?
+
+    valid_enterprise_subscription.present?
+  end
+
+  def enterprise_sso_enabled? = audit_log_enabled?
 
   def application_for_platform(platform)
     application = Application.redis_find_by_multiple_conditions({ instance_id: id, platform: platform })
@@ -59,20 +76,15 @@ class Instance < ApplicationRecord
   end
 
   def subscription
-    active = stripe_subscriptions.find_by(active: true)
-    if active
-      # the active one
-      return active
-    end
-  
-    stripe_subscriptions.find_by(active: false, status: "paused")
-  
-    # latest one
+    # detect (not find_by) so a preloaded :stripe_subscriptions collection is used
+    # in-memory — avoids per-instance N+1 when serializing instance lists.
+    stripe_subscriptions.detect(&:active) ||
+      stripe_subscriptions.detect { |s| !s.active && s.status == "paused" }
   end
 
   def link_for_path(path)
-    link = Link.redis_find_by_multiple_conditions({ domain_id: production.domain.id, path: path })
-    link ||= Link.redis_find_by_multiple_conditions({ domain_id: test.domain.id, path: path })
+    link = LinksService.find_link_preferring_active(production.domain.id, path)
+    link ||= LinksService.find_link_preferring_active(test.domain.id, path)
 
     link
   end
@@ -98,6 +110,12 @@ class Instance < ApplicationRecord
   end
 
   private
+
+  def delete_days_not_below_cold_storage
+    return if delete_days.blank? || cold_storage_days.blank?
+
+    errors.add(:delete_days, "must be >= cold_storage_days") if delete_days < cold_storage_days
+  end
 
   def execute_before_destroy
     ios_application&.configuration&.destroy

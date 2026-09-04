@@ -8,6 +8,52 @@ class CustomHostnameTest < ActiveSupport::TestCase
     assert custom_hostnames(:acme_active).valid?
   end
 
+  test "a row with a cf id is cloudflare-provisioned" do
+    ch = custom_hostnames(:acme_active)
+    ch.update_columns(cf_custom_hostname_id: "cf-123")
+
+    assert ch.cloudflare?
+    assert_not ch.manual?
+  end
+
+  test "a row without a cf id is manual" do
+    ch = custom_hostnames(:acme_active)
+    ch.update_columns(cf_custom_hostname_id: nil, status: "pending")
+
+    assert ch.manual?
+    assert_not ch.cloudflare?
+  end
+
+  test "a provisioning row with no cf id is still cloudflare - a crashed create, not a manual row" do
+    ch = custom_hostnames(:acme_active)
+    ch.update_columns(cf_custom_hostname_id: nil, status: "provisioning")
+
+    assert ch.cloudflare?
+    assert_not ch.manual?
+  end
+
+  test "provider identity survives cloudflare credentials disappearing" do
+    ch = custom_hostnames(:acme_active)
+    ch.update_columns(cf_custom_hostname_id: "cf-123")
+
+    enable_manual_custom_domains!
+    assert Grovs.manual_custom_domains?, "guard: the deployment is now in manual mode"
+    assert ch.cloudflare?, "an existing Cloudflare row must not be reinterpreted as manual"
+  ensure
+    disable_custom_domains!
+  end
+
+  test "provider identity survives cloudflare credentials being introduced later" do
+    ch = custom_hostnames(:acme_active)
+    ch.update_columns(cf_custom_hostname_id: nil, status: "pending")
+
+    enable_custom_domains!
+    assert_not Grovs.manual_custom_domains?, "guard: the deployment is now in Cloudflare mode"
+    assert ch.manual?, "an existing manual row must not be reinterpreted as Cloudflare"
+  ensure
+    disable_custom_domains!
+  end
+
   test "destroy cascades to MigrationSource on the same host + project" do
     ch = custom_hostnames(:acme_active)
     source = migration_sources(:acme_branch)

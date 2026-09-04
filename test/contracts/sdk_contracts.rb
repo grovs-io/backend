@@ -17,6 +17,7 @@ module ApiContracts
       "vendor_id" => STRING,
       "user_agent" => STRING,
       "app_version" => STRING,
+      "device" => STRING_OR_NULL, # what the mobile SDKs actually send; `model` is the alias
       "model" => STRING_OR_NULL,
       "build" => STRING_OR_NULL,
       "screen_width" => { "type" => %w[integer string null] },
@@ -35,6 +36,9 @@ module ApiContracts
     }
   )
 
+  # add_event accepts link-resolution params (link/path/created_at/engagement_time)
+  # AND tolerates enrichment params (event_name/session_id/tags/properties) — clients
+  # may send them; the controller uses or ignores each. Union of both branches.
   EVENT_REQUEST = strict_object(
     required: %w[event],
     properties: {
@@ -42,14 +46,61 @@ module ApiContracts
       "path" => STRING_OR_NULL,
       "link" => STRING_OR_NULL,
       "created_at" => STRING_OR_NULL,
-      "engagement_time" => { "type" => %w[integer string null] }
+      "engagement_time" => { "type" => %w[integer string null] },
+      "event_name" => STRING_OR_NULL,
+      "session_id" => STRING_OR_NULL,
+      "tags" => ARRAY_OR_NULL,
+      "properties" => JSON_VALUE
     }
+  )
+
+  # add_custom_event — properties is a free-form bag. event_name is NOT contract-
+  # required: the controller validates its presence and returns 400 (negative tests
+  # send no event_name to exercise that path), so requiring it here would pre-empt them.
+  CUSTOM_EVENT_REQUEST = strict_object(
+    required: [],
+    properties: {
+      "event_name" => STRING_OR_NULL,
+      "path" => STRING_OR_NULL,
+      "link" => STRING_OR_NULL,
+      "session_id" => STRING_OR_NULL,
+      "engagement_time" => { "type" => %w[integer string null] },
+      "tags" => ARRAY_OR_NULL,
+      "properties" => JSON_VALUE
+    }
+  )
+
+  # add_batch — events is an array of arbitrary per-event payloads. Type is
+  # array|string|null so the controller's own "must be an array" 400 path (which
+  # negative tests exercise) isn't pre-empted by request-contract validation.
+  BATCH_EVENTS_REQUEST = strict_object(
+    required: %w[events],
+    properties: { "events" => { "type" => %w[array string null] } }
+  )
+  BATCH_EVENTS_RESPONSE = strict_object(
+    required: %w[accepted rejected errors],
+    properties: {
+      "accepted" => { "type" => "integer" },
+      "rejected" => { "type" => "integer" },
+      "errors" => ARRAY
+    }
+  )
+
+  # screen_aliases#create — array of {identifier, alias}; returns saved count.
+  SCREEN_ALIASES_REQUEST = strict_object(
+    required: %w[screen_aliases],
+    properties: { "screen_aliases" => { "type" => %w[array string null] } }
+  )
+  SCREEN_ALIASES_RESPONSE = strict_object(
+    required: %w[saved],
+    properties: { "saved" => { "type" => "integer" } }
   )
 
   USER_AGENT_REQUEST = strict_object(
     required: %w[user_agent],
     properties: {
-      "user_agent" => STRING
+      "user_agent" => STRING,
+      "session_id" => STRING_OR_NULL
     }
   )
 
@@ -64,7 +115,8 @@ module ApiContracts
     required: %w[url user_agent],
     properties: {
       "url" => STRING,
-      "user_agent" => STRING
+      "user_agent" => STRING,
+      "session_id" => STRING_OR_NULL
     }
   )
 
@@ -72,7 +124,8 @@ module ApiContracts
     required: %w[path user_agent],
     properties: {
       "path" => STRING,
-      "user_agent" => STRING
+      "user_agent" => STRING,
+      "session_id" => STRING_OR_NULL
     }
   )
 
@@ -88,6 +141,8 @@ module ApiContracts
       "show_preview" => BOOL_OR_NULL,
       "show_preview_ios" => BOOL_OR_NULL,
       "show_preview_android" => BOOL_OR_NULL,
+      "copy_to_clipboard_ios" => BOOL_OR_NULL,
+      "copy_to_clipboard_android" => BOOL_OR_NULL,
       "tracking_campaign" => STRING_OR_NULL,
       "tracking_medium" => STRING_OR_NULL,
       "tracking_source" => STRING_OR_NULL,
@@ -182,7 +237,8 @@ module ApiContracts
   LINK_RESPONSE = strict_object(
     required: %w[
       id name path title subtitle active sdk_generated data tags updated_at
-      show_preview_ios show_preview_android ads_platform generated_from_platform
+      show_preview_ios show_preview_android copy_to_clipboard_ios copy_to_clipboard_android
+      ads_platform generated_from_platform
       tracking_source tracking_medium tracking_campaign visitor_id campaign_id
       image access_path ios_custom_redirect android_custom_redirect desktop_custom_redirect
     ],
@@ -199,6 +255,8 @@ module ApiContracts
       "updated_at" => STRING,
       "show_preview_ios" => BOOLEAN_OR_NULL,
       "show_preview_android" => BOOLEAN_OR_NULL,
+      "copy_to_clipboard_ios" => BOOLEAN_OR_NULL,
+      "copy_to_clipboard_android" => BOOLEAN_OR_NULL,
       "ads_platform" => STRING_OR_NULL,
       "generated_from_platform" => STRING_OR_NULL,
       "tracking_source" => STRING_OR_NULL,
@@ -280,12 +338,14 @@ module ApiContracts
   SLIM_LINK_RESPONSE = strict_object(
     required: %w[
       id name path title subtitle active sdk_generated data tags updated_at
-      show_preview_ios show_preview_android ads_platform generated_from_platform
+      show_preview_ios show_preview_android copy_to_clipboard_ios copy_to_clipboard_android
+      ads_platform generated_from_platform
       tracking_source tracking_medium tracking_campaign visitor_id campaign_id
     ],
     properties: LINK_RESPONSE.fetch("properties").slice(
       "id", "name", "path", "title", "subtitle", "active", "sdk_generated",
       "data", "tags", "updated_at", "show_preview_ios", "show_preview_android",
+      "copy_to_clipboard_ios", "copy_to_clipboard_android",
       "ads_platform", "generated_from_platform", "tracking_source",
       "tracking_medium", "tracking_campaign", "visitor_id", "campaign_id"
     )
@@ -330,6 +390,18 @@ module ApiContracts
            request: EVENT_REQUEST,
            responses: { 200 => MESSAGE, **SDK_AUTH_FAILURES }
 
+  register "Api::V1::Sdk::EventsController#add_custom_event",
+           request: CUSTOM_EVENT_REQUEST,
+           responses: { 200 => MESSAGE, 400 => ERROR, **SDK_AUTH_FAILURES }
+
+  register "Api::V1::Sdk::EventsController#add_batch",
+           request: BATCH_EVENTS_REQUEST,
+           responses: { 200 => BATCH_EVENTS_RESPONSE, 400 => ERROR, **SDK_AUTH_FAILURES }
+
+  register "Api::V1::Sdk::ScreenAliasesController#create",
+           request: SCREEN_ALIASES_REQUEST,
+           responses: { 200 => SCREEN_ALIASES_RESPONSE, 400 => ERROR, **SDK_AUTH_FAILURES }
+
   register "Api::V1::Sdk::LinksController#create_link",
            request: SDK_LINK_CREATE_REQUEST,
            responses: { 200 => LINK_PATH_RESPONSE, **SDK_AUTH_FAILURES }
@@ -349,6 +421,10 @@ module ApiContracts
   register "Api::V1::Sdk::LinksController#link_details",
            request: LINK_LOOKUP_REQUEST,
            responses: { 200 => LINK_RESPONSE.merge("type" => %w[object null]), **SDK_AUTH_FAILURES }
+
+  register "Api::V1::Sdk::LinksController#clipboard_status",
+           request: NO_PARAMS,
+           responses: { 200 => strict_object(required: %w[clipboard_active], properties: { "clipboard_active" => BOOL }), **SDK_AUTH_FAILURES }
 
   register "Api::V1::Sdk::NotificationsController#mark_notification_as_read",
            request: NOTIFICATION_ID_REQUEST,

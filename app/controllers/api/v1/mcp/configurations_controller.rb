@@ -12,7 +12,9 @@ class Api::V1::Mcp::ConfigurationsController < Api::V1::Mcp::BaseController
       redirect_config.show_preview_android = params.fetch(:show_preview_android, redirect_config.show_preview_android)
     end
 
-    redirect_config.save!
+    # Unlike show_preview (legacy quirk: applied only alongside default_fallback), these work standalone.
+    redirect_config.copy_to_clipboard_ios = params.fetch(:copy_to_clipboard_ios, redirect_config.copy_to_clipboard_ios)
+    redirect_config.copy_to_clipboard_android = params.fetch(:copy_to_clipboard_android, redirect_config.copy_to_clipboard_android)
 
     if params[:platforms].present?
       unsupported = params[:platforms].keys.find { |p| !permitted_platform?(p) }
@@ -20,8 +22,12 @@ class Api::V1::Mcp::ConfigurationsController < Api::V1::Mcp::BaseController
         render json: { error: "Unsupported platform: #{unsupported}. Supported: ios, android, desktop" }, status: :bad_request
         return
       end
+    end
 
-      params[:platforms].each do |platform, config|
+    ActiveRecord::Base.transaction do
+      redirect_config.save!
+
+      (params[:platforms] || {}).each do |platform, config|
         variation = config[:variation] || "phone"
         redirect = redirect_config.redirect_for_platform_and_variation(platform, variation)
         redirect.update!(
@@ -30,6 +36,10 @@ class Api::V1::Mcp::ConfigurationsController < Api::V1::Mcp::BaseController
           enabled: config.fetch(:enabled, true)
         )
       end
+
+      audit!("redirect_config.updated", instance_id: @project.instance_id, target: audit_target(redirect_config),
+             changes: { "after" => params.to_unsafe_h.slice("default_fallback", "show_preview_ios", "show_preview_android",
+                                                            "copy_to_clipboard_ios", "copy_to_clipboard_android", "platforms") })
     end
 
     render json: { redirect_config: RedirectConfigSerializer.serialize(redirect_config.reload) }, status: :ok
@@ -50,12 +60,16 @@ class Api::V1::Mcp::ConfigurationsController < Api::V1::Mcp::BaseController
     results = {}
 
     platforms.each do |platform, config|
-      app = PlatformConfigurationService.set_configuration(
-        instance: @instance,
-        platform: platform,
-        enabled: config.fetch(:enabled, true),
-        config_params: permitted_platform_config(platform, config.except(:enabled))
-      )
+      enabled = config.fetch(:enabled, true)
+      permitted = permitted_platform_config(platform, config.except(:enabled))
+      app = ActiveRecord::Base.transaction do
+        a = PlatformConfigurationService.set_configuration(
+          instance: @instance, platform: platform, enabled: enabled, config_params: permitted
+        )
+        audit!("#{platform}_configuration.updated", instance_id: @instance.id, target: audit_target(@instance),
+               changes: { "after" => permitted.to_h.merge("enabled" => enabled) })
+        a
+      end
       results[platform] = ApplicationSerializer.serialize(app)
     end
 

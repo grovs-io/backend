@@ -10,7 +10,7 @@ class Api::V1::Sdk::LinksController < Api::V1::Sdk::BaseController
   def data_for_device_details_and_url
     link = LinksService.link_for_url(url_param, @project)
     link ||= resolve_via_migration(url_param)
-    result = build_link_data_service.resolve_for_link(link, request, user_agent_param)
+    result = build_link_data_service.resolve_for_link(link, request, user_agent_param, raw_url: url_param)
     render json: result, status: :ok
   end
 
@@ -28,6 +28,10 @@ class Api::V1::Sdk::LinksController < Api::V1::Sdk::BaseController
     end
 
     render json: LinkSerializer.serialize(link)
+  end
+
+  def clipboard_status
+    render json: { clipboard_active: ClipboardActivityService.active?(@project) }, status: :ok
   end
 
   def create_link
@@ -54,8 +58,13 @@ class Api::V1::Sdk::LinksController < Api::V1::Sdk::BaseController
 
   def build_link_data_service
     SdkLinkDataService.new(
-      project: @project, device: @device, platform: @platform
+      project: @project, device: @device, platform: @platform, session_id: session_id_param
     )
+  end
+
+  # Truncation happens in EventIngestionService#enqueue_event, alongside every other event field.
+  def session_id_param
+    params.permit(:session_id)[:session_id].presence
   end
 
   def user_agent_param
@@ -104,6 +113,14 @@ class Api::V1::Sdk::LinksController < Api::V1::Sdk::BaseController
 
   def show_preview_android_param
     params.permit(:show_preview_android)[:show_preview_android]
+  end
+
+  def copy_to_clipboard_ios_param
+    params.permit(:copy_to_clipboard_ios)[:copy_to_clipboard_ios]
+  end
+
+  def copy_to_clipboard_android_param
+    params.permit(:copy_to_clipboard_android)[:copy_to_clipboard_android]
   end
 
   def tracking_campaign_param

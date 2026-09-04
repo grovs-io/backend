@@ -2,6 +2,8 @@ class Visitor < ApplicationRecord
   include Hashid::Rails
   include ModelCachingExtension
 
+  # First: a raise in an after_commit callback halts the rest of the chain.
+  after_create_commit :stamp_device_last_seen
   after_create_commit :add_notifications_if_needed
 
   belongs_to :project
@@ -28,16 +30,10 @@ class Visitor < ApplicationRecord
   has_many :visitor_last_visits, dependent: :delete_all
 
   def self.fetch_by_hash_id(linkedsquared_id, project_id)
+    return nil if project_id.nil?
+
     decoded_id = Visitor.decode_id(linkedsquared_id)
-    visitor = nil
-      
-    if project_id.nil? 
-      visitor = Visitor.redis_find_by(:id, decoded_id, includes: [:device])
-    else
-      visitor = Visitor.redis_find_by_multiple_conditions({id: decoded_id, project_id: project_id}, includes: [:device])
-    end
-     
-    visitor
+    Visitor.redis_find_by_multiple_conditions({id: decoded_id, project_id: project_id}, includes: [:device])
   end
 
   def cache_keys_to_clear
@@ -62,5 +58,13 @@ class Visitor < ApplicationRecord
 
   def add_notifications_if_needed
     NotificationMessageService.add_messages_for_new_visitor(self)
+  end
+
+  # Visitor is the (project, device) grain: stamping here is what makes device_last_seens complete.
+  def stamp_device_last_seen
+    DeviceLastSeen.stamp_batch!({ [project_id, device_id] => Time.current })
+  rescue StandardError => e
+    Grovs::Metrics.increment("device_last_seen.stamp_failed", tags: { source: "visitor_create" })
+    Rails.logger.warn("Visitor#stamp_device_last_seen failed for #{project_id}/#{device_id}: #{e.class}: #{e.message}")
   end
 end

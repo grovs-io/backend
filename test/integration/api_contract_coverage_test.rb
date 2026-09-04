@@ -1,4 +1,6 @@
 require "test_helper"
+require_relative "analytics_schema_helper"
+require_relative "analytics_schema_contract_test"
 
 # Coverage gate for the strict API contract lock (see test/support/api_contracts.rb).
 #
@@ -17,6 +19,12 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
     Api::V1::IapController#google_handling
     Api::V1::PurchasesController#purchases
     Api::V1::PurchasesController#revenue_metrics
+    Api::V1::Sdk::PaymentsController#add_payment_event
+    Api::V1::AuditEventsController#index
+    Api::V1::AuditEventsController#latest
+    Api::V1::AuditExportTokensController#index
+    Api::V1::AuditExportTokensController#create
+    Api::V1::AuditExportTokensController#destroy
   ].freeze
 
   # No endpoint may sit outside the contract registry. If an endpoint cannot be
@@ -37,15 +45,20 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
   ].freeze
 
   NESTED_FLEXIBLE_SCHEMA_ALLOWLIST = [
+    "Api::V1::Sdk::EventsController#add_event request.properties.properties",
+    "Api::V1::Sdk::EventsController#add_custom_event request.properties.properties",
     "Api::V1::AdminController#create_enterprise_subscription 201 response.properties.subscription.additionalProperties",
     "Api::V1::AdminController#migrate_firebase_links request.properties.file",
     "Api::V1::AdminController#update_enterprise_subscription 200 response.properties.subscription.additionalProperties",
+    "Api::V1::AuditEventsController#index 200 response.properties.events.items.properties.changes",
+    "Api::V1::AuditEventsController#index 200 response.properties.events.items.properties.target",
+    "Api::V1::SsoConnectionsController#upsert request.properties.sso_connection",
     "Api::V1::AutomationController#details_for_link 200 response.properties.link.properties.data",
     "Api::V1::AutomationController#details_for_link 200 response.properties.link.properties.image",
     "Api::V1::AutomationController#details_for_link request.properties.automation.additionalProperties",
     "Api::V1::AutomationController#metrics_for_user request.properties.automation.additionalProperties",
-    "Api::V1::CampaignsController#current_project_campaigns 400 response.properties.traces",
-    "Api::V1::CampaignsController#current_project_campaigns_v2 400 response.properties.traces",
+    "Api::V1::CampaignsController#current_project_campaigns 400 response.oneOf[1].properties.traces",
+    "Api::V1::CampaignsController#current_project_campaigns_v2 400 response.oneOf[1].properties.traces",
     "Api::V1::ConfigurationsController#current_project_configurations 200 response.properties.configurations.items.properties.configuration",
     "Api::V1::ConfigurationsController#set_android_api_access_key request.properties.file",
     "Api::V1::ConfigurationsController#set_android_push_configuration request.properties.push_certificate",
@@ -58,7 +71,8 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
     "Api::V1::DomainsController#set_project_domain request.properties.generic_image",
     "Api::V1::EventsController#events_sorted_by_param 200 response.oneOf[0].items.properties.link.properties.data",
     "Api::V1::EventsController#events_sorted_by_param 200 response.oneOf[1].properties.result.items.properties.link.properties.data",
-    "Api::V1::EventsController#events_sorted_by_param 400 response.properties.traces",
+    "Api::V1::EventsController#events_for_search_params 400 response.oneOf[1].properties.traces",
+    "Api::V1::EventsController#events_sorted_by_param 400 response.oneOf[1].properties.traces",
     "Api::V1::LinksController#create_link 200 response.properties.link.properties.data",
     "Api::V1::LinksController#create_link 200 response.properties.link.properties.image",
     "Api::V1::LinksController#create_link 422 response.properties.traces",
@@ -67,8 +81,9 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
     "Api::V1::LinksController#create_link request.properties.desktop_custom_redirect",
     "Api::V1::LinksController#create_link request.properties.image",
     "Api::V1::LinksController#create_link request.properties.ios_custom_redirect",
-    "Api::V1::LinksController#current_project_links 400 response.properties.traces",
-    "Api::V1::LinksController#current_project_links_v2 400 response.properties.traces",
+    "Api::V1::LinksController#current_project_links 400 response.oneOf[1].properties.traces",
+    "Api::V1::LinksController#current_project_links_v2 200 response.properties.links.items.properties.data",
+    "Api::V1::LinksController#current_project_links_v2 400 response.oneOf[1].properties.traces",
     "Api::V1::LinksController#links_by_ids 200 response.properties.links.items.properties.data",
     "Api::V1::LinksController#links_by_ids 200 response.properties.links.items.properties.image",
     "Api::V1::LinksController#update_link 200 response.properties.link.properties.data",
@@ -163,6 +178,24 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
     assert unknown.empty?, "Contracts registered for non-existent endpoints (typo in the key?):\n  #{unknown.join("\n  ")}"
   end
 
+  # The analytics namespace is excluded from the ApiContracts coverage gate
+  # because it is governed by AnalyticsSchemaContractTest instead. This guard
+  # makes that delegation airtight: every live analytics route MUST appear in
+  # AnalyticsSchemaHelper::INPUT_SCHEMA_TO_ACTION. Adding an analytics route
+  # without a schema mapping fails here.
+  test "every analytics endpoint has an INPUT_SCHEMA mapping" do
+    mapped = AnalyticsSchemaContractTest::INPUT_SCHEMA_TO_ACTION.values.to_set
+    unmapped = analytics_endpoints.reject { |klass, action| mapped.include?([klass, action]) }
+
+    assert unmapped.empty?, <<~MSG
+      Analytics endpoint(s) with no INPUT_SCHEMA mapping. The api/v1/analytics/
+      namespace is governed by AnalyticsSchemaContractTest, so every route must
+      be registered in AnalyticsSchemaHelper::INPUT_SCHEMAS and wired into
+      AnalyticsSchemaContractTest::INPUT_SCHEMA_TO_ACTION:
+        #{unmapped.empty? ? '(none)' : unmapped.map { |k, a| "#{k}##{a}" }.join("\n    ")}
+    MSG
+  end
+
   test "contracts do not use unreviewed broad top-level schemas" do
     loose = ApiContracts.contracts.flat_map do |action, contract|
       entries = []
@@ -186,8 +219,9 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
       entries
     end.sort
 
-    unreviewed = dynamic - DYNAMIC_SCHEMA_ALLOWLIST
-    stale = DYNAMIC_SCHEMA_ALLOWLIST - dynamic
+    expected = active_allowlist(DYNAMIC_SCHEMA_ALLOWLIST)
+    unreviewed = dynamic - expected
+    stale = expected - dynamic
 
     assert unreviewed.empty? && stale.empty?, <<~MSG
       Dynamic API contract schema drift.
@@ -209,8 +243,9 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
       entries
     end.sort
 
-    unreviewed = flexible - NESTED_FLEXIBLE_SCHEMA_ALLOWLIST
-    stale = NESTED_FLEXIBLE_SCHEMA_ALLOWLIST - flexible
+    expected = active_allowlist(NESTED_FLEXIBLE_SCHEMA_ALLOWLIST)
+    unreviewed = flexible - expected
+    stale = expected - flexible
 
     assert unreviewed.empty? && stale.empty?, <<~MSG
       Nested flexible API contract schema drift.
@@ -227,6 +262,14 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
 
   # Controller#action for every app API route (api/ + public/), matching the
   # "controller.class.name#action_name" key the runtime hook uses.
+  #
+  # The entire `api/v1/analytics/` namespace is intentionally governed by
+  # AnalyticsSchemaContractTest (OUTPUT/INPUT schemas), NOT by ApiContracts, so
+  # those endpoints are excluded here. The separate guard test below
+  # ("every analytics endpoint has an INPUT_SCHEMA mapping") ensures the
+  # analytics namespace cannot hide an untracked endpoint.
+  ANALYTICS_CONTROLLER_PREFIX = "api/v1/analytics/"
+
   def app_endpoints
     Rails.application.routes.routes.filter_map do |route|
       defaults = route.defaults
@@ -234,14 +277,37 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
       action = defaults[:action]
       next if controller.nil? || action.nil?
       next unless controller.start_with?("api/", "public/")
+      next if controller.start_with?(ANALYTICS_CONTROLLER_PREFIX)
 
       klass = controller.split("/").map(&:camelize).join("::") + "Controller"
       "#{klass}##{action}"
     end.uniq
   end
 
+  # Every live route in the analytics namespace must map to an INPUT_SCHEMAS
+  # entry via AnalyticsSchemaContractTest::INPUT_SCHEMA_TO_ACTION. This is the
+  # guard that prevents an analytics endpoint from escaping the schema-contract
+  # system simply by being excluded from the api_contracts coverage gate above.
+  def analytics_endpoints
+    Rails.application.routes.routes.filter_map do |route|
+      defaults = route.defaults
+      controller = defaults[:controller]
+      action = defaults[:action]
+      next if controller.nil? || action.nil?
+      next unless controller.start_with?(ANALYTICS_CONTROLLER_PREFIX)
+
+      klass = (controller.split("/").map(&:camelize).join("::") + "Controller").constantize
+      [klass, action.to_sym]
+    end.uniq
+  end
+
   def ee_only_endpoint_in_oss_mode?(endpoint)
     ENV.fetch("GROVS_EE", "false") != "true" && EE_ONLY_ENDPOINTS.include?(endpoint)
+  end
+
+  # Allowlist entries are "<Controller#action> <rest>"; EE-only ones have no contract to match in OSS mode.
+  def active_allowlist(entries)
+    entries.reject { |entry| ee_only_endpoint_in_oss_mode?(entry.split(" ").first) }
   end
 
   def broad_schema?(schema)

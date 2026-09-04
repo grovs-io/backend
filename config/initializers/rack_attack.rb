@@ -4,15 +4,15 @@ Rack::Attack.blocklisted_responder = lambda do |_request|
   [ 503, {}, ['Blocked']]
 end
 
-Rack::Attack.throttled_responder = lambda do |_request|
-  # NB: you have access to the name and other data about the matched throttle
-  #  request.env['rack.attack.matched'],
-  #  request.env['rack.attack.match_type'],
-  #  request.env['rack.attack.match_data'],
-  #  request.env['rack.attack.match_discriminator']
+Rack::Attack.throttled_responder = lambda do |request|
+  # Entra backs off on 429 + Retry-After but quarantines a provisioning job after repeated 5xx.
+  if request.env['rack.attack.matched'] == 'scim/token'
+    period = request.env['rack.attack.match_data'][:period]
+    next [429, { 'Content-Type' => 'application/scim+json', 'Retry-After' => period.to_s },
+          [{ schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'], status: '429', detail: 'Too many requests' }.to_json]]
+  end
 
-  # Using 503 because it may make attacker think that they have successfully
-  # DOSed the site. Rack::Attack returns 429 for throttling by default
+  # 503 so an attacker thinks the site fell over; Rack::Attack returns 429 by default.
   [ 503, {}, ["Server Error\n"]]
 end
 
@@ -24,7 +24,7 @@ class Rack::Attack
   def self.reserved_main_host?(host, subdomain)
     return false if host.blank?
 
-    Grovs::Domains::MAIN.any? { |d| host == "#{subdomain}.#{d}" }
+    Grovs::Domains.split(host)&.first == subdomain
   end
 
   # Only enable rate limiting in production — development and staging
@@ -51,9 +51,24 @@ class Rack::Attack
     # Unauthenticated endpoints that could be used for email enumeration
     throttle('sensitive/ip', limit: 10, period: 1.minute) do |req|
       if reserved_main_host?(req.host, Grovs::Subdomains::API) &&
-         req.post? &&
-         ["/api/v1/users/reset_password", "/api/v1/users", "/api/v1/users/otp_status"].include?(req.path)
+         (req.post? || req.put?) &&
+         (["/api/v1/users/reset_password", "/api/v1/users", "/api/v1/users/otp_status"].include?(req.path) ||
+          req.path.match?(%r{\A/api/v1/instances/\w+/sso_connection(/|\z)}))
         req.ip
+      end
+    end
+
+    # Office NATs share one egress and discover fires per email blur; 10/min would 503 a rush.
+    throttle('sso/ip', limit: 60, period: 1.minute) do |req|
+      if req.path.start_with?("/api/v1/identity/sso/discover", "/api/v1/identity/sso/auth/oidc") &&
+         !req.path.end_with?("/callback")
+        req.ip
+      end
+    end
+
+    throttle('scim/token', limit: 600, period: 1.minute) do |req|
+      if reserved_main_host?(req.host, Grovs::Subdomains::API) && req.path.start_with?("/scim/v2/")
+        Digest::SHA256.hexdigest(req.env["HTTP_AUTHORIZATION"].to_s)
       end
     end
 
@@ -90,10 +105,27 @@ class Rack::Attack
       end
     end
 
+    # Dashboard bursts (overview+events+autocomplete+scroll) legitimately exceed 60/min
+    throttle('analytics/ip', limit: 200, period: 1.minute) do |req|
+      if reserved_main_host?(req.host, Grovs::Subdomains::API) &&
+         req.get? &&
+         req.path.match?(%r{/api/v1/projects/\w+/analytics/})
+        req.ip
+      end
+    end
+
     throttle('admin/ip', limit: 5000, period: 1.minute) do |req|
       if reserved_main_host?(req.host, Grovs::Subdomains::API) &&
          (req.path.start_with?("/api/v1/admin/") || req.path.start_with?("/api/v1/automation/"))
         req.ip
+      end
+    end
+
+    # SIEM pollers: 60 pulls a minute per token is plenty for a 1000-row page size.
+    throttle('audit_export/token', limit: 60, period: 1.minute) do |req|
+      if reserved_main_host?(req.host, Grovs::Subdomains::API) && req.path.match?(%r{/api/v1/instances/\w+/audit_events})
+        auth = req.env["HTTP_AUTHORIZATION"].to_s
+        Digest::SHA256.hexdigest(auth) if auth.include?("aet_")
       end
     end
 
@@ -109,6 +141,7 @@ class Rack::Attack
       end
     end
 
+    # 5000/sec: prod-measured (03ff4f4) — carrier NATs exceeded 500/sec in the May incidents
     throttle('sdk-requests/ip', limit: 5000, period: 1.second) do |req|
       if reserved_main_host?(req.host, Grovs::Subdomains::SDK)
         req.ip

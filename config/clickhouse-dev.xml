@@ -1,0 +1,37 @@
+<clickhouse>
+    <logger>
+        <level>warning</level>
+        <console>1</console>
+    </logger>
+
+    <!-- All data under tmp/clickhouse-data/ (relative to CWD) -->
+    <path>tmp/clickhouse-data/</path>
+    <tmp_path>tmp/clickhouse-data/tmp/</tmp_path>
+    <user_files_path>tmp/clickhouse-data/user_files/</user_files_path>
+    <format_schema_path>tmp/clickhouse-data/format_schemas/</format_schema_path>
+
+    <!-- HTTP interface (used by Rails via clickhouse-rb gem) -->
+    <http_port>8123</http_port>
+    <!-- Native TCP protocol -->
+    <tcp_port>9000</tcp_port>
+    <!-- Listen on localhost only -->
+    <listen_host>127.0.0.1</listen_host>
+
+    <!-- Default user (no password, local dev only) -->
+    <profiles>
+        <default/>
+    </profiles>
+    <users>
+        <default>
+            <password/>
+            <networks>
+                <ip>127.0.0.1</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+        </default>
+    </users>
+    <quotas>
+        <default/>
+    </quotas>
+</clickhouse>

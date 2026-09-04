@@ -16,6 +16,9 @@ unless Rails.env.development? || Rails.env.test?
   # Get hostname
   hostname = begin; Socket.gethostname; rescue SystemCallError; 'unknown'; end
 
+  # The SDK otherwise installs a default OTLP exporter aimed at localhost and logs an export error every flush.
+  ENV['OTEL_TRACES_EXPORTER'] ||= 'none' unless ENV['OTEL_EXPORTER_OTLP_ENDPOINT'].present?
+
   OpenTelemetry::SDK.configure do |c|
     c.service_name = ENV.fetch('OTEL_SERVICE_NAME', "grovs-#{Rails.env}")
     c.service_version = ENV.fetch('APP_VERSION', 'unknown')

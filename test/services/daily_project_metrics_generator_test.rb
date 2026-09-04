@@ -53,6 +53,27 @@ class DailyProjectMetricsGeneratorTest < ActiveSupport::TestCase
     assert_equal 0, metric.organic_users
   end
 
+  test "organic_users excludes link-driven reinstalls" do
+    new_date = Date.new(2026, 6, 2)
+    visitor = visitors(:ios_visitor)
+
+    VisitorDailyStatistic.create!(
+      visitor: visitor, project_id: @project.id, event_date: new_date,
+      platform: Grovs::Platforms::IOS, views: 1, installs: 3, reinstalls: 2
+    )
+    # All 5 (3 installs + 2 reinstalls) are link-driven → organic must be 0, not 2.
+    LinkDailyStatService.bulk_upsert_link_stats([{
+      project_id: @project.id, link_id: links(:basic_link).id,
+      event_date: new_date, platform: Grovs::Platforms::IOS,
+      metrics: { installs: 3, reinstalls: 2 }
+    }])
+
+    DailyProjectMetricsGenerator.call(new_date)
+
+    metric = DailyProjectMetric.find_by(project_id: @project.id, event_date: new_date, platform: Grovs::Platforms::IOS)
+    assert_equal 0, metric.organic_users
+  end
+
   test "returning users counted from earlier date" do
     # Fixtures: ios_visitor has ios_stat_day1 (2026-03-01) and ios_stat_day2 (2026-03-02)
     # On day2, ios_visitor existed on day1 → exactly 1 returning user
@@ -140,5 +161,23 @@ class DailyProjectMetricsGeneratorTest < ActiveSupport::TestCase
     # premium_day1: revenue=999, purchase_events=1
     assert_equal 999, metric.revenue
     assert_equal 1, metric.units_sold
+  end
+
+  test "raises the local statement timeout before running its queries" do
+    statements = []
+    sub = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+      statements << payload[:sql].to_s
+    end
+    begin
+      DailyProjectMetricsGenerator.call(@date)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(sub)
+    end
+
+    timeout_idx = statements.index { |s| s.include?("SET LOCAL statement_timeout = '#{DailyProjectMetricsGenerator::STATEMENT_TIMEOUT}'") }
+    heavy_idx = statements.index { |s| s.include?("classified AS MATERIALIZED") }
+    assert timeout_idx, "expected SET LOCAL statement_timeout to be issued"
+    assert heavy_idx, "expected the classification query to run"
+    assert timeout_idx < heavy_idx, "timeout must be set before the classification query"
   end
 end

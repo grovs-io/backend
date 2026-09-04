@@ -6,30 +6,43 @@ elsif Doorkeeper::Application.count.zero?
   Doorkeeper::Application.create(name: "React", redirect_uri: "", scopes: "") # legacy: random creds
 end
 
-domain = Domain.find_by(subdomain: Grovs::Subdomains::GO, domain: Grovs::Domains::LIVE)
-unless domain
-  # go instance intentionally has blank scheme/key; skip validation (matches prod).
-  instance = Instance.new
-  instance.uri_scheme = ""
-  instance.api_key = ""
-  instance.save!(validate: false)
+# The go.<domain> quick-link subdomain is Grovs SaaS plumbing. Self-hosted
+# installs have no use for it, and the enterprise image has no dotfiles, so
+# PUBLIC_GO_PROJECT_IDENTIFIER is genuinely nil there — seeding it would fail
+# validation and abort the one-shot migrate task.
+unless Grovs.self_hosted?
+  domain = Domain.find_by(subdomain: Grovs::Subdomains::GO, domain: Grovs::Domains::LIVE)
+  unless domain
+    go_identifier = ENV.fetch('PUBLIC_GO_PROJECT_IDENTIFIER', 'public-go-links')
 
-  project = Project.new(name: ENV['PUBLIC_GO_PROJECT_IDENTIFIER'], identifier: ENV['PUBLIC_GO_PROJECT_IDENTIFIER'])
-  project.instance = instance
-  project.save!
+    # Transactional: the instance is saved with validate: false, so a later failure
+    # would otherwise leave an orphan Instance behind and leak another on every retry.
+    ActiveRecord::Base.transaction do
+      # go instance intentionally has blank scheme/key; skip validation (matches prod).
+      instance = Instance.new
+      instance.uri_scheme = ""
+      instance.api_key = ""
+      instance.save!(validate: false)
 
-  domain = Domain.new(subdomain: Grovs::Subdomains::GO, domain: Grovs::Domains::LIVE)
-  domain.project = project
-  domain.save!
+      project = Project.new(name: go_identifier, identifier: go_identifier)
+      project.instance = instance
+      project.save!
+
+      domain = Domain.new(subdomain: Grovs::Subdomains::GO, domain: Grovs::Domains::LIVE)
+      domain.project = project
+      domain.save!
+    end
+  end
 end
 
 if ENV["BOOTSTRAP_ADMIN_EMAIL"].present? && ENV["BOOTSTRAP_ADMIN_PASSWORD"].present?
-  # Self-hosted: first admin from env (no SMTP/SSO needed). Idempotent.
-  # No default instance/project — the admin creates their first project in the dashboard.
-  admin = User.find_or_initialize_by(email: ENV["BOOTSTRAP_ADMIN_EMAIL"])
+  # Downcased to match Devise, so re-seeding with different casing is idempotent.
+  admin_email = ENV["BOOTSTRAP_ADMIN_EMAIL"].to_s.strip.downcase
+  admin = User.find_or_initialize_by(email: admin_email)
   if admin.new_record?
     admin.name = "Admin"
     admin.password = ENV["BOOTSTRAP_ADMIN_PASSWORD"]
     admin.save!
   end
+  # No instance is created; the admin makes one through onboarding.
 end

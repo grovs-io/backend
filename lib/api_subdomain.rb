@@ -1,5 +1,6 @@
 class ApiSubdomain
   def self.matches?(request)
-    request.subdomain == Grovs::Subdomains::API && Grovs::Domains::MAIN.include?(request.domain)
+    label, = Grovs::Domains.split(request.host)
+    label == Grovs::Subdomains::API
   end
 end

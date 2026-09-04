@@ -1,31 +1,56 @@
-# Don't bake env files into image - use Kamal secrets at runtime
+# --- Deny ALL root-level dotfiles and dot-directories -------------------------
+# Deliberately a denylist-of-last-resort inverted into an allowlist: enumerating
+# individual dot-dirs is fragile, and anything missed is silently baked into a
+# customer-facing image. This has already bitten us — local ClickHouse data
+# (.clickhouse/, ~1.7 GB of real analytics), .ruby-lsp/ and .claude/ all leaked
+# in that way. Deny everything, re-admit only what the build genuinely needs.
+.*
+!.ruby-version
+
+# Belt-and-braces: these must never ship even if the rule above changes.
 .env
 .env.*
-.env.staging
-.env.production
-.env.development
-.env.test
-.env.local
-
-# Kamal secrets
-.kamal/secrets
-
-# Rails credentials (use RAILS_MASTER_KEY env var instead)
+.kamal/
+.clickhouse/
 config/master.key
 config/credentials.yml.enc
 
-# Git
-.git
-.gitignore
-
-# Logs
+# Logs, caches and local ActiveStorage blobs. The directories themselves still
+# exist in the image — Rails recreates them during assets:precompile in the
+# builder stage — so only their contents are dropped.
 log/*
 tmp/*
+storage/*
+node_modules/
 
 # Test/Dev
 spec/
 test/
+ee/test/
+coverage/
 .rspec
+
+# Docs ship alongside the image, not inside it
+docs/
+
+# Deploy tooling. config/deploy.yml and these Dockerfiles are symlinks into a
+# developer checkout, so they land in the image as dangling links exposing local
+# paths; the real deploy.yml would expose production host IPs and topology.
+config/deploy.yml
+Dockerfile
+Dockerfile.test
+Dockerfile.preview
+Dockerfile.development
+Dockerfile.production
+docker-compose.yml
+Procfile*
+run_*.sh
+
+# MaxMind GeoLite2 is licensed to us, not to our customers — redistributing it
+# inside a shipped image would breach the EULA. Self-hosted deployments supply
+# their own database and point GEOIP_DB_PATH at it. Geo features degrade
+# gracefully when it is absent (see config/initializers/geoip.rb).
+db/*.mmdb
 
 # IDE
 .idea/
@@ -33,3 +58,7 @@ test/
 
 # OS
 .DS_Store
+
+# Private keys must never ride into an image
+resources/*.p8
+**/*.p8

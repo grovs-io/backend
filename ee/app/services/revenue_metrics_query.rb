@@ -1,8 +1,9 @@
 class RevenueMetricsQuery
   def initialize(project_id:, start_date:, end_date:, product:, platform: nil, sort_by: nil, ascendent: true)
     @project_id = project_id
-    @start_date = start_date
-    @end_date = end_date
+    # Callers pass Date or Time; `@end_date + 1` must mean a day, not a second.
+    @start_date = start_date.to_date
+    @end_date = end_date.to_date
     @product = product
     @platform = platform
     @sort_by = sort_by.presence_in(allowed_sort_fields) || 'product_id'
@@ -11,17 +12,9 @@ class RevenueMetricsQuery
 
   def with_arpu(page: 1, per_page: 20)
     data = call(page: page, per_page: per_page)
+    return data if data.empty?
 
-    total_visitors_query = VisitorDailyStatistic.where(
-      project_id: @project_id,
-      event_date: @start_date..@end_date
-    )
-
-    if @platform.present?
-      total_visitors_query = total_visitors_query.where(platform: @platform)
-    end
-
-    total_visitors = total_visitors_query.distinct.count(:visitor_id)
+    total_visitors = clickhouse_total_visitors || pg_total_visitors
 
     data.each do |row|
       revenue = row["total_revenue_usd_cents"].to_f
@@ -34,6 +27,38 @@ class RevenueMetricsQuery
   end
 
   def call(page: 1, per_page: 20)
+    if RevenueLedger.reads_enabled?
+      ledger = ledger_call(page: page, per_page: per_page)
+      return ledger unless ledger.nil?
+    end
+
+    legacy_call(page: page, per_page: per_page)
+  end
+
+  # Ledger path: product-grain aggregation straight from purchase_events (processed
+  # gate everywhere, incl. unique_purchasers — fixes the ungated legacy subquery);
+  # sorting/pagination in Ruby (product cardinality is tiny). nil → legacy fallback.
+  def ledger_call(page:, per_page:)
+    rows = RevenueLedgerQuery.product_totals(
+      @project_id, start_date: @start_date, end_date: @end_date,
+      platform: @platform, product_filter: @product
+    )
+    return nil if rows.nil?
+
+    desc = @asc == "DESC"
+    sorted =
+      if %w[product_id project_id].include?(@sort_by)
+        rows.sort_by { |r| r[@sort_by].to_s }.then { |a| desc ? a.reverse : a }
+      else
+        # tie-break product_id ASC in both directions
+        rows.sort_by { |r| [desc ? -r[@sort_by].to_i : r[@sort_by].to_i, r["product_id"].to_s] }
+      end
+    offset = (page.to_i - 1) * per_page.to_i
+    Kaminari.paginate_array(sorted[offset, per_page.to_i] || [],
+                            total_count: rows.size, limit: per_page.to_i, offset: offset)
+  end
+
+  def legacy_call(page: 1, per_page: 20)
     ActiveRecord::Base.with_connection do |conn|
       return Kaminari.paginate_array([]) unless conn.table_exists?(:in_app_product_daily_statistics)
 
@@ -90,6 +115,27 @@ class RevenueMetricsQuery
   end
 
   private
+
+  # Only nil (disabled/failed) falls back; a real CH zero is kept.
+  def clickhouse_total_visitors
+    return nil unless Clickhouse.analytics_rollups_read_enabled?
+
+    if @platform.present?
+      ClickhouseReadService.unique_visitors_by_platform(
+        @project_id, start_date: @start_date, end_date: @end_date, platforms: Array(@platform)
+      )
+    else
+      ClickhouseReadService.billing_active_visitors(
+        [@project_id], start_date: @start_date, end_date: @end_date
+      )
+    end
+  end
+
+  def pg_total_visitors
+    scope = VisitorDailyStatistic.where(project_id: @project_id, event_date: @start_date..@end_date)
+    scope = scope.where(platform: @platform) if @platform.present?
+    scope.distinct.count(:visitor_id)
+  end
 
   def count_products(conn)
     sql = <<~SQL

@@ -59,6 +59,18 @@ class ApplicationTest < ActiveSupport::TestCase
     assert_equal web_configurations(:one), config
   end
 
+  test "configuration does not stay cached as nil after the config row is created" do
+    memory_store = ActiveSupport::Cache::MemoryStore.new
+    Rails.stub(:cache, memory_store) do
+      app = Application.create!(instance_id: instances(:one).id, platform: Grovs::Platforms::IOS, enabled: true)
+      assert_nil app.configuration, "no config yet — this read caches the miss"
+
+      IosConfiguration.create!(application_id: app.id, bundle_id: "com.example.app", app_prefix: "ABC123")
+      assert_equal "com.example.app", app.reload.configuration&.bundle_id,
+                   "a cached nil must not mask the freshly created configuration"
+    end
+  end
+
   test "configuration returns nil for platform with no configuration" do
     app = Application.create!(instance: instances(:two), platform: Grovs::Platforms::IOS)
     Rails.cache.delete([app, "configuration"])

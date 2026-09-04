@@ -1,6 +1,6 @@
 # Translates an upstream payload into a native Grovs Link + per-platform CustomRedirect rows.
-# Returns nil if the project is missing its domain or redirect_config (rare partial-provisioning
-# state); FirstHitMigration treats nil as "couldn't materialize" and serves project defaults.
+# Returns nil on missing domain/redirect_config or an exhausted path namespace; FirstHitMigration
+# treats nil as "couldn't materialize" and serves project defaults.
 class MigratedLinkBuilder
   MAX_CUSTOM_DATA_BYTES = 65_536
   MAX_TAG_COUNT         = 100
@@ -48,6 +48,11 @@ class MigratedLinkBuilder
 
       link
     end
+  rescue LinksService::PathGenerationError => e
+    # Public redirect: nil degrades to project defaults, where raising would be a bare 500.
+    Rails.logger.error(message: "migrated_link_builder_path_exhausted",
+                       project_id: project.id, error: e.message)
+    nil
   end
 
   def self.build_mobile_redirect(link, platform, url)

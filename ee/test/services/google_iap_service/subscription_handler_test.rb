@@ -171,6 +171,56 @@ class GoogleIapService::SubscriptionHandlerTest < ActiveSupport::TestCase
 
   private
 
+  test "renewal notification records a new BUY for the new billing period" do
+    deliver_subscription_notification(notification_type: 4, order_id: "GPA.renew-001")
+    deliver_subscription_notification(notification_type: 2, order_id: "GPA.renew-001..0")
+
+    buys = PurchaseEvent.where(
+      event_type: Grovs::Purchases::EVENT_BUY,
+      original_transaction_id: "GPA.renew-001",
+      project_id: @project.id
+    )
+    assert_equal 2, buys.count, "the renewal must create its own BUY — the purchase token is reused across periods"
+    assert_equal 999, buys.sum(:price_cents) / 2
+  end
+
+  test "duplicate renewal RTDN does not create a second BUY for the same period" do
+    deliver_subscription_notification(notification_type: 4, order_id: "GPA.renew-002")
+    deliver_subscription_notification(notification_type: 2, order_id: "GPA.renew-002..0")
+    deliver_subscription_notification(notification_type: 2, order_id: "GPA.renew-002..0")
+
+    buys = PurchaseEvent.where(
+      event_type: Grovs::Purchases::EVENT_BUY,
+      original_transaction_id: "GPA.renew-002",
+      project_id: @project.id
+    )
+    assert_equal 2, buys.count
+  end
+
+  def deliver_subscription_notification(notification_type:, order_id:, token: "token_#{order_id.split('..').first}")
+    verified = OpenStruct.new(
+      purchase_type: 1,
+      price_amount_micros: 9_990_000,
+      price_currency_code: "USD",
+      start_time_millis: 1_735_689_600_000,
+      expiry_time_millis: 1_738_368_000_000,
+      order_id: order_id
+    )
+    @service_instance.instance_variable_set(:@service, build_fake_service(get_purchase_subscription: verified))
+
+    notification = {
+      "subscriptionNotification" => {
+        "purchaseToken" => token,
+        "subscriptionId" => "sub_renewal",
+        "notificationType" => notification_type
+      }
+    }
+    result = @service_instance.send(
+      :handle_subscription_notification, notification, @instance, create_webhook, "com.test.app"
+    )
+    assert_equal true, result
+  end
+
   def create_webhook
     IapWebhookMessage.create!(
       payload: "test",

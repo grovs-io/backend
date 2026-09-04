@@ -6,7 +6,7 @@ REDIS_POOL_SIZE = Integer(ENV.fetch('REDIS_POOL_SIZE', 15))
 # and again in each Puma worker after fork (see config/puma.rb).
 def new_redis_pool
   ConnectionPool::Wrapper.new(size: REDIS_POOL_SIZE, timeout: 5) do
-    Redis.new(url: ENV['REDIS_URL'], ssl_params: { verify_mode: OpenSSL::SSL::VERIFY_NONE })
+    Redis.new(url: ENV['REDIS_URL'], ssl_params: Grovs::RedisSsl.params)
   end
 end
 

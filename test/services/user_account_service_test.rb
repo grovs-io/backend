@@ -1,4 +1,5 @@
 require "test_helper"
+require "sidekiq/testing"
 
 class UserAccountServiceTest < ActiveSupport::TestCase
   fixtures :instances
@@ -99,6 +100,37 @@ class UserAccountServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "reset_password rejects an expired token and leaves the password unchanged" do
+    user = User.create!(email: @email, password: @password)
+    raw_token = user.send_reset_password_instructions
+    # Push the token past the reset_password_within (6h) window.
+    user.update_column(:reset_password_sent_at, 7.hours.ago)
+
+    assert_raises(ActiveRecord::RecordNotFound) do
+      UserAccountService.reset_password(token: raw_token, new_password: "newpassword456")
+    end
+
+    user.reload
+    assert user.valid_password?(@password), "expired token must not change the password"
+    assert_not user.valid_password?("newpassword456")
+  end
+
+  test "reset_password cannot be replayed with the same token" do
+    user = User.create!(email: @email, password: @password)
+    raw_token = user.send_reset_password_instructions
+
+    UserAccountService.reset_password(token: raw_token, new_password: "firstchange123")
+
+    assert_raises(ActiveRecord::RecordNotFound) do
+      UserAccountService.reset_password(token: raw_token, new_password: "secondchange123")
+    end
+
+    user.reload
+    assert user.valid_password?("firstchange123"), "first reset stands"
+    assert_not user.valid_password?("secondchange123"), "used token must not reset again"
+    assert_nil user.reset_password_token, "token must be cleared after a successful reset"
+  end
+
   # === accept_invite ===
 
   test "accept_invite returns user with name and password set" do
@@ -136,11 +168,14 @@ class UserAccountServiceTest < ActiveSupport::TestCase
     instance = Instance.create!(uri_scheme: "destroy#{SecureRandom.hex(4)}", api_key: SecureRandom.hex(32))
     InstanceRole.create!(role: "admin", instance_id: instance.id, user_id: user.id)
 
-    assert_difference "User.count", -1 do
-      UserAccountService.destroy_account(user: user)
-    end
+    Sidekiq::Testing.fake! do
+      DeleteInstanceJob.jobs.clear
+      assert_difference "User.count", -1 do
+        UserAccountService.destroy_account(user: user)
+      end
 
-    assert_nil Instance.find_by(id: instance.id), "Orphaned instance should be destroyed"
+      assert_equal [instance.id], DeleteInstanceJob.jobs.map { |j| j["args"][0] }, "Orphaned instance deletion should be enqueued"
+    end
     assert_equal 0, InstanceRole.where(user_id: user.id).count, "All roles should be removed"
   end
 
@@ -190,10 +225,13 @@ class UserAccountServiceTest < ActiveSupport::TestCase
     InstanceRole.create!(role: "admin", instance_id: instance1.id, user_id: user.id)
     InstanceRole.create!(role: "admin", instance_id: instance2.id, user_id: user.id)
 
-    UserAccountService.destroy_account(user: user)
+    Sidekiq::Testing.fake! do
+      DeleteInstanceJob.jobs.clear
+      UserAccountService.destroy_account(user: user)
 
-    assert_nil Instance.find_by(id: instance1.id), "First orphaned instance destroyed"
-    assert_nil Instance.find_by(id: instance2.id), "Second orphaned instance destroyed"
+      assert_equal [instance1.id, instance2.id].sort, DeleteInstanceJob.jobs.map { |j| j["args"][0] }.sort,
+                   "Both orphaned instance deletions enqueued"
+    end
   end
 
 

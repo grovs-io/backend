@@ -76,6 +76,37 @@ class VisitorDailyStatisticTest < ActiveSupport::TestCase
     assert_equal 77, new_stat.views
   end
 
+  test "merge_visitors! keeps the target's invited_by_id and adopts the source's when target has none" do
+    from_visitor = visitors(:android_visitor)
+    to_visitor = visitors(:ios_visitor)
+    date = Date.parse("2027-07-01")
+
+    VisitorDailyStatistic.create!(visitor: from_visitor, project_id: from_visitor.project_id,
+                                  event_date: date, platform: "ios", views: 1, invited_by_id: 4242)
+    VisitorDailyStatistic.create!(visitor: to_visitor, project_id: to_visitor.project_id,
+                                  event_date: date, platform: "ios", views: 2, invited_by_id: nil)
+
+    VisitorDailyStatistic.merge_visitors!(from_id: from_visitor.id, to_id: to_visitor.id)
+
+    merged = VisitorDailyStatistic.find_by(visitor_id: to_visitor.id, event_date: date, platform: "ios")
+    assert_equal 3, merged.views
+    assert_equal 4242, merged.invited_by_id, "nil target invited_by_id should adopt the source's value"
+  end
+
+  test "merge_visitors! nulls invited_by_id that would self-attribute the target" do
+    from_visitor = visitors(:android_visitor)
+    to_visitor = visitors(:ios_visitor) # to_visitor invited from_visitor
+    date = Date.parse("2027-08-01")
+    VisitorDailyStatistic.create!(visitor: from_visitor, project_id: from_visitor.project_id,
+                                  event_date: date, platform: "ios", views: 1,
+                                  invited_by_id: to_visitor.id)
+
+    VisitorDailyStatistic.merge_visitors!(from_id: from_visitor.id, to_id: to_visitor.id)
+
+    merged = VisitorDailyStatistic.find_by(visitor_id: to_visitor.id, event_date: date, platform: "ios")
+    assert_nil merged.invited_by_id, "moved rows must not credit the target as its own inviter"
+  end
+
   test "merge_visitors! raises when from and to are the same" do
     visitor = visitors(:ios_visitor)
     assert_raises(ArgumentError) do

@@ -137,7 +137,7 @@ class CampaignSerializerCollectionTest < ActiveSupport::TestCase
 
     queries = []
     sub = ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
-      queries << payload[:sql] if payload[:sql] =~ /bool_or\(active\)/i
+      queries << payload[:sql] if payload[:sql] =~ /has_active/i
     end
     result = CampaignSerializer.serialize(Campaign.where(id: [c1.id, c2.id]).to_a)
     ActiveSupport::Notifications.unsubscribe(sub)

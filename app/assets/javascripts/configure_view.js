@@ -141,7 +141,9 @@ function setOpenAppUIData(
   }
 
   function openAppStoreOnClick() {
-    goToLink(appstore_url, true);
+    copyThenGo(function () {
+      goToLink(appstore_url, true);
+    });
   }
 
   const buttonElement = document.getElementById("open-app-button");
@@ -179,7 +181,9 @@ function setPreviewAppData(name, image, button_title, button_url) {
   }
 
   function buttonOnClick() {
-    goToLink(button_url);
+    copyThenGo(function () {
+      goToLink(button_url);
+    });
   }
 
   const buttonElement = document.getElementById("open-app-button");

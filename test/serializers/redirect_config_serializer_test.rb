@@ -84,4 +84,11 @@ class RedirectConfigSerializerTest < ActiveSupport::TestCase
     assert_kind_of Hash, result[0]["ios"]
     assert_kind_of Hash, result[1]["ios"]
   end
+
+  test "serializes copy_to_clipboard defaults as false" do
+    result = RedirectConfigSerializer.serialize(redirect_configs(:one))
+
+    assert_equal false, result["copy_to_clipboard_ios"]
+    assert_equal false, result["copy_to_clipboard_android"]
+  end
 end

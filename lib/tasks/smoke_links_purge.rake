@@ -15,6 +15,7 @@ namespace :smoke_links do
     older_than = (ENV["OLDER_THAN_DAYS"] || 2).to_i.days.ago
     sleep_between = (ENV["SLEEP"] || 0.1).to_f
     confirmed = ENV["CONFIRM"] == "yes"
+    project_id = Domain.find_by(id: domain_id)&.project_id
 
     scope = Link.where(domain_id: domain_id, active: false)
                 .where("updated_at < ?", older_than)
@@ -57,6 +58,9 @@ namespace :smoke_links do
         Action.where(link_id: ids).delete_all
         Link.where(id: ids).delete_all
       end
+
+      # delete_all skips the destroy callback, so tombstone explicitly.
+      LinkDimensionSyncService.tombstone_missing(project_id, ids) if project_id && Clickhouse.enabled?
 
       deleted += ids.size
       puts "#{Time.current.utc.iso8601} deleted #{deleted}/#{total}#{" (skipped #{skipped} with purchase data)" if skipped.positive?}"

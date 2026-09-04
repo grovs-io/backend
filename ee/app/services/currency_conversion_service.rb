@@ -34,7 +34,7 @@ class CurrencyConversionService
   # A day-old rate is 99.9% accurate. nil is 0% accurate.
   def self.get_rates
     # Try to get fresh rates (cached for REFRESH_INTERVAL)
-    rates = Rails.cache.fetch("exchange_rates", expires_in: REFRESH_INTERVAL) do
+    rates = Rails.cache.fetch("exchange_rates", expires_in: REFRESH_INTERVAL, skip_nil: true) do
       fresh = fetch_from_primary || fetch_from_fallback
       if fresh
         # Store as "last known good" — this key never expires

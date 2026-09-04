@@ -1,8 +1,8 @@
 require "test_helper"
 
-class EventIngestionServiceTest < ActiveSupport::TestCase
+class EventIngestionServiceTest < ActiveSupport::TestCase # rubocop:disable Metrics/ClassLength
   fixtures :instances, :projects, :devices, :visitors, :domains, :links,
-           :redirect_configs, :events, :visitor_last_visits
+           :redirect_configs, :events, :visitor_last_visits, :campaigns
 
   setup do
     @project = projects(:one)
@@ -14,6 +14,164 @@ class EventIngestionServiceTest < ActiveSupport::TestCase
     # Parallel tests share Redis — flush the visitor cache so
     # visitor_for_project_id always hits the DB (transaction-isolated).
     @visitor.send(:clear_cache)
+  end
+
+  # ---------------------------------------------------------------------------
+  # enqueue_events — batch LPUSH with Sidekiq fallback
+  # ---------------------------------------------------------------------------
+
+  test "enqueue_events with empty payloads is a no-op" do
+    assert_nil EventIngestionService.send(:enqueue_events, [])
+  end
+
+  test "enqueue_events LPUSHes json payloads onto the batch queue" do
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+    EventIngestionService.send(:enqueue_events,
+                               [{ type: "view", project_id: 1, event_id: "eid-1" },
+                                { type: "open", project_id: 2, event_id: "eid-2" }])
+
+    queued = REDIS.lrange(BatchEventProcessorJob::REDIS_KEY, 0, -1).map { |j| JSON.parse(j) }
+    assert_equal 2, queued.size
+    assert_includes queued, { "type" => "view", "project_id" => 1, "event_id" => "eid-1" }
+    assert_includes queued, { "type" => "open", "project_id" => 2, "event_id" => "eid-2" }
+  ensure
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+  end
+
+  test "enqueue_events falls back to Sidekiq when Redis LPUSH fails" do
+    enqueued = []
+    REDIS.stub(:lpush, ->(*) { raise Redis::BaseError, "down" }) do
+      LogEventJob.stub(:perform_async, ->(*args) { enqueued << args }) do
+        EventIngestionService.send(:enqueue_events, [{ type: "view", project_id: 1, device_id: 5, event_id: "eid-1" }])
+      end
+    end
+    assert_equal 1, enqueued.size
+    assert_equal "view", enqueued.first[0]
+  end
+
+  test "enqueue_events raises in dev/test when a payload is missing event_id" do
+    assert_raises(ArgumentError) do
+      EventIngestionService.send(:enqueue_events, [{ type: "view", project_id: 1 }])
+    end
+  end
+
+  test "enqueue_events backstop-recomputes a deterministic id for a missing event_id outside dev/test (no drop, no collapse)" do
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+    payload = { type: "view", project_id: 1 }
+    Rails.env.stub(:local?, false) do
+      EventIngestionService.send(:enqueue_events, [payload])
+    end
+    queued = REDIS.lrange(BatchEventProcessorJob::REDIS_KEY, 0, -1).map { |j| JSON.parse(j, symbolize_names: true) }
+    assert_equal 1, queued.size
+    assert_match(/\A[a-f0-9]{32}\z/, queued.first[:event_id], "missing id should be backstop-recomputed as a deterministic md5, not a UUID")
+    # Deterministic: the SAME missing-id payload recomputes to the SAME id (so a retry collapses).
+    assert_equal EventIngestionService.send(:backstop_event_id, payload), queued.first[:event_id]
+  ensure
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Phase 1: frozen event-time source capture
+  # ---------------------------------------------------------------------------
+
+  test "enqueue_event freezes link source and event_id into the payload" do
+    @link.update_columns(campaign_id: campaigns(:one).id, visitor_id: @visitor.id, sdk_generated: true)
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+    EventIngestionService.send(:enqueue_event, Grovs::Events::OPEN, @project, @device, nil, @link, nil,
+                               event_name: "", session_id: "sess-1")
+
+    payload = JSON.parse(REDIS.lrange(BatchEventProcessorJob::REDIS_KEY, 0, -1).first, symbolize_names: true)
+    assert_equal campaigns(:one).id, payload[:campaign_id]
+    assert_equal true, payload[:sdk_generated]
+    assert_equal @visitor.id, payload[:link_visitor_id]
+    assert_match(/\A[a-f0-9]{32}\z/, payload[:event_id], "event_id should be a deterministic md5 content hash")
+  ensure
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+  end
+
+  test "log_async freezes link source into the payload (public entry point)" do
+    @link.update_columns(campaign_id: campaigns(:one).id, visitor_id: @visitor.id, sdk_generated: true)
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+    EventIngestionService.log_async(Grovs::Events::OPEN, @project, @device, nil, @link)
+
+    payload = JSON.parse(REDIS.lrange(BatchEventProcessorJob::REDIS_KEY, 0, -1).first, symbolize_names: true)
+    assert_equal campaigns(:one).id, payload[:campaign_id]
+    assert_equal true, payload[:sdk_generated]
+    assert_equal @visitor.id, payload[:link_visitor_id]
+    assert_match(/\A[a-f0-9]{32}\z/, payload[:event_id], "event_id should be a deterministic md5 content hash")
+  ensure
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+  end
+
+  test "enqueue_event freezes organic defaults when there is no link" do
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+    EventIngestionService.send(:enqueue_event, Grovs::Events::APP_OPEN, @project, @device, nil, nil, nil)
+
+    payload = JSON.parse(REDIS.lrange(BatchEventProcessorJob::REDIS_KEY, 0, -1).first, symbolize_names: true)
+    assert_nil payload[:campaign_id]
+    assert_equal false, payload[:sdk_generated]
+    assert_nil payload[:link_visitor_id]
+    assert_match(/\A[a-f0-9]{32}\z/, payload[:event_id], "event_id should be a deterministic md5 content hash")
+  ensure
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+  end
+
+  test "frozen_ch_fields collapses a byte-identical retry to one event_id (truth-first dedup)" do
+    t = Time.utc(2026, 6, 30, 12, 0, 0)
+    a = EventIngestionService.frozen_ch_fields(Grovs::Events::APP_OPEN, @project.id, @device.id, nil, t, "", "", nil, nil)
+    b = EventIngestionService.frozen_ch_fields(Grovs::Events::APP_OPEN, @project.id, @device.id, nil, t, "", "", nil, nil)
+    assert_equal a[:event_id], b[:event_id],
+                 "an identical retry MUST share an event_id so ReplacingMergeTree collapses it"
+    assert_match(/\A[a-f0-9]{32}\z/, a[:event_id])
+  end
+
+  test "frozen_ch_fields keeps same-ms TIME_SPENT distinct when engagement_time differs" do
+    t = Time.utc(2026, 6, 30, 12, 0, 0)
+    a = EventIngestionService.frozen_ch_fields(Grovs::Events::TIME_SPENT, @project.id, @device.id, nil, t, "s", "x", 10, nil)
+    b = EventIngestionService.frozen_ch_fields(Grovs::Events::TIME_SPENT, @project.id, @device.id, nil, t, "s", "x", 25, nil)
+    assert_not_equal a[:event_id], b[:event_id],
+                     "two same-ms time_spent with different durations must not collapse"
+  end
+
+  test "frozen event_id equals the backstop recompute from the serialized payload (cross-path guard)" do
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+    EventIngestionService.send(:enqueue_event, Grovs::Events::TIME_SPENT, @project, @device, nil, @link, 42,
+                               event_name: "screen", session_id: "sess-9")
+    payload = JSON.parse(REDIS.lrange(BatchEventProcessorJob::REDIS_KEY, 0, -1).first, symbolize_names: true)
+    # The frozen id is computed from a Time + raw engagement_time; the backstop recomputes
+    # from the payload's iso8601(3) STRING + the same clamp. They MUST match or a recovered
+    # payload would stop deduping against the original.
+    assert_equal payload[:event_id], EventIngestionService.send(:backstop_event_id, payload)
+  ensure
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+  end
+
+  test "frozen event_id equals the backstop recompute for a property-bearing custom event" do
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+    props = { "step" => "1", "nested" => { "b" => "2", "a" => "1" } }
+    EventIngestionService.send(:enqueue_event, Grovs::Events::CUSTOM, @project, @device, props, @link, nil,
+                               event_name: "purchase", session_id: "sess-p")
+    payload = JSON.parse(REDIS.lrange(BatchEventProcessorJob::REDIS_KEY, 0, -1).first, symbolize_names: true)
+
+    assert_equal payload[:event_id], EventIngestionService.send(:backstop_event_id, payload)
+  ensure
+    REDIS.del(BatchEventProcessorJob::REDIS_KEY)
+  end
+
+  test "property-bearing event hashes identically across live, backstop, backfill, and archive input forms" do
+    t = Time.utc(2026, 7, 13, 12, 0, 0)
+    base = { project_id: @project.id, device_id: @device.id, event_type: Grovs::Events::CUSTOM,
+             created_at: t, event_name: "purchase", session_id: "sess-x", link_id: 0 }
+
+    live     = ClickhouseWriteService.generate_event_id(**base, properties: { "step" => "1", "nested" => { "a" => "1" } })
+    backstop = ClickhouseWriteService.generate_event_id(**base, properties: { step: "1", nested: { a: "1" } })
+    pg_form  = ClickhouseWriteService.generate_event_id(**base, properties: '{"nested":{"a":"1"},"step":"1"}')
+    archive  = ClickhouseWriteService.generate_event_id(**base.merge(created_at: t.iso8601(3)),
+                                                        properties: '{"step":"1","nested":{"a":"1"}}')
+
+    assert_equal live, backstop, "symbolized payload round-trip must not rekey"
+    assert_equal live, pg_form, "PG JSON-string form must not rekey"
+    assert_equal live, archive, "archive string created_at + JSON data must not rekey"
   end
 
   # ---------------------------------------------------------------------------
@@ -191,26 +349,20 @@ class EventIngestionServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "dedup matches on device_id not project_id — cross-project VIEW is incorrectly deduped" do
-    # This documents a known behavioral quirk: the dedup query filters on
-    # (event, device_id, created_at) but NOT project_id. So two VIEWs from
-    # the same device on different projects within 5s will dedup.
+  test "VIEW dedup is project-scoped: same device on a different project is NOT deduped" do
     project_two = projects(:two)
     Visitor.create!(project: project_two, device: @device, web_visitor: false)
 
-    first = EventIngestionService.log(
-      Grovs::Events::VIEW, @project, @device, @data, @link
-    )
+    first = EventIngestionService.log(Grovs::Events::VIEW, @project, @device, @data, @link)
 
     EventStatDispatchService.stub(:call_normal_event, ->(_) {}) do
       result = EventIngestionService.log_event_without_view_duplicates(
         Grovs::Events::VIEW, project_two, @device, @data, links(:second_link)
       )
 
-      # The second VIEW is for a DIFFERENT project, but gets deduped because
-      # the query only matches on device_id. This asserts current behavior.
-      assert_equal first.id, result.id,
-                   "Cross-project VIEW dedup: query lacks project_id filter"
+      assert_not_equal first.id, result.id,
+        "a VIEW on a different project must not be deduped against another project's VIEW"
+      assert_equal project_two.id, result.project_id
     end
   end
 
@@ -540,6 +692,209 @@ class EventIngestionServiceTest < ActiveSupport::TestCase
     assert_nil visitor.reload.inviter_id
   end
 
+  # ---------------------------------------------------------------------------
+  # log_async — enrichment fields (event_name, session_id, tags)
+  # ---------------------------------------------------------------------------
+
+  test "log_async includes event_name, session_id, tags in Redis payload" do
+    pushed_payload = nil
+
+    REDIS.stub(:lpush, ->(_, payload) { pushed_payload = payload }) do
+      EventIngestionService.log_async(
+        Grovs::Events::CUSTOM, @project, @device, @data, @link, nil,
+        event_name: "add_to_cart", session_id: "sess-123", tags: ["checkout", "promo"]
+      )
+    end
+
+    parsed = JSON.parse(pushed_payload)
+    assert_equal "add_to_cart", parsed["event_name"]
+    assert_equal "sess-123", parsed["session_id"]
+    assert_equal ["checkout", "promo"], parsed["tags"]
+  end
+
+  test "log_async defaults enrichment fields to empty when omitted" do
+    pushed_payload = nil
+
+    REDIS.stub(:lpush, ->(_, payload) { pushed_payload = payload }) do
+      EventIngestionService.log_async(
+        Grovs::Events::VIEW, @project, @device, @data, @link
+      )
+    end
+
+    parsed = JSON.parse(pushed_payload)
+    assert_equal "", parsed["event_name"]
+    assert_equal "", parsed["session_id"]
+    assert_equal [], parsed["tags"]
+  end
+
+  test "log_async truncates oversized event_name and session_id" do
+    pushed_payload = nil
+    long_string = "x" * 1000
+
+    REDIS.stub(:lpush, ->(_, payload) { pushed_payload = payload }) do
+      EventIngestionService.log_async(
+        Grovs::Events::CUSTOM, @project, @device, @data, @link, nil,
+        event_name: long_string, session_id: long_string
+      )
+    end
+
+    parsed = JSON.parse(pushed_payload)
+    max = Grovs::Enrichment::MAX_STRING_LENGTH
+    assert_equal max, parsed["event_name"].length
+    assert_equal max, parsed["session_id"].length
+  end
+
+  test "log_async caps tags array size and truncates tag values" do
+    pushed_payload = nil
+    many_tags = (1..50).map { |i| "tag-#{'z' * 300}-#{i}" }
+
+    REDIS.stub(:lpush, ->(_, payload) { pushed_payload = payload }) do
+      EventIngestionService.log_async(
+        Grovs::Events::CUSTOM, @project, @device, @data, @link, nil,
+        tags: many_tags
+      )
+    end
+
+    parsed = JSON.parse(pushed_payload)
+    max_tags = Grovs::Enrichment::MAX_TAGS
+    max_len = Grovs::Enrichment::MAX_STRING_LENGTH
+    assert_equal max_tags, parsed["tags"].size, "Tags should be capped at #{max_tags}"
+    parsed["tags"].each do |tag|
+      assert tag.length <= max_len, "Each tag should be truncated to #{max_len} chars"
+    end
+  end
+
+  test "log_async Sidekiq fallback also sanitizes oversized fields" do
+    sidekiq_args = nil
+    long_string = "x" * 1000
+    many_tags = (1..50).map { |i| "tag-#{i}" }
+
+    REDIS.stub(:lpush, ->(*_) { raise Redis::BaseError, "down" }) do
+      LogEventJob.stub(:perform_async, ->(*args) { sidekiq_args = args }) do
+        EventIngestionService.log_async(
+          Grovs::Events::CUSTOM, @project, @device, @data, @link, nil,
+          event_name: long_string, session_id: long_string, tags: many_tags
+        )
+      end
+    end
+
+    max = Grovs::Enrichment::MAX_STRING_LENGTH
+    assert_equal max, sidekiq_args[7].length, "event_name should be truncated in Sidekiq fallback"
+    assert_equal max, sidekiq_args[8].length, "session_id should be truncated in Sidekiq fallback"
+    assert_equal Grovs::Enrichment::MAX_TAGS, sidekiq_args[9].size, "tags should be capped in Sidekiq fallback"
+  end
+
+  test "log_async sync fallback preserves enrichment fields when Redis and Sidekiq both fail" do
+    REDIS.stub(:lpush, ->(*_) { raise Redis::BaseError, "connection refused" }) do
+      LogEventJob.stub(:perform_async, ->(*_) { raise Redis::BaseError, "connection refused" }) do
+        assert_difference "Event.count", 1 do
+          EventIngestionService.log_async(
+            Grovs::Events::CUSTOM, @project, @device, { "item" => "sku-1" }, @link, nil,
+            event_name: "add_to_cart", session_id: "sess-sync-789", tags: ["checkout", "mobile"]
+          )
+        end
+      end
+    end
+
+    event = Event.order(created_at: :desc).first
+    assert_equal Grovs::Events::CUSTOM, event.event
+    assert_equal "add_to_cart", event.event_name
+    assert_equal "sess-sync-789", event.session_id
+    assert_equal ["checkout", "mobile"], event.tags
+    assert_equal({ "item" => "sku-1" }, event.data)
+  end
+
+  test "enqueue_events sync fallback preserves batch event when Redis and Sidekiq both fail" do
+    payload = {
+      type: Grovs::Events::CUSTOM,
+      project_id: @project.id,
+      device_id: @device.id,
+      data: { "item" => "sku-2" },
+      link_id: @link.id,
+      engagement_time: nil,
+      created_at: Time.current.iso8601(3),
+      event_name: "batch_checkout",
+      session_id: "sess-batch-sync",
+      tags: ["batch", "checkout"],
+      event_id: "eid-batch-sync"
+    }
+
+    REDIS.stub(:lpush, ->(*_) { raise Redis::BaseError, "connection refused" }) do
+      LogEventJob.stub(:perform_async, ->(*_) { raise Redis::BaseError, "connection refused" }) do
+        assert_difference "Event.count", 1 do
+          EventIngestionService.enqueue_events([payload])
+        end
+      end
+    end
+
+    event = Event.order(created_at: :desc).first
+    assert_equal Grovs::Events::CUSTOM, event.event
+    assert_equal "batch_checkout", event.event_name
+    assert_equal "sess-batch-sync", event.session_id
+    assert_equal ["batch", "checkout"], event.tags
+    assert_equal({ "item" => "sku-2" }, event.data)
+    assert_equal @link.id, event.link_id
+  end
+
+  test "log (sync path) truncates oversized enrichment fields on Event record" do
+    max_len = Grovs::Enrichment::MAX_STRING_LENGTH
+    max_tags = Grovs::Enrichment::MAX_TAGS
+    huge_name = "x" * 10_000
+    huge_session = "s" * 10_000
+    huge_tags = (1..100).map { "t" * 500 }
+
+    event = EventIngestionService.log(
+      Grovs::Events::CUSTOM, @project, @device, nil, @link, nil,
+      event_name: huge_name, session_id: huge_session, tags: huge_tags
+    )
+
+    assert event.persisted?
+    assert_equal max_len, event.event_name.length, "event_name must be truncated in sync path"
+    assert_equal max_len, event.session_id.length, "session_id must be truncated in sync path"
+    assert_equal max_tags, event.tags.size, "tags must be capped in sync path"
+    event.tags.each do |tag|
+      assert tag.length <= max_len, "each tag must be truncated in sync path"
+    end
+  end
+
+  test "log_async fallback to Sidekiq passes enrichment fields" do
+    sidekiq_args = nil
+
+    REDIS.stub(:lpush, ->(*_) { raise Redis::BaseError, "connection refused" }) do
+      LogEventJob.stub(:perform_async, ->(*args) { sidekiq_args = args }) do
+        EventIngestionService.log_async(
+          Grovs::Events::CUSTOM, @project, @device, @data, @link, nil,
+          event_name: "checkout", session_id: "sess-456", tags: ["purchase"]
+        )
+      end
+    end
+
+    assert_not_nil sidekiq_args
+    # Positional args: type, project_id, device_id, data, link_id, engagement_time, timestamp, event_name, session_id, tags
+    assert_equal "checkout", sidekiq_args[7]
+    assert_equal "sess-456", sidekiq_args[8]
+    assert_equal ["purchase"], sidekiq_args[9]
+  end
+
+  test "frozen_ch_fields folds the sdk event id into the frozen identity" do
+    args = [Grovs::Events::APP_OPEN, 7, 11, nil, Time.utc(2026, 8, 6, 12, 0, 0), "", "sess-1", 0, nil]
+    without = EventIngestionService.frozen_ch_fields(*args)
+    with_a  = EventIngestionService.frozen_ch_fields(*args, sdk_event_id: "uuid-a")
+    with_b  = EventIngestionService.frozen_ch_fields(*args, sdk_event_id: "uuid-b")
+
+    assert_not_equal without[:event_id], with_a[:event_id]
+    assert_not_equal with_a[:event_id], with_b[:event_id]
+    assert_match(/\A[a-f0-9]{32}\z/, with_a[:event_id])
+  end
+
+  test "frozen_ch_fields ignores a blank or non-scalar sdk event id" do
+    args = [Grovs::Events::APP_OPEN, 7, 11, nil, Time.utc(2026, 8, 6, 12, 0, 0), "", "sess-1", 0, nil]
+    baseline = EventIngestionService.frozen_ch_fields(*args)
+
+    assert_equal baseline[:event_id], EventIngestionService.frozen_ch_fields(*args, sdk_event_id: "  ")[:event_id]
+    assert_equal baseline[:event_id], EventIngestionService.frozen_ch_fields(*args, sdk_event_id: { "a" => "b" })[:event_id]
+  end
+
   private
 
   # Create a fresh device+visitor pair with a DB-only visitor lookup.
@@ -596,5 +951,32 @@ class EventIngestionDropMetricTest < ActiveSupport::TestCase
       EventIngestionService.log_async("app_open", @project, @device, nil, nil)
     end
     assert_not_includes emitted, "events.dropped"
+  end
+end
+
+# Regression: repeat last-visit upsert must refresh updated_at (merge picks by recency).
+class EventIngestionVisitorLastVisitRecencyTest < ActiveSupport::TestCase
+  fixtures :instances, :projects, :devices, :visitors, :domains, :links, :redirect_configs
+
+  test "repeat last-visit upsert refreshes both link_id and updated_at" do
+    project = projects(:one)
+    device  = devices(:ios_device)
+    visitor = device.visitor_for_project_id(project.id)
+    l1 = links(:basic_link)
+    l2 = links(:second_link)
+    VisitorLastVisit.where(project_id: project.id, visitor_id: visitor.id).delete_all
+
+    EventIngestionService.send(:update_visitor_last_visit, project, device, l1)
+    first = VisitorLastVisit.find_by(project_id: project.id, visitor_id: visitor.id)
+    ts1 = first.updated_at
+    assert_equal l1.id, first.link_id
+    sleep 1.1
+
+    EventIngestionService.send(:update_visitor_last_visit, project, device, l2)
+    second = VisitorLastVisit.find_by(project_id: project.id, visitor_id: visitor.id)
+
+    assert_equal l2.id, second.link_id, "link must update to the newer interaction"
+    assert second.updated_at > ts1,
+      "updated_at must refresh so the merge recency comparison stays correct"
   end
 end

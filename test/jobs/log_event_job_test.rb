@@ -37,14 +37,14 @@ class LogEventJobTest < ActiveSupport::TestCase
     assert_in_delta Time.parse(ts), event.created_at, 2
   end
 
-  test "raises RecordNotFound for invalid project_id — triggers Sidekiq retry" do
-    assert_raises ActiveRecord::RecordNotFound do
+  test "silently skips when project_id is invalid" do
+    assert_no_difference "Event.count" do
       @job.perform(Grovs::Events::OPEN, 999999, @device.id, nil, nil, nil)
     end
   end
 
-  test "raises RecordNotFound for invalid device_id — triggers Sidekiq retry" do
-    assert_raises ActiveRecord::RecordNotFound do
+  test "silently skips when device_id is invalid" do
+    assert_no_difference "Event.count" do
       @job.perform(Grovs::Events::OPEN, @project.id, 999999, nil, nil, nil)
     end
   end
@@ -53,6 +53,30 @@ class LogEventJobTest < ActiveSupport::TestCase
     assert_difference "Event.count", 1 do
       @job.perform(Grovs::Events::OPEN, @project.id, @device.id, nil, nil, nil, "not-a-date")
     end
+  end
+
+  # --- enrichment fields ---
+
+  test "enrichment fields are saved atomically with the event" do
+    @job.perform(
+      Grovs::Events::CUSTOM, @project.id, @device.id, nil, @link.id, nil, nil,
+      "add_to_cart", "sess-abc", ["checkout", "promo"]
+    )
+
+    event = Event.order(id: :desc).first
+    assert_equal Grovs::Events::CUSTOM, event.event
+    assert_equal "add_to_cart", event.event_name
+    assert_equal "sess-abc", event.session_id
+    assert_equal ["checkout", "promo"], event.tags
+  end
+
+  test "enrichment fields default to empty for backward-compatible payloads" do
+    @job.perform(Grovs::Events::OPEN, @project.id, @device.id, nil, nil, nil, nil)
+
+    event = Event.order(id: :desc).first
+    assert_equal "", event.event_name
+    assert_equal "", event.session_id
+    assert_equal [], event.tags
   end
 
   # --- VIEW dedup: 5-second window ---

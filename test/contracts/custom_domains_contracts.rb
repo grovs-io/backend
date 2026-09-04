@@ -41,8 +41,29 @@ module ApiContracts
       # FE renders "Last checked from Cloudflare: N seconds ago" so the customer can
       # see whether the displayed records are fresh or worth a manual refresh.
       "last_checked_at"                  => { "type" => %w[string null] },
-      "cname_target"                     => { "type" => "string" }
+      # Ingress host on manual rows, Cloudflare target otherwise; null when neither is known.
+      "cname_target"                     => { "type" => %w[string null] },
+      # Manual rows only; an ordered checklist, certificate step first.
+      "setup_records"                    => {
+        "type" => "array",
+        "items" => {
+          "type" => "object", "additionalProperties" => false,
+          "required" => %w[kind type name value note],
+          "properties" => {
+            "kind"  => { "type" => "string", "enum" => %w[certificate dns] },
+            "type"  => STRING_OR_NULL,
+            "name"  => STRING_OR_NULL,
+            "value" => STRING_OR_NULL,
+            "note"  => { "type" => "string" }
+          }
+        }
+      }
     }
+  }.freeze
+
+  DEPLOYMENT_FIELDS = {
+    "tls_mode"     => { "type" => "string", "enum" => %w[manual cloudflare] },
+    "ingress_host" => STRING_OR_NULL
   }.freeze
 
   HOSTNAME_REQUEST = { "type" => "object", "additionalProperties" => false,
@@ -85,15 +106,16 @@ module ApiContracts
   custom_domain_envelope = lambda do |nullable:|
     inner = CUSTOM_HOSTNAME.merge("type" => nullable ? %w[object null] : "object")
     { "type" => "object", "additionalProperties" => false,
-      "required" => %w[custom_domain], "properties" => { "custom_domain" => inner } }
+      "required" => %w[custom_domain tls_mode ingress_host],
+      "properties" => { "custom_domain" => inner }.merge(DEPLOYMENT_FIELDS) }
   end
 
   custom_domains_index_response = {
     "type" => "object", "additionalProperties" => false,
-    "required" => %w[custom_domains],
+    "required" => %w[custom_domains tls_mode ingress_host],
     "properties" => {
       "custom_domains" => { "type" => "array", "items" => CUSTOM_HOSTNAME }
-    }
+    }.merge(DEPLOYMENT_FIELDS)
   }.freeze
 
   register "Api::V1::DomainsController#custom_domain",
@@ -129,6 +151,14 @@ module ApiContracts
              401 => AUTH_ERROR
            }
 
+  register "Api::V1::DomainsController#verify_custom_domain",
+           request: HOSTNAME_REQUEST,
+           responses: {
+             200 => custom_domain_envelope.call(nullable: false),
+             404 => ERROR, 422 => ERROR, 429 => ERROR,
+             401 => AUTH_ERROR
+           }
+
   register "Api::V1::DomainsController#create_custom_domain_v2",
            request: CUSTOM_DOMAIN_CREATE_V2_REQUEST,
            responses: {
@@ -157,6 +187,12 @@ module ApiContracts
              401 => AUTH_ERROR
            }
 
+  admin_custom_domain_response = {
+    "type" => "object", "additionalProperties" => false,
+    "required" => %w[custom_domain],
+    "properties" => { "custom_domain" => CUSTOM_HOSTNAME }
+  }.freeze
+
   register "Api::V1::AdminController#create_custom_domain",
            request: { "type" => "object", "additionalProperties" => false,
                       "required" => %w[hostname project_id],
@@ -164,7 +200,7 @@ module ApiContracts
                                         "project_id" => { "type" => %w[string integer] },
                                         "purpose" => { "type" => "string", "enum" => Grovs::Hostnames::PURPOSES } } },
            responses: {
-             201 => custom_domain_envelope.call(nullable: false),
+             201 => admin_custom_domain_response,
              402 => ERROR, 422 => ERROR, 409 => ERROR, 502 => ERROR, 404 => ERROR,
              403 => ERROR
            }

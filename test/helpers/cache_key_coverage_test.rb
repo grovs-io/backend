@@ -53,6 +53,9 @@ class CacheKeyCoverageTest < ActiveSupport::TestCase
                                    includes: nil },
     { model: "Link", type: :multi, conditions: { domain: :domain_id, path: :path },
                                    includes: nil },
+    # Active-scoped resolution key (LinksService.find_link_preferring_active)
+    { model: "Link", type: :multi, conditions: { active: :active, path: :path, domain_id: :domain_id },
+                                   includes: nil },
 
     # Application
     { model: "Application", type: :multi, conditions: { instance_id: :instance_id, platform: :platform },

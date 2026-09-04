@@ -43,7 +43,9 @@ class PlatformRenderDecisionService
       return nil unless show_preview
 
       if [nil, false].include?(go_to_fallback)
-        preview_url = LinksService.build_preview_url(link)
+        gd_device = link.copy_to_clipboard_for?(device.platform) ? device : nil
+        ClipboardActivityService.stamp(project) if gd_device
+        preview_url = LinksService.build_preview_url(link, gd_device: gd_device)
         return { action: :redirect, url: preview_url }
       end
 

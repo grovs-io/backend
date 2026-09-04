@@ -41,4 +41,15 @@ class BackfillLast3DaysJobTest < ActiveSupport::TestCase
       assert_not_nil metric, "Should generate metric for #{date}"
     end
   end
+
+  # Exact MAU reads are expensive; the precompute runs on its own 30-min cron, not this 10-min one.
+  test "does not enqueue the enterprise MAU precompute" do
+    enqueued = false
+
+    PrecomputeEnterpriseMausJob.stub(:perform_async, -> { enqueued = true }) do
+      @job.perform
+    end
+
+    assert_not enqueued
+  end
 end

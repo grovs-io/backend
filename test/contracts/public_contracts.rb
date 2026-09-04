@@ -113,6 +113,15 @@ module ApiContracts
            request: NO_PARAMS,
            responses: { 200 => NON_JSON_RESPONSE, 404 => NON_JSON_RESPONSE }
 
+  register "Public::VerificationController#domain_verification",
+           request: NO_PARAMS,
+           responses: {
+             200 => { "type" => "object", "additionalProperties" => false,
+                      "required" => %w[token],
+                      "properties" => { "token" => { "type" => "string" } } },
+             404 => EMPTY_BODY
+           }
+
   register "Public::DeviceDataController#store_device_data",
            request: DEVICE_DATA_REQUEST,
            responses: { 200 => EMPTY_BODY, 204 => EMPTY_BODY }

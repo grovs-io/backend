@@ -70,6 +70,44 @@ class LinksApiTest < ActionDispatch::IntegrationTest
     assert_includes paths, @link.path, "fixture link must appear in search results"
   end
 
+  # --- Search Links v2 ---
+
+  test "search_v2 filters by ads_platform with the dashboard body shape" do
+    @link.update!(ads_platform: "google")
+
+    body = {
+      active: true, sdk: false, ascending: false, page: 1, per_page: 25,
+      start_date: "2026-01-01T00:00:00.000Z", sort_by: "updated_at",
+      ads_platform: "google"
+    }
+    post "#{API_PREFIX}/projects/#{@project.id}/links/search_v2",
+      params: body, headers: @headers, as: :json
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert_equal [@link.id], json["links"].map { |l| l["id"] }
+
+    post "#{API_PREFIX}/projects/#{@project.id}/links/search_v2",
+      params: body.merge(ads_platform: "meta"), headers: @headers, as: :json
+    assert_response :ok
+    assert_equal [], JSON.parse(response.body)["links"]
+  end
+
+  test "search_v2 honors ascending sort direction" do
+    body = { active: true, sdk: false, page: 1, per_page: 25,
+             start_date: "2026-01-01T00:00:00.000Z", sort_by: "created_at" }
+
+    # basic_link (created 2026-03-01) is the oldest active link in the project
+    post "#{API_PREFIX}/projects/#{@project.id}/links/search_v2",
+      params: body.merge(ascending: true), headers: @headers, as: :json
+    assert_response :ok
+    assert_equal @link.id, JSON.parse(response.body)["links"].first["id"]
+
+    post "#{API_PREFIX}/projects/#{@project.id}/links/search_v2",
+      params: body.merge(ascending: false), headers: @headers, as: :json
+    assert_response :ok
+    assert_equal @link.id, JSON.parse(response.body)["links"].last["id"]
+  end
+
   # --- Check Path Availability ---
 
   test "check path for unused path returns true" do
@@ -104,6 +142,17 @@ class LinksApiTest < ActionDispatch::IntegrationTest
   end
 
   # --- Update Link ---
+
+  test "update link sets copy_to_clipboard toggles" do
+    patch "#{API_PREFIX}/projects/#{@project.id}/links/#{@link.id}",
+      params: { copy_to_clipboard_ios: true },
+      headers: @headers
+    assert_response :ok
+
+    @link.reload
+    assert_equal true, @link.copy_to_clipboard_ios
+    assert_nil @link.copy_to_clipboard_android
+  end
 
   test "update link persists change and returns updated data" do
     patch "#{API_PREFIX}/projects/#{@project.id}/links/#{@link.id}",

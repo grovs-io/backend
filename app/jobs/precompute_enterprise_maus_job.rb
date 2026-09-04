@@ -7,11 +7,12 @@ class PrecomputeEnterpriseMausJob
       instance = es.instance
       next unless instance
 
-      # Raise statement_timeout for background MAU computation —
-      # individual month queries are small but can be slow on large tables.
-      ActiveRecord::Base.connection.execute("SET LOCAL statement_timeout = '120s'")
       total_maus = ProjectService.new.compute_maus_per_month_total(instance, es.start_date, Time.current)
-      Rails.cache.write("enterprise_mau:#{instance.id}", total_maus, expires_in: 30.minutes)
+      # Outlives the 30-min cron so a web request never falls through to computing this itself.
+      Rails.cache.write("enterprise_mau:#{instance.id}", total_maus, expires_in: 45.minutes)
+    rescue ProjectService::MauReadUnavailable => e
+      # Keep the loop going; the stale cached value beats aborting later enterprises.
+      Rails.logger.error("clickhouse.mau.read_failed instance=#{instance.id} — enterprise MAU not refreshed: #{e.message}")
     end
   rescue StandardError => e
     Rails.logger.error("Enterprise MAU precompute failed: #{e.class} - #{e.message}")

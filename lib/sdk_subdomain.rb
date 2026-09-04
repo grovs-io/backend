@@ -1,5 +1,6 @@
 class SdkSubdomain
   def self.matches?(request)
-    request.subdomain == Grovs::Subdomains::SDK && Grovs::Domains::MAIN.include?(request.domain)
+    label, = Grovs::Domains.split(request.host)
+    label == Grovs::Subdomains::SDK
   end
 end

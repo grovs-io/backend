@@ -41,6 +41,9 @@ class QuotaAlertJob
         end
       end
     end
+  rescue ProjectService::MauReadUnavailable => e
+    # No quota email from a failed CH read; the job runs again on the next quota pass.
+    Rails.logger.error("clickhouse.mau.read_failed instance=#{instance_id} — quota alert skipped: #{e.message}")
   end
 
   private

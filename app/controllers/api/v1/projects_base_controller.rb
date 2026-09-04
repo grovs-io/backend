@@ -1,4 +1,5 @@
 class Api::V1::ProjectsBaseController < ApplicationController
+  include Api::V1::Concerns::CampaignIdParam
 
   def authorize_and_load_project
     @project = current_project
@@ -62,7 +63,7 @@ class Api::V1::ProjectsBaseController < ApplicationController
 
   def links_for_search_params
     domain = domain_for_current_project
-    return unless domain
+    return render_missing_domain unless domain
 
     LinkQueryService.new(domain: domain).search(
       active: active_param, sdk: sdk_param,
@@ -76,7 +77,7 @@ class Api::V1::ProjectsBaseController < ApplicationController
 
   def links_for_search_params_no_pagination_and_order
     domain = domain_for_current_project
-    return unless domain
+    return render_missing_domain unless domain
 
     LinkQueryService.new(domain: domain).filter(
       active: active_param, sdk: sdk_param,
@@ -84,6 +85,12 @@ class Api::V1::ProjectsBaseController < ApplicationController
       term: term_param, ads_platform: ads_platform_param,
       campaign_id: campaign_id_param
     )
+  end
+
+  # Renders and returns nil so callers can keep `return unless links` without leaking a 204 or a nil.
+  def render_missing_domain
+    render json: { error: "Domain not found" }, status: :not_found
+    nil
   end
 
   def load_instance
@@ -138,10 +145,6 @@ class Api::V1::ProjectsBaseController < ApplicationController
 
   def ads_platform_param
     params.permit(:ads_platform)[:ads_platform]
-  end
-
-  def campaign_id_param
-    params.permit(:campaign_id)[:campaign_id]
   end
 
   def per_page_param

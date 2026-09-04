@@ -57,6 +57,19 @@ class DomainTest < ActiveSupport::TestCase
     assert_includes keys, expected_key
   end
 
+  test "cache_keys_to_clear includes the old domain+subdomain key after a subdomain rename" do
+    domain = domains(:one)
+    old_subdomain = domain.subdomain
+
+    domain.update!(subdomain: "renamed")
+
+    old_key = domain.send(:multi_condition_cache_key, { domain: domain.domain, subdomain: old_subdomain })
+    new_key = domain.send(:multi_condition_cache_key, { domain: domain.domain, subdomain: "renamed" })
+    keys = domain.cache_keys_to_clear
+    assert_includes keys, old_key
+    assert_includes keys, new_key
+  end
+
   test "active_custom_host updates are reflected in redis_find_by(:id) (no stale cache)" do
     domain = domains(:one)
     domain.update!(active_custom_host: nil)

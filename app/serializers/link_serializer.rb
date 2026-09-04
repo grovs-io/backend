@@ -2,6 +2,7 @@ class LinkSerializer < BaseSerializer
   attributes :id, :name, :path, :title, :subtitle, :active,
              :sdk_generated, :data, :tags, :updated_at,
              :show_preview_ios, :show_preview_android,
+             :copy_to_clipboard_ios, :copy_to_clipboard_android,
              :ads_platform, :generated_from_platform,
              :tracking_source, :tracking_medium, :tracking_campaign,
              :visitor_id, :campaign_id

@@ -7,7 +7,7 @@ class QuickLink < ApplicationRecord
   validate :ios_phone_must_be_valid_url
   validate :android_phone_must_be_valid_url
 
-  validates :ios_tablet, :android_tablet, :desktop_mac, :desktop_windows, :desktop_linux, url: true, allow_blank: true
+  validates :ios_tablet, :android_tablet, :desktop_mac, :desktop_windows, :desktop_linux, http_url: true, allow_blank: true
   validate :optional_urls_must_be_valid
 
   def image_resource

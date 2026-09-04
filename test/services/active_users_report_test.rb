@@ -106,6 +106,25 @@ class ActiveUsersReportTest < ActiveSupport::TestCase
     assert_includes headers, "Date"
   end
 
+  test "PG range spanning months merges per-month reads without double counting" do
+    VisitorDailyStatistic.create!(visitor: visitors(:ios_visitor), project_id: @project_id,
+      event_date: "2026-04-05", platform: "ios", views: 10)
+
+    csv = ActiveUsersReport.new(
+      project_ids: @project_id,
+      start_date: Date.new(2026, 3, 1),
+      end_date: Date.new(2026, 4, 30)
+    ).call
+
+    daily = extract_daily_rows(csv)
+    assert_equal 2, daily["2026-03-01"]
+    assert_equal 1, daily["2026-04-05"]
+
+    monthly = extract_monthly_rows(csv)
+    assert_equal 2, monthly["2026-03"]
+    assert_equal 1, monthly["2026-04"]
+  end
+
   test "multiple project_ids aggregates visitors across projects" do
     # Both fixture stats are for project :one, so adding :two shouldn't change counts
     # but it proves the Array(project_ids) wrapping works

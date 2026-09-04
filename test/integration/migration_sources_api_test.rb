@@ -236,4 +236,25 @@ class MigrationSourcesApiTest < ActionDispatch::IntegrationTest
     body = JSON.parse(response.body)
     assert_equal "upstream_unreachable", body["outcome"]
   end
+
+  test "PATCH extra_hosts updates a provider-hosted source" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    MigrationSource.create!(project: @project, old_host: "xyz.app.link",
+                            provider: "branch", credentials: { "branch_key" => "x" },
+                            provider_hosted: true)
+    json_patch url, { extra_hosts: ["xyz-alternate.app.link"] }
+    assert_response :ok
+    assert_equal ["xyz-alternate.app.link"], JSON.parse(response.body)["migration_source"]["extra_hosts"]
+    json_patch url, { extra_hosts: [] }
+    assert_response :ok
+    assert_equal [], JSON.parse(response.body)["migration_source"]["extra_hosts"]
+  end
+
+  test "PATCH extra_hosts on a non-provider-hosted source returns 422" do
+    MigrationSource.create!(project: @project, old_host: "links.acme.com",
+                            provider: "branch", credentials: { "branch_key" => "x" })
+    json_patch url, { extra_hosts: ["xyz-alternate.app.link"] }
+    assert_response :unprocessable_entity
+    assert_match(/provider-hosted/, JSON.parse(response.body)["error"])
+  end
 end

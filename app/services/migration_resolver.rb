@@ -1,21 +1,19 @@
 # Returns a MigrationOutcome or nil (caller's existing not-found path).
 class MigrationResolver
-  # expected_project guards cross-tenant: a click authenticated as project A must not
-  # materialize under project B's source.
+  # expected_project guards cross-tenant materialization under the wrong source.
   def self.resolve(host, path, query_string: "", expected_project: nil)
     return nil unless Grovs.migrations_enabled?
 
     normalized = normalize_host(host)
     source = MigrationSource.redis_find_by(:old_host, normalized)
+    source ||= provider_hosted_source_for(expected_project, normalized)
     return nil unless source
     return nil if expected_project && source.project_id != expected_project.id
 
-    # Stop serving migration traffic the moment the host becomes non-resolvable
-    # (lifecycle suspends before delete).
+    # Stop serving the moment the host becomes non-resolvable (lifecycle suspends before delete).
     return nil unless custom_hostname_still_active?(source, normalized)
 
-    # enabled=false does NOT short-circuit cached rows — those point at Grovs Links that
-    # don't need upstream credentials. enabled gates only first-hits, below.
+    # enabled=false gates only first-hits below; cached rows need no upstream credentials.
     cached = MigratedLink.redis_find_by_multiple_conditions(
       { migration_source_id: source.id, old_path: path.to_s }
     )
@@ -131,11 +129,38 @@ class MigrationResolver
     host.to_s.strip.downcase.chomp(".").sub(/:\d+\z/, "")
   end
 
-  # Defense-in-depth: the validator blocks creation against a non-migration row, but this
-  # guards rows whose purpose flipped post-create or stale-cache reconciliation edges.
+  # The cache serves the stale pending row until apply! commits, so dedupe the enqueue.
+  def self.enqueue_activation(custom_hostname)
+    claimed = REDIS.with { |c| c.set("ch:activate:#{custom_hostname.id}", 1, nx: true, ex: 60) }
+    ActivateCustomHostnameJob.perform_async(custom_hostname.id) if claimed
+  rescue StandardError => e
+    # Sidekiq shares this Redis: on a blip there is nothing to enqueue into — serve, don't 500.
+    Rails.logger.error("[MigrationResolver] activation enqueue failed ch=#{custom_hostname.id}: #{e.class}")
+    nil
+  end
+
+  # Extra hosts have no old_host row; the SDK's authenticated project disambiguates.
+  def self.provider_hosted_source_for(project, normalized_host)
+    return nil unless project && Grovs.self_hosted?
+    source = project.migration_source
+    return source if source&.provider_hosted? && source.matches_host?(normalized_host)
+    nil
+  end
+
+  # Defense-in-depth for rows whose purpose flipped post-create or stale-cache edges.
   def self.custom_hostname_still_active?(source, normalized_host)
+    # Provider-hosted domains never point DNS at Grovs — there is no CustomHostname to check.
+    return true if source.provider_hosted?
+
     ch = CustomHostname.redis_find_by(:hostname, normalized_host)
     return false unless ch&.project_id == source.project_id
-    ch.migration? && ch.resolvable?
+    return false unless ch.migration?
+    return true if ch.resolvable?
+
+    # A manual row cannot be active before cutover, so the request itself is the proof.
+    return false unless ch.manual? && ch.status == "pending"
+
+    enqueue_activation(ch)
+    true
   end
 end

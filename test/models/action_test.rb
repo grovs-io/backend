@@ -27,4 +27,22 @@ class ActionTest < ActiveSupport::TestCase
     assert_equal link.id, json["link"]["id"]
     assert_equal "action-test-path-2", json["link"]["path"]
   end
+
+  # === FK cascade ===
+
+  test "hard-deleting a link cascades to its actions — orphans are impossible" do
+    link = Link.create!(
+      domain: domains(:one),
+      redirect_config: redirect_configs(:one),
+      path: "cascade-test-#{SecureRandom.hex(4)}",
+      generated_from_platform: Grovs::Platforms::IOS
+    )
+    action = Action.create!(device: devices(:ios_device), link: link)
+
+    # Raw delete — the path DeleteInstanceJob takes (no callbacks)
+    Link.where(id: link.id).delete_all
+
+    assert_nil Action.find_by(id: action.id),
+      "the DB constraint must cascade-delete actions when their link is hard-deleted"
+  end
 end

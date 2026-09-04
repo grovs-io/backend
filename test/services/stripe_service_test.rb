@@ -190,6 +190,39 @@ class StripeServiceTest < ActiveSupport::TestCase
     assert_not @instance.quota_exceeded
   end
 
+  test "customer.subscription.created does not enable an incomplete subscription" do
+    event_data = build_event(
+      type: "customer.subscription.created",
+      object: { id: @active_sub.subscription_id, status: "incomplete", trial_end: nil, items: { data: [{ id: "si_item_001" }] } }
+    )
+
+    @mock_project_helper.expect(:current_mau, 5000, [@instance])
+    StripeService.handle_webhook(event_data)
+
+    @active_sub.reload
+    assert_not @active_sub.active, "an unpaid/incomplete subscription must not be marked active"
+    assert_equal "incomplete", @active_sub.status
+  end
+
+  test "subscription.updated with past_due disables the subscription" do
+    event_data = build_event(
+      type: "customer.subscription.updated",
+      object: {
+        id: @active_sub.subscription_id, customer: @active_sub.customer_id,
+        cancel_at: nil, cancel_at_period_end: false, canceled_at: nil,
+        trial_end: nil, status: "past_due", pause_collection: nil
+      }
+    )
+
+    @mock_project_helper.expect(:current_mau, 5000, [@instance])
+    StripeService.handle_webhook(event_data)
+
+    @active_sub.reload
+    assert_not @active_sub.active, "a past_due renewal must not re-enable full service"
+    assert_equal "past_due", @active_sub.status
+    @mock_project_helper.verify
+  end
+
   test "customer.subscription.created does nothing when subscription not found" do
     event_data = build_event(
       type: "customer.subscription.created",
@@ -266,7 +299,7 @@ class StripeServiceTest < ActiveSupport::TestCase
   # customer.subscription.updated → handle_subscription_updated
   # ============================================================
 
-  test "subscription.updated with cancel_at_period_end true sets cancels_at from timestamp" do
+  test "scheduled cancel records cancels_at but keeps access until the period ends" do
     cancel_time = Time.now + 30.days
 
     event_data = build_event(
@@ -274,7 +307,30 @@ class StripeServiceTest < ActiveSupport::TestCase
       object: {
         id: @active_sub.subscription_id, customer: @active_sub.customer_id,
         cancel_at: cancel_time.to_i, cancel_at_period_end: true,
-        canceled_at: nil, trial_end: nil, status: "active", pause_collection: nil
+        canceled_at: Time.now.to_i, trial_end: nil, status: "active", pause_collection: nil
+      }
+    )
+
+    StripeService.handle_webhook(event_data)
+
+    @active_sub.reload
+    assert @active_sub.active, "paid through the period — access must not be cut on the scheduled cancel"
+    expected_time = Time.at(cancel_time.to_i).to_datetime
+    assert_in_delta expected_time.to_f, @active_sub.cancels_at.to_f, 1.0
+
+    @instance.reload
+    assert_not @instance.quota_exceeded
+  end
+
+  test "subscription.deleted at period end deactivates and re-checks quota" do
+    @active_sub.update!(cancels_at: Time.now - 1.minute)
+
+    event_data = build_event(
+      type: "customer.subscription.deleted",
+      object: {
+        id: @active_sub.subscription_id, customer: @active_sub.customer_id,
+        cancel_at: (Time.now - 1.minute).to_i, cancel_at_period_end: true,
+        canceled_at: (Time.now - 30.days).to_i, trial_end: nil, status: "canceled", pause_collection: nil
       }
     )
 
@@ -284,9 +340,21 @@ class StripeServiceTest < ActiveSupport::TestCase
     @active_sub.reload
     assert_not @active_sub.active
     assert_equal "canceled", @active_sub.status
-    expected_time = Time.at(cancel_time.to_i).to_datetime
-    assert_in_delta expected_time.to_f, @active_sub.cancels_at.to_f, 1.0
     @mock_project_helper.verify
+  end
+
+  test "scheduled cancel without cancel_at does not raise" do
+    event_data = build_event(
+      type: "customer.subscription.updated",
+      object: {
+        id: @active_sub.subscription_id, customer: @active_sub.customer_id,
+        cancel_at: nil, cancel_at_period_end: true,
+        canceled_at: Time.now.to_i, trial_end: nil, status: "active", pause_collection: nil
+      }
+    )
+
+    assert_nothing_raised { StripeService.handle_webhook(event_data) }
+    assert @active_sub.reload.active
   end
 
   test "subscription.updated with canceled_at (immediate cancel) sets cancels_at to now" do
@@ -697,5 +765,70 @@ class StripeServiceTest < ActiveSupport::TestCase
     Stripe::Subscription.stub(:retrieve, ->(_) { raise Stripe::StripeError, "API error" }) do
       assert_nothing_raised { StripeService.set_usage(@instance) }
     end
+  end
+
+  test "set_usage in CH-primary mode pushes the fresh open-month value, not a stale cache" do
+    @active_sub.update!(subscription_item_id: "si_test_item")
+    Project.find_or_create_by!(instance: @instance, test: true) do |p|
+      p.name = "Test Project"
+      p.identifier = "test-project-stripe-fresh"
+    end
+
+    cache = ActiveSupport::Cache::MemoryStore.new
+    received_quantity = nil
+    prev = Rails.application.config.clickhouse_primary
+    Rails.application.config.clickhouse_primary = true
+
+    travel_to Date.new(2026, 7, 15) do
+      # Billing cycle June 15 → July 15: June is closed (rollup, cacheable), July is open.
+      fake_subscription = OpenStruct.new(
+        current_period_start: Time.utc(2026, 6, 15).to_i,
+        current_period_end: Time.utc(2026, 7, 15).to_i
+      )
+
+      Rails.stub(:cache, cache) do
+        cache.write("mau:ch:#{@instance.id}:2026-07", 999) # stale open-month value
+        exact_by_month = ->(_ids, start_date:, **_k) { start_date.to_date.month == 6 ? 2 : 5 }
+        ClickhouseReadService.stub(:billing_active_visitors_exact, exact_by_month) do
+          Stripe::Subscription.stub(:retrieve, ->(_) { fake_subscription }) do
+            Stripe::SubscriptionItem.stub(:create_usage_record, lambda { |_item_id, params|
+              received_quantity = params[:quantity]
+              OpenStruct.new
+            }) do
+              StripeService.stub(:apply_discounts, nil) do
+                StripeService.set_usage(@instance)
+              end
+            end
+          end
+        end
+
+        # closed June = 2 + open July = 5 (both exact; stale 999 bypassed)
+        assert_equal 7, received_quantity
+        assert_equal 5, cache.read("mau:ch:#{@instance.id}:2026-07"), "fresh open-month value written back"
+      end
+    end
+  ensure
+    Rails.application.config.clickhouse_primary = prev
+  end
+
+  test "mark_project_enabled skips the quota pass when the CH MAU read fails" do
+    Project.find_or_create_by!(instance: @instance, test: true) do |p|
+      p.name = "Test Project"
+      p.identifier = "test-project-stripe-mau-fail"
+    end
+    @instance.update!(quota_exceeded: true)
+    StripeService.instance_variable_set(:@project_helper, ProjectService.new) # real service, not the class mock
+    prev = Rails.application.config.clickhouse_primary
+    Rails.application.config.clickhouse_primary = true
+
+    ClickhouseReadService.stub(:billing_active_visitors_exact, ->(*_a, **_k) { nil }) do
+      assert_nothing_raised { StripeService.send(:mark_project_enabled, @instance, false) }
+    end
+
+    @instance.reload
+    assert @instance.quota_exceeded?, "quota flag must stay untouched — a raise here would 500 the Stripe webhook"
+  ensure
+    Rails.application.config.clickhouse_primary = prev
+    StripeService.instance_variable_set(:@project_helper, nil)
   end
 end

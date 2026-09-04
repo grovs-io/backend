@@ -23,12 +23,18 @@ class CampaignManagementService
 
   # Transactional: archives campaign + deactivates all its links. Returns Campaign.
   def archive(campaign:)
+    ids = []
     ActiveRecord::Base.transaction do
       campaign.archived = true
       campaign.save!
 
-      campaign.links.where(active: true).update_all(active: false)
+      archived = campaign.links.where(active: true)
+      ids = archived.pluck(:id)
+      # touch updated_at too: update_all skips callbacks, so reconciliation needs the bump.
+      archived.update_all(active: false, updated_at: Time.current)
     end
+
+    LinkDimensionSyncService.sync_many(Link.includes(:domain).where(id: ids)) if ids.present?
 
     campaign.reload
   end

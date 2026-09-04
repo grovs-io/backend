@@ -5,41 +5,43 @@ class LinksService
 
   class PathGenerationError < StandardError; end
 
+  # 16^6 (~16.7M) exhausted on one domain wedged the fleet 2026-08-05; escalate, never spin.
+  PATH_LENGTHS = [6, 8, 10, 12].freeze
+  ATTEMPTS_PER_LENGTH = 5
+
   class << self
 
-    # Short-circuits on MAIN hosts so scanner traffic on *.sqd.link doesn't fire a second
-    # uncached PG query per request (redis_find_by doesn't cache nils). MAIN match is 2-label
-    # registrable-domain — revisit if MAIN ever includes a ccTLD.
+    # MAIN short-circuit: scanner traffic must not fire an uncached PG query (nils are not cached).
     def custom_hostname_for(host)
       return nil unless Grovs.custom_domains_enabled?
       return nil if host.blank?
 
       lower_host = host.to_s.downcase
-      registrable_domain = lower_host.split(".").last(2).join(".")
-      return nil if Grovs::Domains::MAIN.include?(registrable_domain) ||
-                    Grovs::Domains::MAIN.include?(lower_host)
+      return nil if deployment_host?(lower_host)
 
       ch = CustomHostname.redis_find_by(:hostname, lower_host)
-      return nil unless ch&.resolvable?
+      # Pending manual rows serve AASA/mm/dd so Universal Links work at cutover, pre-probe.
+      return nil unless ch && (ch.resolvable? || (ch.manual? && ch.status == "pending"))
 
       Domain.redis_find_by(:id, ch.domain_id)
     end
 
-    # Whitelists primary so any future non-primary purpose also fails closed; a Grovs link
-    # whose path matches an upstream Branch slug must not short-circuit the migration flow.
+    # Primary-only so a Grovs path colliding with an upstream slug cannot bypass migration.
     def primary_custom_hostname_for(host)
       return nil unless Grovs.custom_domains_enabled?
       return nil if host.blank?
 
       lower_host = host.to_s.downcase
-      registrable_domain = lower_host.split(".").last(2).join(".")
-      return nil if Grovs::Domains::MAIN.include?(registrable_domain) ||
-                    Grovs::Domains::MAIN.include?(lower_host)
+      return nil if deployment_host?(lower_host)
 
       ch = CustomHostname.redis_find_by(:hostname, lower_host)
       return nil unless ch&.primary? && ch.resolvable?
 
       Domain.redis_find_by(:id, ch.domain_id)
+    end
+
+    def deployment_host?(lower_host)
+      !Grovs::Domains.split(lower_host).nil? || lower_host == Grovs.ingress_host
     end
 
     def project_scoped(link, project)
@@ -48,24 +50,30 @@ class LinksService
       link.domain&.project_id == project.id ? link : nil
     end
 
-    def link_for_request(request)
-      request_domain = request.domain
-      # request_domain = "sqd.link"
-      # request_domain = "test-sqd.link"
+    # Splits against MAIN (3+ label domains included); falls back to Rails' 2-label
+    # parsing for enterprise Domain rows on customer-owned hosts.
+    def main_domain_for(request)
+      label, main = Grovs::Domains.split(request.host)
+      conditions = main ? { domain: main, subdomain: label.presence } : { domain: request.domain, subdomain: request.subdomain }
+      Domain.redis_find_by_multiple_conditions(conditions)
+    end
 
-      request_subdomain = request.subdomain
+    # Active first: an archived link can share its path with an active replacement; find_by order is arbitrary.
+    def find_link_preferring_active(domain_id, path)
+      Link.redis_find_by_multiple_conditions({ path: path, domain_id: domain_id, active: true }) ||
+        Link.redis_find_by_multiple_conditions({ path: path, domain_id: domain_id })
+    end
+
+    def link_for_request(request)
       request_path = request.path[1..]
 
-      domain = Domain.redis_find_by_multiple_conditions({ domain: request_domain, subdomain: request_subdomain }) ||
-               primary_custom_hostname_for(request.host)
+      domain = main_domain_for(request) || primary_custom_hostname_for(request.host)
       unless domain
         Rails.logger.warn("domain not found")
         return nil
       end
 
-      Link.redis_find_by_multiple_conditions({ path: request_path, domain_id: domain.id })
-
-      
+      find_link_preferring_active(domain.id, request_path)
     end
 
     def link_for_redirect_url(redirect_url)
@@ -74,10 +82,15 @@ class LinksService
       end
 
       uri = URI(redirect_url)
-      parts = uri.host.split('.')
-
-      domain = parts.last(2).join('.')
-      subdomain = parts.length > 2 ? parts[0...-2].join('.') : nil
+      label, main = Grovs::Domains.split(uri.host)
+      if main
+        domain = main
+        subdomain = label.presence
+      else
+        parts = uri.host.to_s.split('.')
+        domain = parts.last(2).join('.')
+        subdomain = parts.length > 2 ? parts[0...-2].join('.') : nil
+      end
       path = uri.path.sub(%r{^/}, '')
 
       domain = Domain.redis_find_by_multiple_conditions({ domain: domain, subdomain: subdomain }) ||
@@ -87,21 +100,33 @@ class LinksService
         return nil
       end
 
-      Link.redis_find_by_multiple_conditions({ path: path, domain_id: domain.id })
-
-      
+      find_link_preferring_active(domain.id, path)
     end
 
-    def build_preview_url(link)
+    def build_preview_url(link, gd_device: nil)
       base_url = ENV['PREVIEW_BASE_URL']
       return nil unless base_url && link
 
+      target = link.access_path
+      target = gd_tagged_url(target, gd_device) || target if gd_device
+
       uri = URI.parse(base_url)
       query_params = URI.decode_www_form(uri.query || "")
-      query_params << ["url", link.access_path]
+      query_params << ["url", target]
       uri.query = URI.encode_www_form(query_params)
 
       uri.to_s
+    end
+
+    # nil on an unparseable URL — callers fall back to the untagged URL or skip the copy.
+    def gd_tagged_url(url, device)
+      uri = URI.parse(url)
+      query_params = URI.decode_www_form(uri.query || "")
+      query_params << ["gd", device.hashid]
+      uri.query = URI.encode_www_form(query_params)
+      uri.to_s
+    rescue URI::InvalidURIError
+      nil
     end
 
     def build_redirect_url_for_preview(url_param, link, device)
@@ -162,7 +187,7 @@ class LinksService
         domain = Domain.redis_find_by_multiple_conditions({ domain: universal_url_components[:domain], subdomain: universal_url_components[:subdomain] }) ||
                  primary_custom_hostname_for(url_host)
         if domain
-          link = Link.redis_find_by_multiple_conditions({ domain: domain.id, path: universal_url_components[:path] })
+          link = find_link_preferring_active(domain.id, universal_url_components[:path])
           return project_scoped(link, project) if link
         end
       end
@@ -174,7 +199,7 @@ class LinksService
 
       domain = Domain.redis_find_by_multiple_conditions({ domain: uri_components[:domain], subdomain: uri_components[:subdomain] })
       if domain
-        link = Link.redis_find_by_multiple_conditions({ domain: domain.id, path: uri_components[:path] })
+        link = find_link_preferring_active(domain.id, uri_components[:path])
         return project_scoped(link, project) if link
       end
 
@@ -189,8 +214,7 @@ class LinksService
       # Search link
       domain = project.domain
       if domain
-        Link.redis_find_by_multiple_conditions({ domain: domain.id, path: path })
-        
+        find_link_preferring_active(domain.id, path)
       end
     end
 
@@ -200,9 +224,13 @@ class LinksService
       uri = URI.parse(url)
       raise URI::InvalidURIError unless uri.scheme && uri.host
 
-      ps = PublicSuffix.parse(uri.host)
       path = uri.path
       path = path.slice(1..-1) if path.present?
+
+      label, main = Grovs::Domains.split(uri.host)
+      return { domain: main, subdomain: label.presence, path: path } if main
+
+      ps = PublicSuffix.parse(uri.host)
 
       {
       domain: ps.domain,
@@ -274,13 +302,6 @@ class LinksService
       nil
       
     end
-
-    # Path lengths escalate on collision streaks: a domain that has exhausted a
-    # namespace (16^6 is only ~16.7M — links.helsi.me filled it entirely, which
-    # wedged the whole fleet in infinite loops on 2026-08-05) silently graduates
-    # to longer paths instead of spinning forever.
-    PATH_LENGTHS = [6, 8, 10, 12].freeze
-    ATTEMPTS_PER_LENGTH = 5
 
     def generate_valid_path(domain)
       suffix = domain.project.test? ? "-test" : ""

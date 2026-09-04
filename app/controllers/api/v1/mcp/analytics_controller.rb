@@ -1,6 +1,9 @@
 class Api::V1::Mcp::AnalyticsController < Api::V1::Mcp::BaseController
+  include Api::V1::Concerns::AnalyticsRetentionGate
+
   before_action :load_mcp_project
   before_action :parse_date_range
+  before_action :enforce_ch_retention_window!
 
   # POST /api/v1/mcp/analytics/link
   def link_stats
@@ -29,7 +32,8 @@ class Api::V1::Mcp::AnalyticsController < Api::V1::Mcp::BaseController
       project_id: @project.id,
       platform: params[:platform],
       start_time: @start_date,
-      end_time: @end_date
+      end_time: @end_date,
+      cutoff: retention_cutoff
     )
 
     render json: { metrics: metrics }, status: :ok

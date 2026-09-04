@@ -1,8 +1,16 @@
 class Api::V1::EventsController < Api::V1::ProjectsBaseController
   include DashboardAuthorization
+  include Api::V1::Concerns::AnalyticsRetentionGate
+  # wrap_parameters nests JSON bodies under :event, breaking the strict request contract.
+  wrap_parameters false
   before_action :doorkeeper_authorize!
   before_action :authorize_and_load_project, except: [:events_for_payment_screen]
   before_action :load_instance, only: [:events_for_payment_screen]
+  before_action :validate_campaign_id!,
+                only: [:events_for_search_params, :events_sorted_by_param, :events_for_overview]
+  # events_for_payment_screen is excluded: instance-scoped billing must outlive retention.
+  before_action :enforce_ch_retention_window!,
+                only: [:events_for_search_params, :events_sorted_by_param, :events_for_overview]
 
   def events_for_search_params
 
@@ -22,6 +30,7 @@ class Api::V1::EventsController < Api::V1::ProjectsBaseController
 
   def events_sorted_by_param
     links = links_for_search_params_no_pagination_and_order
+    return unless links
     start_date = DateParamParser.call(start_date_param, default: Date.today - 30)
     end_date = DateParamParser.call(end_date_param, default: Date.today)
 
@@ -59,23 +68,26 @@ class Api::V1::EventsController < Api::V1::ProjectsBaseController
   end
 
 
+  # Accepted gap: unbounded by date, so it lists dimension names from outside the retention window.
   def metrics_values
-    events = Event.for_project(@project.id)
-
-    platforms = events.distinct.pluck(:platform).compact
-    app_versions = events.distinct.pluck(:app_version).compact
-    builds = events.distinct.pluck(:build).compact
-
-    return_value = {
-        platforms: platforms,
-        app_versions: app_versions,
-        builds: builds
-      }
+    # event_filter_values returns nil when CH is unavailable → fall back to PG.
+    ch = ClickhouseReadService.event_filter_values(@project.id) if Clickhouse.analytics_rollups_read_enabled?
+    return_value = ch || pg_metrics_values
 
     render json: {metrics_values: return_value}, status: :ok
   end
 
   private
+
+  # Blank-excluded + sorted so the CH and PG paths return identical dropdown lists.
+  def pg_metrics_values
+    events = Event.for_project(@project.id)
+    {
+      platforms: events.distinct.pluck(:platform).compact_blank.sort,
+      app_versions: events.distinct.pluck(:app_version).compact_blank.sort,
+      builds: events.distinct.pluck(:build).compact_blank.sort
+    }
+  end
 
   def events_for_overview_for_project_ids(project_ids, sdk_generated)
     metrics = EventQueryService.new(project_ids: project_ids).overview_metrics(

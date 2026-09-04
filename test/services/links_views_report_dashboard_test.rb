@@ -26,7 +26,21 @@ class LinksViewsReportDashboardTest < ActiveSupport::TestCase
     ).call
 
     # ios(80) + android(30) — platform: nil sums all platforms
-    assert_equal 110, result[Date.new(2026, 2, 15).to_s]
+    assert_equal 110, result[Date.new(2026, 2, 15)]
+  end
+
+  test "keys are Dates only, so serialized JSON has no duplicate date keys" do
+    result = LinksViewsReportDashboard.new(
+      project_id: @pid, platform: nil,
+      start_date: Date.new(2026, 2, 15), end_date: Date.new(2026, 2, 15)
+    ).call
+
+    assert result.keys.all?(Date), "hash must not mix Date and String keys"
+
+    json = JSON.generate(result)
+    date_keys = json.scan(/"(\d{4}-\d{2}-\d{2})"\s*:/).flatten
+    assert_equal date_keys.uniq, date_keys, "each date must appear exactly once in the JSON"
+    assert_equal 110, JSON.parse(json)["2026-02-15"], "the real value survives serialization"
   end
 
   test "filters by platform — android returns only android data" do
@@ -35,7 +49,7 @@ class LinksViewsReportDashboardTest < ActiveSupport::TestCase
       start_date: Date.new(2026, 2, 15), end_date: Date.new(2026, 2, 15)
     ).call
 
-    assert_equal 30, result["2026-02-15"]
+    assert_equal 30, result[Date.new(2026, 2, 15)]
   end
 
   test "multi-day range with data on one day — other days stay zero" do
@@ -53,8 +67,8 @@ class LinksViewsReportDashboardTest < ActiveSupport::TestCase
       start_date: Date.new(2026, 2, 15), end_date: Date.new(2026, 2, 17)
     ).call
 
-    assert_equal 110, result["2026-02-15"]  # ios(80) + android(30)
-    assert_equal 45, result["2026-02-16"]
+    assert_equal 110, result[Date.new(2026, 2, 15)]  # ios(80) + android(30)
+    assert_equal 45, result[Date.new(2026, 2, 16)]
     # 2026-02-17 has no data, only the Date key exists with 0
     assert_equal 0, result[Date.new(2026, 2, 17)]
   end

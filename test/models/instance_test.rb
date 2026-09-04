@@ -7,6 +7,31 @@ class InstanceTest < ActiveSupport::TestCase
     @user = User.create!(email: "instance-test@test.com", password: "password123")
   end
 
+  # instances(:one) carries a fixture subscription; using it would pass for the wrong reason.
+  def unsubscribed_instance
+    Instance.create!(uri_scheme: "entitle#{SecureRandom.hex(4)}", api_key: "key-#{SecureRandom.hex(4)}")
+  end
+
+  test "custom_domains_entitled? is false without a subscription" do
+    assert_not unsubscribed_instance.custom_domains_entitled?
+  end
+
+  test "custom_domains_entitled? is true when self-hosted and no subscription exists" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    assert unsubscribed_instance.custom_domains_entitled?
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+  end
+
+  test "custom_domains_entitled? is true when self-hosted even with Cloudflare configured" do
+    enable_custom_domains!
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    assert_not Grovs.manual_custom_domains?, "guard: Cloudflare mode, not manual"
+    assert unsubscribed_instance.custom_domains_entitled?
+  ensure
+    disable_custom_domains!
+  end
+
   # === api_key ===
 
   test "api_key is required" do
@@ -67,6 +92,14 @@ customer_id: "cus_test_paused2")
   test "valid_enterprise_subscription returns nil when subscription is inactive" do
     instance = Instance.create!(uri_scheme: "enttest2", api_key: "key-ent2")
     EnterpriseSubscription.create!(instance: instance, active: false, total_maus: 100_000, start_date: 1.month.ago, end_date: 1.month.from_now)
+
+    assert_nil instance.valid_enterprise_subscription
+  end
+
+  test "valid_enterprise_subscription returns nil once the term has ended" do
+    instance = Instance.create!(uri_scheme: "enttest3", api_key: "key-ent3")
+    EnterpriseSubscription.create!(instance: instance, active: true, total_maus: 100_000,
+                                   start_date: 2.months.ago, end_date: 1.day.ago)
 
     assert_nil instance.valid_enterprise_subscription
   end
@@ -200,6 +233,57 @@ customer_id: "cus_test_paused2")
       assert_no_difference "DesktopConfiguration.count" do
         instance.create_desktop_configuration
       end
+    end
+  end
+
+  # === retention windows ===
+
+  test "retention defaults are 365 cold / 730 delete" do
+    instance = Instance.create!(uri_scheme: "rettest", api_key: "key-ret")
+    assert_equal 365, instance.cold_storage_days
+    assert_equal 730, instance.delete_days
+  end
+
+  test "cold_storage_days must be a positive integer" do
+    instance = instances(:one)
+    instance.cold_storage_days = 0
+    assert_not instance.valid?
+    assert_includes instance.errors[:cold_storage_days].join, "greater than 0"
+  end
+
+  test "delete_days must be a positive integer" do
+    instance = instances(:one)
+    instance.delete_days = -5
+    assert_not instance.valid?
+    assert_includes instance.errors[:delete_days].join, "greater than 0"
+  end
+
+  test "delete_days cannot be shorter than cold_storage_days" do
+    instance = instances(:one)
+    instance.cold_storage_days = 730
+    instance.delete_days = 365
+    assert_not instance.valid?
+    assert_includes instance.errors[:delete_days].join, "cold_storage_days"
+  end
+
+  test "delete_days equal to cold_storage_days is allowed" do
+    instance = instances(:one)
+    instance.cold_storage_days = 365
+    instance.delete_days = 365
+    assert instance.valid?
+  end
+
+  test "DB check constraint rejects delete_days below cold_storage_days even bypassing model validation" do
+    instance = instances(:one)
+    assert_raises(ActiveRecord::StatementInvalid) do
+      instance.update_columns(cold_storage_days: 730, delete_days: 365)
+    end
+  end
+
+  test "DB check constraint rejects non-positive retention even bypassing model validation" do
+    instance = instances(:one)
+    assert_raises(ActiveRecord::StatementInvalid) do
+      instance.update_columns(cold_storage_days: 0)
     end
   end
 

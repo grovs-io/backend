@@ -45,12 +45,14 @@ module StripeService::WebhookHandlers
       return
     end
 
-    subscription.active = true
+    # Don't enable until the first charge settles: incomplete/incomplete_expired stay off.
+    enabled = %w[active trialing].include?(status)
+    subscription.active = enabled
     subscription.status = status
     subscription.subscription_item_id = subscription_item_id
     subscription.save!
 
-    mark_project_enabled(instance, true)
+    mark_project_enabled(instance, enabled)
   end
 
   def handle_subscription_continued(event)
@@ -98,20 +100,19 @@ module StripeService::WebhookHandlers
       return
     end
 
-    if cancel_at || canceled_at || cancel_at_period_end
-      # Subscription is cancelled
-      subscription.active = false
-      subscription.status = "canceled"
-      if !cancel_at_period_end
-        subscription.cancels_at = DateTime.now
-      else
-        subscription.cancels_at = Time.at(cancel_at).to_datetime
-      end
-      subscription.save!
+    if status == "canceled" || cancel_at || canceled_at || cancel_at_period_end
+      if status == "canceled"
+        # Effective cancellation: immediate cancel, or the period-end subscription.deleted event.
+        subscription.active = false
+        subscription.status = "canceled"
+        subscription.cancels_at ||= DateTime.now
+        subscription.save!
 
-      instance = subscription.instance
-      if instance
         mark_project_enabled(instance, false)
+      else
+        # Scheduled cancel — paid through the period; subscription.deleted does the actual cutoff.
+        subscription.cancels_at = Time.at(cancel_at).to_datetime if cancel_at
+        subscription.save!
       end
 
       return
@@ -140,11 +141,12 @@ module StripeService::WebhookHandlers
       return
     end
 
-    # Subscription is active do nothing
-    subscription.active = true
-    subscription.status = "active"
+    # Only a paying status keeps service on; dunning states must disable, not re-enable.
+    enabled = %w[active trialing].include?(status)
+    subscription.active = enabled
+    subscription.status = status || (enabled ? "active" : "inactive")
     subscription.save!
-    mark_project_enabled(instance, true)
+    mark_project_enabled(instance, enabled)
   end
 
   def mark_project_enabled(instance, enabled)
@@ -155,13 +157,21 @@ module StripeService::WebhookHandlers
       return
     end
 
-    current_usage = @project_helper.current_mau(instance)
+    current_usage = project_helper.current_mau(instance)
     if current_usage > Grovs.free_mau_count
       instance.quota_exceeded = true
     else
       instance.quota_exceeded = false
     end
     instance.save!
+  rescue ProjectService::MauReadUnavailable => e
+    # Skip (quota untouched, self-corrects in 10 min) — raising would 500 the Stripe webhook.
+    Rails.logger.error("clickhouse.mau.read_failed instance=#{instance.id} — subscription-change quota pass skipped: #{e.message}")
+  end
+
+  # Lazy default; tests inject the ivar (a bare @project_helper was nil in production).
+  def project_helper
+    @project_helper ||= ProjectService.new
   end
 
   # Discounts

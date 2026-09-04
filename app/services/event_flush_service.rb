@@ -1,11 +1,7 @@
 class EventFlushService
-  # Returns { processed:, discarded:, dates_aggregated: }
   def self.flush(aggregate_days: 1)
     key = BatchEventProcessorJob::REDIS_KEY
-    # Discard events older than 5 minutes: if events have been sitting in Redis
-    # this long, the batch processor was down. Stale events would produce
-    # backdated statistics that have already been aggregated by
-    # BackfillLast3DaysJob, causing double-counting.
+    # Older than this and BackfillLast3DaysJob already aggregated the day — replay would double-count.
     cutoff = 5.minutes.ago
 
     all_raw = []
@@ -45,17 +41,21 @@ class EventFlushService
 
     days = aggregate_days.to_i.clamp(1, 7)
     dates_aggregated = []
-    days.times do |i|
-      date = Date.today - i
-      DailyProjectMetricsGenerator.call(date)
-      ProjectDailyActiveUsersGenerator.call(date)
-      dates_aggregated << date.to_s
+    aggregating = Grovs.pg_shadow_writes?
+    if aggregating
+      days.times do |i|
+        date = Date.today - i
+        DailyProjectMetricsGenerator.call(date)
+        ProjectDailyActiveUsersGenerator.call(date)
+        dates_aggregated << date.to_s
+      end
     end
 
     {
       processed: processed,
       discarded: discarded,
-      dates_aggregated: dates_aggregated
+      dates_aggregated: dates_aggregated,
+      aggregation_skipped: !aggregating
     }
   end
 end

@@ -33,6 +33,116 @@ class ProcessPurchaseEventJobTest < ActiveSupport::TestCase
     end
   end
 
+  test "with PG shadow writes off the purchase still processes but writes no PG stats" do
+    event = purchase_events(:unprocessed_buy)
+
+    ch_rows = nil
+    ENV["PG_SHADOW_WRITES"] = "false"
+    begin
+      ClickhouseWriteService.stub(:deliver_purchase_events, ->(rows) { ch_rows = rows }) do
+        assert_no_difference ["DailyProjectMetric.count", "VisitorDailyStatistic.count",
+                              "LinkDailyStatistic.count"] do
+          @job.perform(event.id)
+        end
+      end
+    ensure
+      ENV.delete("PG_SHADOW_WRITES")
+    end
+
+    assert event.reload.processed?
+    assert_not_nil event.revenue_platform, "the ledger snapshot is not a shadow write"
+    assert_equal [event.transaction_id], ch_rows.to_a.map { |row| row[:transaction_id] },
+                 "the ClickHouse purchase write stays unconditional"
+  end
+
+  test "processing persists ledger snapshots with store platform winning over device" do
+    event = PurchaseEvent.create!(
+      event_type: Grovs::Purchases::EVENT_BUY, device: devices(:ios_device), project: @project,
+      usd_price_cents: 999, transaction_id: "txn_snap_store", product_id: "com.test.p",
+      store_source: Grovs::Webhooks::GOOGLE, webhook_validated: true, store: true,
+      purchase_type: Grovs::Purchases::TYPE_ONE_TIME
+    )
+
+    @job.perform(event.id)
+
+    event.reload
+    assert_equal Grovs::Platforms::ANDROID, event.revenue_platform, "store_source wins over device platform"
+    assert_equal visitors(:ios_visitor).id, event.visitor_id
+  end
+
+  test "processing snapshots web platform and nil visitor for device-less webhook events" do
+    event = PurchaseEvent.create!(
+      event_type: Grovs::Purchases::EVENT_BUY, device: nil, project: @project,
+      usd_price_cents: 500, transaction_id: "txn_snap_nodev", product_id: "com.test.p",
+      webhook_validated: true, store: true, purchase_type: Grovs::Purchases::TYPE_ONE_TIME
+    )
+
+    @job.perform(event.id)
+
+    event.reload
+    assert_equal Grovs::Platforms::WEB, event.revenue_platform
+    assert_nil event.visitor_id
+  end
+
+  test "price correction does not rewrite ledger snapshots" do
+    event = PurchaseEvent.create!(
+      event_type: Grovs::Purchases::EVENT_BUY, device: devices(:ios_device), project: @project,
+      usd_price_cents: 999, transaction_id: "txn_snap_corr", product_id: "com.test.p",
+      store_source: Grovs::Webhooks::GOOGLE, webhook_validated: true, store: true,
+      purchase_type: Grovs::Purchases::TYPE_ONE_TIME
+    )
+    @job.perform(event.id)
+    # Valid-but-different sentinel values (corrections consume the platform snapshot).
+    event.update_columns(revenue_platform: Grovs::Platforms::IOS, visitor_id: 12_345, usd_price_cents: 1999)
+
+    @job.perform(event.id, 999) # correction run
+
+    event.reload
+    assert_equal Grovs::Platforms::IOS, event.revenue_platform, "correction must not recompute the snapshot (android)"
+    assert_equal 12_345, event.visitor_id
+  end
+
+  test "price correction lands under the snapshot platform even after the device changes" do
+    event = PurchaseEvent.create!(
+      event_type: Grovs::Purchases::EVENT_BUY, device: devices(:ios_device), project: @project,
+      usd_price_cents: 999, transaction_id: "txn_corr_platform", product_id: "com.test.p",
+      purchase_type: Grovs::Purchases::TYPE_ONE_TIME
+    )
+    @job.perform(event.id)
+    assert_equal Grovs::Platforms::IOS, event.reload.revenue_platform
+
+    devices(:ios_device).update_columns(platform: "web")
+    event.update_columns(usd_price_cents: 1999)
+    @job.perform(event.id, 999) # +1000 correction
+
+    ios_metric = DailyProjectMetric.find_by(project_id: @project.id, platform: Grovs::Platforms::IOS,
+                                            event_date: event.date.to_date)
+    web_metric = DailyProjectMetric.find_by(project_id: @project.id, platform: Grovs::Platforms::WEB,
+                                            event_date: event.date.to_date)
+    assert_equal 1999, ios_metric.revenue, "full corrected value stays on the snapshot platform"
+    assert_nil web_metric, "no split onto the device's new platform"
+  end
+
+  test "price correction credits the snapshot visitor, not a re-resolved one" do
+    event = PurchaseEvent.create!(
+      event_type: Grovs::Purchases::EVENT_BUY, device: devices(:ios_device), project: @project,
+      usd_price_cents: 999, transaction_id: "txn_corr_visitor", product_id: "com.test.p",
+      purchase_type: Grovs::Purchases::TYPE_ONE_TIME
+    )
+    @job.perform(event.id)
+    # Simulate a visitor re-association since processing: snapshot points elsewhere.
+    event.update_columns(visitor_id: visitors(:android_visitor).id, usd_price_cents: 1999)
+
+    @job.perform(event.id, 999) # +1000 correction
+
+    android_rev = VisitorDailyStatistic.where(project_id: @project.id, visitor_id: visitors(:android_visitor).id,
+                                              event_date: event.date.to_date).sum(:revenue)
+    ios_rev = VisitorDailyStatistic.where(project_id: @project.id, visitor_id: visitors(:ios_visitor).id,
+                                          event_date: event.date.to_date).sum(:revenue)
+    assert_equal 1000, android_rev, "correction follows the ledger snapshot"
+    assert_equal 999, ios_rev, "original processing credit stays put"
+  end
+
   test "creates subscription_state after processing" do
     event = PurchaseEvent.create!(
       event_type: Grovs::Purchases::EVENT_BUY,

@@ -183,6 +183,26 @@ class PublicLinksTest < ActionDispatch::IntegrationTest
     assert redirect_url_built, "LinksService.build_redirect_url_for_preview should have been called"
   end
 
+  test "make_redirect decides copy payload from live UA, not stale device platform" do
+    stale_ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Mobile/15E148 Safari/604.1"
+    device = Device.create!(user_agent: stale_ua, ip: "1.2.3.4", remote_ip: "5.6.7.8", platform: "mac")
+    received = nil
+
+    LinksService.stub(:link_for_redirect_url, @link) do
+      DeviceService.stub(:device_for_website_visit, device) do
+        WebConfigurationService.stub(:name_and_image_for_project_and_platform, { name: "Test", image: nil }) do
+          LinksService.stub(:build_redirect_url_for_preview, "https://example.sqd.link/test-path") do
+            @link.stub(:copy_to_clipboard_for?, ->(platform) { received = platform; false }) do
+              get "/?url=https://example.sqd.link/test-path", headers: preview_host_headers
+            end
+          end
+        end
+      end
+    end
+
+    assert_equal Grovs::Platforms::IOS, received
+  end
+
   test "make_redirect with nil URL renders not_found" do
     LinksService.stub(:link_for_redirect_url, nil) do
       get "/some-path", headers: preview_host_headers

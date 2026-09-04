@@ -198,4 +198,50 @@ class DeviceServiceAuthTest < ActiveSupport::TestCase
   test "device_for returns nil for unknown vendor and no header" do
     assert_nil DeviceService.device_for(@request, "no-such-vendor", "ua", @project.id)
   end
+
+  # --- merge_visitor_events_and_device ---
+
+  test "merge request enqueues one MergeVisitorEventsJob and dedups the pair" do
+    require "sidekiq/testing"
+    from_dev = Device.create!(user_agent: "MergeReqFrom/#{SecureRandom.hex(4)}",
+                              ip: "172.20.1.#{rand(256)}", remote_ip: "172.21.1.#{rand(256)}", platform: "ios")
+    to_dev = Device.create!(user_agent: "MergeReqTo/#{SecureRandom.hex(4)}",
+                            ip: "172.22.1.#{rand(256)}", remote_ip: "172.23.1.#{rand(256)}", platform: "ios")
+    pair_key = "#{MergeVisitorEventsJob::PAIR_PREFIX}:#{[from_dev.id, to_dev.id].sort.join(':')}:#{@project.id}"
+
+    Sidekiq::Testing.fake! do
+      MergeVisitorEventsJob.clear
+      DeviceService.merge_visitor_events_and_device(from_dev, to_dev, @project)
+
+      assert_equal 1, MergeVisitorEventsJob.jobs.size, "one merge job must be enqueued"
+      assert_equal [from_dev.id, to_dev.id, @project.id], MergeVisitorEventsJob.jobs.first["args"]
+
+      # Same pair again within the dedup window: no second enqueue
+      DeviceService.merge_visitor_events_and_device(from_dev, to_dev, @project)
+      # Reverse direction is the same pair: also deduped
+      DeviceService.merge_visitor_events_and_device(to_dev, from_dev, @project)
+      assert_equal 1, MergeVisitorEventsJob.jobs.size, "repeat/reverse requests within pair TTL must be deduped"
+    end
+  ensure
+    REDIS.del(pair_key) if pair_key
+  end
+
+  test "a failed enqueue clears the pair key so a retry can re-trigger the merge" do
+    from_dev = Device.create!(user_agent: "FailEnq/#{SecureRandom.hex(4)}",
+                              ip: "172.24.1.#{rand(256)}", remote_ip: "172.25.1.#{rand(256)}", platform: "ios")
+    to_dev = Device.create!(user_agent: "FailEnqTo/#{SecureRandom.hex(4)}",
+                            ip: "172.26.1.#{rand(256)}", remote_ip: "172.27.1.#{rand(256)}", platform: "ios")
+    pair_key = "#{MergeVisitorEventsJob::PAIR_PREFIX}:#{[from_dev.id, to_dev.id].sort.join(':')}:#{@project.id}"
+
+    boom = ->(*) { raise Redis::CannotConnectError, "sidekiq redis down" }
+    MergeVisitorEventsJob.stub(:perform_async, boom) do
+      assert_raises(Redis::CannotConnectError) do
+        DeviceService.merge_visitor_events_and_device(from_dev, to_dev, @project)
+      end
+    end
+
+    assert_nil REDIS.get(pair_key), "pair key must not suppress retries for a merge that never enqueued"
+  ensure
+    REDIS.del(pair_key) if pair_key
+  end
 end

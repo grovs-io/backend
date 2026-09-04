@@ -1,7 +1,7 @@
 class RedirectConfig < ApplicationRecord
   belongs_to :project
 
-  validates :default_fallback, url: true, allow_blank: true
+  validates :default_fallback, http_url: true, allow_blank: true
 
   has_many :redirects, dependent: :delete_all
 
@@ -19,7 +19,7 @@ class RedirectConfig < ApplicationRecord
   def cleanup_link_dependencies
     link_ids = links.select(:id)
     CustomRedirect.where(link_id: link_ids).delete_all
-    PurchaseEvent.where(link_id: link_ids).update_all(link_id: nil)
+    # purchase_events.link_id is an immutable ledger snapshot — deliberately NOT nullified
     VisitorLastVisit.where(link_id: link_ids).update_all(link_id: nil)
   end
 

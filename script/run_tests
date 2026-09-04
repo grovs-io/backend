@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BUNDLE_BIN="${BUNDLE_BIN:-bundle}"
+if [[ -x "$HOME/.rbenv/shims/bundle" ]]; then
+  BUNDLE_BIN="$HOME/.rbenv/shims/bundle"
+fi
+
+export CLICKHOUSE_REQUIRED="${CLICKHOUSE_REQUIRED:-true}"
+
+echo "== Core test suite =="
+"$BUNDLE_BIN" exec rails test test
+
+echo "== Enterprise test suite =="
+GROVS_EE=true "$BUNDLE_BIN" exec rails test ee/test
+
+if [[ -n "${COVERAGE:-}" ]]; then
+  rm -f coverage/.resultset.json coverage/.resultset.json.lock
+fi
+
+echo "== ClickHouse analytics/events stability =="
+PARALLEL_WORKERS="${PARALLEL_WORKERS:-1}" "$BUNDLE_BIN" exec rails test \
+  test/services/analytics/cardinality_capping_test.rb \
+  test/services/analytics/events_filter_coverage_test.rb \
+  test/services/analytics/events_query_golden_test.rb \
+  test/services/analytics/events_query_service_test.rb \
+  test/services/analytics/overview_failure_modes_test.rb \
+  test/services/analytics/overview_golden_test.rb \
+  test/services/analytics/overview_stats_service_test.rb \
+  test/services/analytics/query_count_test.rb \
+  test/services/analytics/query_helpers_test.rb \
+  test/services/analytics/retention_golden_test.rb \
+  test/services/analytics/retention_service_test.rb \
+  test/services/analytics/schema_validation_test.rb \
+  test/services/analytics/sessions_query_service_test.rb \
+  test/integration/analytics_end_to_end_test.rb \
+  test/integration/analytics_overview_test.rb \
+  test/integration/analytics_events_explorer_test.rb \
+  test/integration/analytics_sessions_test.rb \
+  test/integration/analytics_retention_test.rb \
+  test/integration/analytics_schema_contract_test.rb \
+  test/jobs/event_ledger_contract_test.rb \
+  test/services/event_ingestion_service_test.rb \
+  test/initializers/clickhouse_test_helper_test.rb \
+  test/initializers/sidekiq_scheduler_config_test.rb \
+  test/integration/sdk_batch_events_test.rb \
+  test/jobs/batch_event_processor_clickhouse_test.rb \
+  test/jobs/session_build_job_test.rb
+
+if [[ -n "${COVERAGE:-}" ]]; then
+  echo "== Analytics coverage gate =="
+  "$BUNDLE_BIN" exec ruby script/check_analytics_coverage.rb
+fi
+
+echo "== ClickHouse parallel contamination gate =="
+env -u COVERAGE "$BUNDLE_BIN" exec rails test \
+  test/services/analytics/cardinality_capping_test.rb \
+  test/services/analytics/events_filter_coverage_test.rb \
+  test/jobs/batch_event_processor_clickhouse_test.rb \
+  test/jobs/event_ledger_contract_test.rb
+
+echo "== ClickHouse EE stability =="
+env -u COVERAGE GROVS_EE=true "$BUNDLE_BIN" exec rails test \
+  ee/test/jobs/purchase_ledger_contract_test.rb \
+  ee/test/jobs/process_purchase_event_clickhouse_test.rb
+
+echo "== ClickHouse perf/query-plan =="
+env -u COVERAGE CH_PERF_TESTS=1 "$BUNDLE_BIN" exec rails test \
+  test/services/analytics/performance_test.rb \
+  test/services/analytics/query_plan_test.rb

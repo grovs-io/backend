@@ -27,4 +27,20 @@ class CustomDeviseMailerTest < ActionMailer::TestCase
 
     assert_not_equal invitation, reset
   end
+
+  test "devise mail templates render without the optional path env vars" do
+    saved = {
+      "REACT_HOST_CHANGE_PASSWORD_PATH" => ENV.delete("REACT_HOST_CHANGE_PASSWORD_PATH"),
+      "REACT_HOST_ACCEPT_INVITE_PATH" => ENV.delete("REACT_HOST_ACCEPT_INVITE_PATH")
+    }
+    user = User.create!(email: "mail_render_#{SecureRandom.hex(4)}@test.com", password: "password123")
+
+    reset = Devise.mailer.reset_password_instructions(user, "tok123")
+    assert_includes reset.body.to_s, "/new-password/?token=tok123"
+
+    invite = Devise.mailer.invitation_instructions(user, "tok456")
+    assert_includes invite.body.to_s, "/accept-invite/?token=tok456"
+  ensure
+    saved.each { |k, v| ENV[k] = v if v }
+  end
 end

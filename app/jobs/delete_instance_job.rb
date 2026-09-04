@@ -13,6 +13,10 @@ class DeleteInstanceJob
       return
     end
 
+    # Entitlement is decided now; the row is written only after the teardown succeeds (the Instance row is gone by then).
+    audit_entitled = instance.audit_log_enabled?
+    audit_target = Audit.target_for(instance)
+
     project_ids = Project.where(instance_id: instance.id).pluck(:id)
 
     # Notifications (+ children)
@@ -39,6 +43,8 @@ class DeleteInstanceJob
     log "removing visitor last visits for projects"
     remove_visitor_last_visits_for_projects(project_ids)
     log "visitor last visits removed"
+
+    remove_device_last_seens_for_projects(project_ids)
 
     # Custom hostnames before domains (Cloudflare teardown + FK cleanup)
     log "removing custom hostnames for projects"
@@ -90,6 +96,17 @@ class DeleteInstanceJob
     remove_daily_project_metrics_for_projects(project_ids)
     log "daily project metrics removed"
 
+    # Screen aliases (non-cascading FK to projects)
+    log "remove screen aliases for projects"
+    remove_screen_aliases_for_projects(project_ids)
+    log "screen aliases removed"
+
+    # ClickHouse cleanup — fire-and-forget after all PG deletes.
+    # Must run before projects are deleted (we need project_ids).
+    log "removing ClickHouse data for projects"
+    ClickhouseDeleteService.delete_projects(project_ids)
+    log "ClickHouse data removed"
+
     log "Removing projects"
     Project.unscoped.where(id: project_ids).delete_all
     log "projects removed"
@@ -97,8 +114,19 @@ class DeleteInstanceJob
     EnterpriseSubscription.unscoped.where(instance_id: instance.id).delete_all
     log "enterprise subscriptions removed"
 
-    instance.destroy!
+    # FK-blocks instance.destroy!; subs before intents (subs reference intents).
+    StripeSubscription.unscoped.where(instance_id: instance.id).delete_all
+    StripePaymentIntent.unscoped.where(instance_id: instance.id).delete_all
+    log "stripe subscriptions and payment intents removed"
+
+    # Audit shares the destroy transaction: a failed audit rolls back so the Sidekiq retry still finds the row.
+    ActiveRecord::Base.transaction do
+      instance.destroy!
+      Audit.record(instance_id: instance_id, action: "instance.deleted", actor: AuditActor.system(self.class.name),
+                        target: audit_target, entitled: audit_entitled)
+    end
     log "instance #{instance.id} destroyed"
+    Rails.logger.warn(message: "audit.instance_deleted", instance_id: instance_id)
 
   rescue StandardError => e
     log "ERROR: #{e.class}: #{e.message}\n#{e.backtrace&.first(8)&.join("\n")}", level: :error
@@ -262,6 +290,16 @@ class DeleteInstanceJob
     batch_delete_by(scope: scope, table_name: table, where_sql: where_sql, batch_size: BATCH_SIZE)
   end
 
+  def remove_device_last_seens_for_projects(project_ids)
+    log "removing device last seens for projects"
+    scope = DeviceLastSeen.unscoped.where(project_id: project_ids)
+    cast  = sql_array_cast_for(DeviceLastSeen, :project_id)
+    where_sql = sql_any_array("project_id", project_ids, cast: cast)
+
+    batch_delete_by(scope: scope, table_name: DeviceLastSeen.table_name, where_sql: where_sql, batch_size: BATCH_SIZE)
+    log "device last seens removed"
+  end
+
   def remove_custom_hostnames_for_projects(project_ids)
     CustomHostname.unscoped.where(project_id: project_ids).find_each(batch_size: SUB_BATCH_SIZE) do |custom_hostname|
       next if CustomDomainProvisioningService.destroy(custom_hostname)
@@ -278,6 +316,8 @@ class DeleteInstanceJob
         ids = batch.pluck(:id)
         ids.each_slice(SUB_BATCH_SIZE) do |slice|
           CustomRedirect.unscoped.where(link_id: slice).delete_all
+          # Explicit (not via the actions FK cascade) to keep the lock profile flat
+          Action.unscoped.where(link_id: slice).delete_all
         end
         batch.delete_all
       end
@@ -380,6 +420,12 @@ class DeleteInstanceJob
     where_sql = sql_any_array("project_id", project_ids, cast: cast)
 
     batch_delete_by(scope: scope, table_name: table, where_sql: where_sql, batch_size: BATCH_SIZE)
+  end
+
+  def remove_screen_aliases_for_projects(project_ids)
+    with_local_timeouts do
+      ScreenAlias.unscoped.where(project_id: project_ids).delete_all
+    end
   end
 
   def remove_daily_project_metrics_for_projects(project_ids)

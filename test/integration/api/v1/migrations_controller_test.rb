@@ -112,6 +112,33 @@ class Api::V1::MigrationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "branch", src.provider
   end
 
+  test "POST /migrations succeeds in manual mode with no Cloudflare configured" do
+    enable_manual_custom_domains!
+    ENV["MIGRATIONS_ENABLED"] = "true"
+    saved_server_host = ENV["SERVER_HOST"]
+    ENV["SERVER_HOST"] = "links.app.com"
+
+    stub_probe do
+      CloudflareCustomHostnameService.stub(:create, ->(*) { flunk "must not call Cloudflare in manual mode" }) do
+        json_post url, valid_branch_payload
+      end
+    end
+    assert_response :created
+
+    body = JSON.parse(response.body)
+    assert_equal "manual", body["tls_mode"]
+    assert_equal "links.app.com", body["ingress_host"]
+    assert_equal "pending", body["custom_domain"]["status"]
+    assert_equal "certificate", body["custom_domain"]["setup_records"].first["kind"]
+
+    ch = CustomHostname.find_by!(hostname: "old-branch.acme.com")
+    assert ch.manual?
+    assert_equal "enterprise", ch.source
+    assert MigrationSource.exists?(old_host: "old-branch.acme.com")
+  ensure
+    saved_server_host.nil? ? ENV.delete("SERVER_HOST") : ENV["SERVER_HOST"] = saved_server_host
+  end
+
   test "rollback: source validation failure tears down the freshly created CH" do
     cf_delete_calls = 0
     cf_delete_stub  = lambda do |*_|
@@ -417,5 +444,111 @@ class Api::V1::MigrationsControllerTest < ActionDispatch::IntegrationTest
     assert_not_nil destroy_called_with,
                    "rescue StandardError must invoke destroy(custom_hostname) to release CF + DB"
     assert_equal "old-branch.acme.com", destroy_called_with.hostname
+  end
+
+  def provider_hosted_payload
+    {
+      hostname: "xyz.app.link",
+      provider: "branch",
+      credentials: { branch_key: "key_live_test" },
+      provider_hosted: true,
+      extra_hosts: ["xyz-alternate.app.link"]
+    }
+  end
+
+  test "provider_hosted create: 201 with migration_source only, NO CustomHostname, no Cloudflare" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    stub_probe do
+      CloudflareCustomHostnameService.stub(:create, ->(*) { flunk "must not call Cloudflare for provider_hosted" }) do
+        CustomDomainProvisioningService.stub(:create, ->(*) { flunk "must not provision a CH for provider_hosted" }) do
+          json_post url, provider_hosted_payload
+        end
+      end
+    end
+    assert_response :created
+
+    body = JSON.parse(response.body)
+    assert_not body.key?("custom_domain"), "provider_hosted response must not include custom_domain"
+    src_payload = body["migration_source"]
+    assert_equal "xyz.app.link", src_payload["old_host"]
+    assert_equal true, src_payload["provider_hosted"]
+    assert_equal ["xyz-alternate.app.link"], src_payload["extra_hosts"]
+    assert_not src_payload.key?("credentials")
+
+    assert_not CustomHostname.exists?(hostname: "xyz.app.link")
+    src = MigrationSource.find_by!(old_host: "xyz.app.link")
+    assert src.provider_hosted
+    assert_equal ["xyz-alternate.app.link"], src.extra_hosts
+    assert_equal @project.id, src.project_id
+  end
+
+  test "provider_hosted create is rejected on non-self-hosted deployments" do
+    ENV.delete("GROVS_SELF_HOSTED")
+    stub_probe do
+      json_post url, provider_hosted_payload
+    end
+    assert_response :unprocessable_entity
+    assert_match(/self-hosted/, JSON.parse(response.body)["error"])
+    assert_not MigrationSource.exists?(old_host: "xyz.app.link")
+  end
+
+  test "extra_hosts without provider_hosted returns 422" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    stub_probe do
+      json_post url, valid_branch_payload.merge(extra_hosts: ["xyz-alternate.app.link"])
+    end
+    assert_response :unprocessable_entity
+    assert_match(/provider_hosted/, JSON.parse(response.body)["error"])
+  end
+
+  test "non-array extra_hosts returns 422" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    stub_probe do
+      without_contract_check do
+        json_post url, provider_hosted_payload.merge(extra_hosts: "xyz-alternate.app.link")
+      end
+    end
+    assert_response :unprocessable_entity
+    assert_match(/array/, JSON.parse(response.body)["error"])
+  end
+
+  test "provider_hosted create still blocks on a definitive credentials_invalid probe" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    fake = Object.new
+    fake.define_singleton_method(:probe) { MigrationLookupResult.transient_error(http_status: 401) }
+    MigrationProviderClient.stub(:for, fake) do
+      json_post url, provider_hosted_payload
+    end
+    assert_response :unprocessable_entity
+    assert_not MigrationSource.exists?(old_host: "xyz.app.link")
+  end
+
+  test "CH-backed create on a project holding a provider-hosted source returns 409 and keeps it" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    stub_probe do
+      json_post url, provider_hosted_payload
+    end
+    assert_response :created
+    existing = MigrationSource.find_by!(old_host: "xyz.app.link")
+
+    stub_probe do
+      stub_cf_create do
+        json_post url, valid_branch_payload
+      end
+    end
+    assert_response :conflict
+    assert MigrationSource.exists?(existing.id),
+           "has_one replacement must not silently destroy the provider-hosted source"
+    assert_not CustomHostname.exists?(hostname: "old-branch.acme.com")
+  end
+
+  test "provider_hosted duplicate for the same project returns 409" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    stub_probe do
+      json_post url, provider_hosted_payload
+      assert_response :created
+      json_post url, provider_hosted_payload.merge(hostname: "other.app.link")
+    end
+    assert_response :conflict
   end
 end

@@ -12,16 +12,41 @@ class GooglePubsubVerifier
     return nil unless cert_data
 
     key = OpenSSL::X509::Certificate.new(cert_data).public_key
-    decoded = JWT.decode(token, key, true, {
+    options = {
       algorithm: "RS256",
       iss: "https://accounts.google.com",
       verify_iss: true
-    })
-    decoded.first
+    }
+    expected_aud = ENV["GOOGLE_PUBSUB_AUDIENCE"].presence
+    if expected_aud
+      options[:aud] = expected_aud
+      options[:verify_aud] = true
+    end
+
+    payload = JWT.decode(token, key, true, options).first
+    return nil unless identity_verified?(payload, expected_aud)
+
+    payload
   rescue JWT::DecodeError, JSON::ParserError,
          OpenSSL::X509::CertificateError, ArgumentError => e
     Rails.logger.warn "Google Pub/Sub JWT decode failed: #{e.class} - #{e.message}"
     nil
+  end
+
+  # Env-gated so the webhook keeps working until configured; unset warns, never silent.
+  def self.identity_verified?(payload, expected_aud)
+    expected_email = ENV["GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL"].presence
+
+    if expected_email && !(payload["email"] == expected_email && payload["email_verified"])
+      Rails.logger.warn "Google Pub/Sub token email #{payload['email'].inspect} not the expected service account"
+      return false
+    end
+
+    if expected_aud.nil? && expected_email.nil?
+      Rails.logger.warn "Google Pub/Sub audience/identity not enforced — set GOOGLE_PUBSUB_AUDIENCE and/or GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL"
+    end
+
+    true
   end
 
   private

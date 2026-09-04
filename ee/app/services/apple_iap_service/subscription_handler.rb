@@ -88,11 +88,18 @@ module AppleIapService::SubscriptionHandler
   def revoke_old_subscription_enable_new_one(type, subtype, subscription_info, project)
     original_transaction_id = subscription_info[:original_transaction_id]
 
-    # Try subscription_states first (cold-storage-safe), fall back to purchase_events
-    old_purchase_event = PurchaseEvent.find_by(original_transaction_id: original_transaction_id, project_id: project.id)
+    # Latest BUY, matching the subscription_states fallback below (latest_transaction_id).
+    # Excluding the incoming transaction is what makes redelivery safe: once its own BUY
+    # exists, it is the latest, and the upgrade would otherwise cancel the new purchase.
+    old_purchase_event = PurchaseEvent.where(original_transaction_id: original_transaction_id,
+                                             project_id: project.id,
+                                             event_type: Grovs::Purchases::EVENT_BUY)
+                                      .where.not(transaction_id: subscription_info[:transaction_id])
+                                      .order(date: :desc, id: :desc).first
     unless old_purchase_event
       state = SubscriptionState.find_by(original_transaction_id: original_transaction_id, project_id: project.id)
-      if state
+      # On redelivery the state already points at the incoming transaction — same trap as above.
+      if state && state.latest_transaction_id != subscription_info[:transaction_id]
         old_purchase_event = PurchaseEvent.find_by(transaction_id: state.latest_transaction_id, project_id: project.id)
       end
     end

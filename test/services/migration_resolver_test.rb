@@ -7,6 +7,7 @@ class MigrationResolverTest < ActiveSupport::TestCase
            :migration_sources, :migrated_links, :links
 
   setup do
+    REDIS.flushdb
     @source = migration_sources(:acme_branch)
     @project = @source.project
     enable_migrations!
@@ -113,6 +114,54 @@ class MigrationResolverTest < ActiveSupport::TestCase
     custom_hostnames(:acme_active).destroy
     FirstHitMigration.stub(:call, ->(*) { raise "must not be called without CH" }) do
       assert_nil MigrationResolver.resolve("links.acme.com", "abc")
+    end
+  end
+
+  # Manual rows cannot be active before cutover, so the first hit itself is the proof.
+  test "custom_hostname_still_active?: a pending manual row resolves on its first hit" do
+    ch = custom_hostnames(:acme_active)
+    ch.update_columns(cf_custom_hostname_id: nil, status: "pending")
+    ch.reload.send(:clear_cache)
+
+    assert MigrationResolver.custom_hostname_still_active?(@source, "links.acme.com")
+  end
+
+  test "custom_hostname_still_active?: a pending cloudflare row does not resolve" do
+    ch = custom_hostnames(:acme_active)
+    ch.update_columns(cf_custom_hostname_id: "cf_1", status: "pending")
+    ch.reload.send(:clear_cache)
+
+    assert_not MigrationResolver.custom_hostname_still_active?(@source, "links.acme.com")
+  end
+
+  test "custom_hostname_still_active?: a suspended manual row does not resolve" do
+    ch = custom_hostnames(:acme_active)
+    ch.update_columns(cf_custom_hostname_id: nil, status: "suspended")
+    ch.reload.send(:clear_cache)
+
+    assert_not MigrationResolver.custom_hostname_still_active?(@source, "links.acme.com")
+  end
+
+  test "a first hit on a pending manual row enqueues its activation" do
+    require "sidekiq/testing"
+    ch = custom_hostnames(:acme_active)
+    ch.update_columns(cf_custom_hostname_id: nil, status: "pending")
+    ch.reload.send(:clear_cache)
+
+    Sidekiq::Testing.fake! do
+      ActivateCustomHostnameJob.clear
+      MigrationResolver.custom_hostname_still_active?(@source, "links.acme.com")
+      assert_equal 1, ActivateCustomHostnameJob.jobs.size
+      assert_equal ch.id, ActivateCustomHostnameJob.jobs.first["args"].first
+    end
+  end
+
+  test "an already active row enqueues nothing" do
+    require "sidekiq/testing"
+    Sidekiq::Testing.fake! do
+      ActivateCustomHostnameJob.clear
+      MigrationResolver.custom_hostname_still_active?(@source, "links.acme.com")
+      assert_equal 0, ActivateCustomHostnameJob.jobs.size
     end
   end
 
@@ -362,5 +411,86 @@ class MigrationResolverTest < ActiveSupport::TestCase
 
   test "Shape 3 — slug fallback still respects the cross-project guard" do
     assert_nil MigrationResolver.resolve_from_sdk("resolved-abc", expected_project: projects(:two))
+  end
+
+  def create_provider_hosted_source!
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    MigrationSource.create!(
+      project: projects(:two), old_host: "xyz.app.link",
+      provider: Grovs::Migrations::PROVIDER_BRANCH,
+      credentials: { "branch_key" => "k" },
+      provider_hosted: true, extra_hosts: ["xyz-alternate.app.link"]
+    )
+  end
+
+  test "provider_hosted source resolves with NO CustomHostname row" do
+    source = create_provider_hosted_source!
+    assert_nil CustomHostname.redis_find_by(:hostname, "xyz.app.link")
+
+    sentinel = Object.new
+    FirstHitMigration.stub(:call, ->(source:, old_path:, query_string:) { sentinel }) do
+      assert_same sentinel, MigrationResolver.resolve("xyz.app.link", "abc")
+    end
+  ensure
+    source&.destroy
+  end
+
+  test "extra host resolves to the SAME source and cache key with expected_project" do
+    source = create_provider_hosted_source!
+    calls = []
+    sentinel = Object.new
+    stub = lambda do |source:, old_path:, query_string:|
+      calls << [source.id, old_path]
+      sentinel
+    end
+    FirstHitMigration.stub(:call, stub) do
+      assert_same sentinel,
+                  MigrationResolver.resolve("xyz.app.link", "abc", expected_project: projects(:two))
+      assert_same sentinel,
+                  MigrationResolver.resolve("xyz-alternate.app.link", "abc", expected_project: projects(:two))
+    end
+    assert_equal [[source.id, "abc"], [source.id, "abc"]], calls
+  ensure
+    source&.destroy
+  end
+
+  test "extra host without expected_project returns nil (no global lookup for extras)" do
+    source = create_provider_hosted_source!
+    FirstHitMigration.stub(:call, ->(*) { raise "must not resolve extra host without project context" }) do
+      assert_nil MigrationResolver.resolve("xyz-alternate.app.link", "abc")
+    end
+  ensure
+    source&.destroy
+  end
+
+  test "extra host does not resolve when GROVS_SELF_HOSTED is off" do
+    source = create_provider_hosted_source!
+    ENV.delete("GROVS_SELF_HOSTED")
+    FirstHitMigration.stub(:call, ->(*) { raise "extra hosts must not resolve off self-hosted" }) do
+      assert_nil MigrationResolver.resolve("xyz-alternate.app.link", "abc", expected_project: projects(:two))
+    end
+  ensure
+    source&.destroy
+  end
+
+  test "extra host with WRONG expected_project returns nil" do
+    source = create_provider_hosted_source!
+    FirstHitMigration.stub(:call, ->(*) { raise "cross-tenant leak" }) do
+      assert_nil MigrationResolver.resolve("xyz-alternate.app.link", "abc", expected_project: projects(:one))
+    end
+  ensure
+    source&.destroy
+  end
+
+  test "resolve_from_sdk resolves an extra-host URL" do
+    source = create_provider_hosted_source!
+    sentinel = Object.new
+    FirstHitMigration.stub(:call, ->(source:, old_path:, query_string:) { sentinel }) do
+      assert_same sentinel, MigrationResolver.resolve_from_sdk(
+        "https://xyz-alternate.app.link/abc?x=1", expected_project: projects(:two)
+      )
+    end
+  ensure
+    source&.destroy
   end
 end

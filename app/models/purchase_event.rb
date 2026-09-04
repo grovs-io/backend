@@ -2,6 +2,10 @@ class PurchaseEvent < ApplicationRecord
   belongs_to :project, optional: true
   belongs_to :device, optional: true
   belongs_to :link, optional: true
+  belongs_to :visitor, optional: true
+
+  # `date` is the ledger's event-time bucket — never leave it NULL.
+  before_create -> { self.date ||= Time.current }
 
   validates :event_type, presence: true, inclusion: { in: Grovs::Purchases::ALL_EVENTS }
   validates :purchase_type, inclusion: { in: Grovs::Purchases::TYPES }, allow_nil: true
@@ -24,7 +28,11 @@ class PurchaseEvent < ApplicationRecord
     # (new_record? guard prevents re-converting when usd_price_cents is set on create)
     !new_record? && (will_save_change_to_price_cents? || will_save_change_to_currency?)
   }
-  before_save :assign_unique_transaction_id, if: -> { transaction_id.nil? }
+  # blank? (not nil?) so an empty-string transaction_id from a webhook also gets a unique id.
+  # transaction_id is the dedup identity in PG (idx_purchase_events_unique_txn) and CH
+  # (purchase_events ORDER BY); a blank one would let only ONE no-id purchase exist per
+  # (project, event_type) and would collapse distinct no-id purchases in CH.
+  before_save :assign_unique_transaction_id, if: -> { transaction_id.blank? }
 
   def buy?
     [Grovs::Purchases::EVENT_BUY, Grovs::Purchases::EVENT_REFUND_REVERSED].include?(event_type)

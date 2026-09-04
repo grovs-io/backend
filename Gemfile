@@ -1,13 +1,18 @@
 source 'https://rubygems.org'
 git_source(:github) { |repo| "https://github.com/#{repo}.git" }
 
-ruby '3.3.8'
+ruby '~> 3.4'
 
 # Bundle edge Rails instead: gem 'rails', github: 'rails/rails', branch: 'main'
 gem 'rails', '~> 8.1.0'
 
 # Use Puma as the app server
-gem 'puma', '~> 6.4'
+gem 'puma', '~> 7.0'
+# Dropped from Ruby's default gems in 4.0; lib/clickhouse/migrator.rb requires it.
+gem 'benchmark'
+# Rack 3 breaks the app (968 errors): Rails reloads classes differently and
+# middleware contracts changed. Pinned until that migration is done deliberately.
+gem 'rack', '~> 2.2'
 
 gem 'pg', '~> 1.5'
 gem 'rack-cors', '~> 2.0'
@@ -50,7 +55,12 @@ gem 'omniauth', '~> 2.1'
 gem 'omniauth-microsoft_graph'
 gem 'omniauth-rails_csrf_protection', '~> 2.0'
 gem 'omniauth-google-oauth2', '~> 1.2.1'
+gem 'omniauth_openid_connect', '~> 0.8'
+gem 'scimitar', '~> 2.15'
 gem 'sidekiq-scheduler', '~> 5.0'
+
+gem 'click_house-client', '~> 0.8'  # GitLab's ClickHouse HTTP client
+gem 'maxminddb', '~> 0.1'      # GeoIP resolution from MaxMind GeoLite2 database
 
 # Reduces boot times through caching; required in config/boot.rb
 gem 'bootsnap', '>= 1.4.4', require: false
@@ -71,6 +81,8 @@ gem 'opentelemetry-instrumentation-all', '~> 0.78'
 # gem 'rack-cors'
 
 group :development, :test do
+  gem 'brakeman', require: false
+  gem 'bundler-audit', require: false
   # Call 'byebug' anywhere in the code to stop execution and get a debugger console
   gem 'byebug', '~> 11.1', platforms: [:mri, :mingw, :x64_mingw]
   gem 'minitest-mock', '~> 5.0'
@@ -79,7 +91,8 @@ group :development, :test do
   gem 'bullet', '~> 8.1'
   # Strict API request/response contract validation in tests (see test/support/api_contracts.rb)
   gem 'json-schema', '~> 6.2', require: false
-  # Coverage reports: COVERAGE=1 bundle exec rails test (see test/test_helper.rb)
+  gem 'webmock', '~> 3.23', require: false
+  # Coverage reports: COVERAGE=1 bundle exec rails test:full (see test/test_helper.rb)
   gem 'simplecov', '~> 0.22', require: false
 end
 

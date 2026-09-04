@@ -1,19 +1,31 @@
 # app/services/daily_project_metrics_generator.rb
 class DailyProjectMetricsGenerator
+  # Post-backup cold cache pushes the classification query past the global 30s timeout nightly.
+  STATEMENT_TIMEOUT = "120s".freeze
+
   class << self
     def call(date)
+      # Gated here, not in the two callers — the admin flush endpoint calls this directly.
+      return unless Grovs.pg_shadow_writes?
+
       date = date.to_date
       data = {}
 
-      data[:visitor_stats]   = fetch_visitor_stats(date)
-      data[:link_stats]      = fetch_link_stats(date)
-      classification              = fetch_visitor_classification(date)
-      data[:returning_users]      = classification[:returning_users]
-      data[:new_users]            = classification[:new_users]
-      data[:first_time_visitors]  = classification[:first_time_visitors]
-      data[:referred_users]       = fetch_referred_users(date)
-      data[:revenue_stats]   = fetch_revenue_stats(date)
+      DailyProjectMetric.transaction do
+        DailyProjectMetric.connection.execute("SET LOCAL lock_timeout = '5s'")
+        DailyProjectMetric.connection.execute("SET LOCAL statement_timeout = '#{STATEMENT_TIMEOUT}'")
 
+        data[:visitor_stats]   = fetch_visitor_stats(date)
+        data[:link_stats]      = fetch_link_stats(date)
+        classification              = fetch_visitor_classification(date)
+        data[:returning_users]      = classification[:returning_users]
+        data[:new_users]            = classification[:new_users]
+        data[:first_time_visitors]  = classification[:first_time_visitors]
+        data[:referred_users]       = fetch_referred_users(date)
+        data[:revenue_stats]   = fetch_revenue_stats(date)
+      end
+
+      # Outside the txn: keeps the upserts autocommit-per-row so no multi-row locks are held.
       persist_metrics(data, date)
     end
 
@@ -53,7 +65,7 @@ class DailyProjectMetricsGenerator
           :project_id,
           :platform,
           Arel.sql("SUM(views)"),
-          Arel.sql("SUM(installs)")
+          Arel.sql("SUM(installs) + SUM(reinstalls)")
         )
         .each_with_object({}) do |(project_id, platform, link_views, link_installs), h|
           h[[project_id, platform]] = {

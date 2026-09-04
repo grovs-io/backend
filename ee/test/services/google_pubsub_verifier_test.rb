@@ -102,7 +102,58 @@ class GooglePubsubVerifierTest < ActiveSupport::TestCase
     end
   end
 
+  test "verify rejects a token whose audience differs from GOOGLE_PUBSUB_AUDIENCE" do
+    rsa_key, cert = generate_test_key_and_cert
+    token = signed_token(rsa_key, "aud_kid", aud: "https://attacker.example.com")
+
+    with_env("GOOGLE_PUBSUB_AUDIENCE" => "https://api.sqd.link/iap/google") do
+      GooglePubsubVerifier.stub(:fetch_certs, { "aud_kid" => cert.to_pem }) do
+        assert_nil GooglePubsubVerifier.verify(token)
+      end
+    end
+  end
+
+  test "verify rejects a token whose email is not the expected service account" do
+    rsa_key, cert = generate_test_key_and_cert
+    token = signed_token(rsa_key, "email_kid", email: "attacker@evil.com", email_verified: true)
+
+    with_env("GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL" => "push@proj.iam.gserviceaccount.com") do
+      GooglePubsubVerifier.stub(:fetch_certs, { "email_kid" => cert.to_pem }) do
+        assert_nil GooglePubsubVerifier.verify(token)
+      end
+    end
+  end
+
+  test "verify accepts a token matching the configured audience and service account" do
+    rsa_key, cert = generate_test_key_and_cert
+    token = signed_token(rsa_key, "ok_kid", aud: "aud-1",
+                         email: "push@proj.iam.gserviceaccount.com", email_verified: true)
+
+    with_env("GOOGLE_PUBSUB_AUDIENCE" => "aud-1",
+             "GOOGLE_PUBSUB_SERVICE_ACCOUNT_EMAIL" => "push@proj.iam.gserviceaccount.com") do
+      GooglePubsubVerifier.stub(:fetch_certs, { "ok_kid" => cert.to_pem }) do
+        assert GooglePubsubVerifier.verify(token)
+      end
+    end
+  end
+
   private
+
+  def signed_token(rsa_key, kid, claims = {})
+    payload = { iss: "https://accounts.google.com", exp: Time.now.to_i + 3600 }.merge(claims)
+    JWT.encode(payload, rsa_key, "RS256", { kid: kid })
+  end
+
+  def with_env(vars)
+    old = vars.transform_values { |_| nil }
+    vars.each do |k, v| 
+      old[k] = ENV[k]
+      ENV[k] = v
+    end
+    yield
+  ensure
+    old.each { |k, v| ENV[k] = v }
+  end
 
   def generate_test_key_and_cert
     rsa_key = OpenSSL::PKey::RSA.generate(2048)

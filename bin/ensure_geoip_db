@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+db_path="${GEOIP_DB_PATH:-/app/db/GeoLite2-City.mmdb}"
+s3_uri="${GEOIP_S3_URI:-}"
+max_age_days="${GEOIP_S3_MAX_AGE_DAYS:-30}"
+[[ "$max_age_days" =~ ^[0-9]+$ ]] || max_age_days=30
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+geoip_fail() {
+  echo "$1" >&2
+  if [[ "${GEOIP_REQUIRED:-false}" == "true" ]]; then
+    exit 1
+  fi
+  exit 0
+}
+
+install_db() {
+  if ! install -m 0644 "$1" "$db_path"; then
+    geoip_fail "GeoIP database install failed at $db_path; booting with GeoIP disabled"
+  fi
+}
+
+if [[ -s "$db_path" ]]; then
+  exit 0
+fi
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+mkdir -p "$(dirname "$db_path")"
+
+# S3 cache first: one MaxMind download serves the whole fleet instead of one per task.
+s3_copy="$tmp_dir/s3.mmdb"
+s3_age=""
+if [[ -n "$s3_uri" ]]; then
+  if s3_age="$(bundle exec ruby "$script_dir/geoip_s3.rb" get "$s3_uri" "$s3_copy" 2>"$tmp_dir/s3.err")" && [[ -s "$s3_copy" ]]; then
+    if [[ "$s3_age" =~ ^[0-9]+$ && "$s3_age" -le "$max_age_days" ]]; then
+      install_db "$s3_copy"
+      exit 0
+    fi
+  else
+    s3_age=""
+    [[ -s "$tmp_dir/s3.err" ]] && sed 's/^/GeoIP: S3 cache fetch failed: /' "$tmp_dir/s3.err" | head -3 >&2
+  fi
+fi
+
+if [[ -n "${MAXMIND_LICENSE_KEY:-}" ]]; then
+  archive="$tmp_dir/geolite2-city.tar.gz"
+  url="https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz"
+
+  if ! curl --fail --location --silent --show-error --retry 3 --retry-delay 2 --output "$archive" "$url"; then
+    echo "GeoIP: MaxMind download failed" >&2
+  elif ! tar -xzf "$archive" -C "$tmp_dir"; then
+    echo "GeoIP: MaxMind archive extraction failed" >&2
+  else
+    mmdb="$(find "$tmp_dir" -name GeoLite2-City.mmdb -type f | head -n 1)"
+    if [[ -n "$mmdb" && -s "$mmdb" ]]; then
+      install_db "$mmdb"
+      if [[ -n "$s3_uri" ]]; then
+        bundle exec ruby "$script_dir/geoip_s3.rb" put "$s3_uri" "$db_path" ||
+          echo "GeoIP: S3 cache upload failed; next task will download from MaxMind again" >&2
+      fi
+      exit 0
+    fi
+    echo "GeoIP: MaxMind archive did not contain GeoLite2-City.mmdb" >&2
+  fi
+fi
+
+# A stale cached copy beats hard-failing the task over a MaxMind outage or quota.
+if [[ -n "$s3_age" && -s "$s3_copy" ]]; then
+  echo "GeoIP: using stale S3 copy (${s3_age}d old); MaxMind refresh unavailable" >&2
+  install_db "$s3_copy"
+  exit 0
+fi
+
+geoip_fail "GeoIP database unavailable (no local file, S3 cache, or MaxMind download); booting with GeoIP disabled"

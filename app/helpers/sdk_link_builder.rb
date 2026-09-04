@@ -49,12 +49,21 @@ module SdkLinkBuilder
       link.show_preview_android = show_preview_android_param
     end
 
+    unless copy_to_clipboard_ios_param.nil?
+      link.copy_to_clipboard_ios = copy_to_clipboard_ios_param
+    end
+
+    unless copy_to_clipboard_android_param.nil?
+      link.copy_to_clipboard_android = copy_to_clipboard_android_param
+    end
+
     begin
       attempts ||= 0
       link.save!
-    rescue ActiveRecord::RecordNotUnique
-      # Lost a race on (domain_id, path) with a concurrent worker.
-      raise if (attempts += 1) > 3
+    rescue ActiveRecord::RecordInvalid => e
+      # No unique index on links: a lost path race surfaces as path_must_be_unique, not RecordNotUnique.
+      raise if e.record.errors[:path].empty?
+      raise LinksService::PathGenerationError, "path race unresolved for domain #{domain.id}" if (attempts += 1) > 3
 
       link.path = LinksService.generate_valid_path(domain)
       retry

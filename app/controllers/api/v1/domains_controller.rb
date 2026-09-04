@@ -7,10 +7,11 @@ class Api::V1::DomainsController < Api::V1::ProjectsBaseController
   before_action :require_custom_domains_enabled,
                 only: %i[custom_domain create_custom_domain delete_custom_domain
                          index_custom_domains create_custom_domain_v2 delete_custom_domain_v2
-                         preflight_custom_domain]
+                         preflight_custom_domain verify_custom_domain]
+  # verify probes over the network and mutates state, so it shares the ops bucket, not reads.
   before_action :throttle_custom_domain_ops!,
                 only: %i[create_custom_domain delete_custom_domain
-                         create_custom_domain_v2 delete_custom_domain_v2]
+                         create_custom_domain_v2 delete_custom_domain_v2 verify_custom_domain]
   before_action :throttle_custom_domain_reads!, only: %i[preflight_custom_domain]
 
   def test
@@ -23,6 +24,7 @@ class Api::V1::DomainsController < Api::V1::ProjectsBaseController
       request_domain: request_domain,
       request_subdomain: request_subdomain,
       request_path: request_path,
+      main_split: Grovs::Domains.split(request.headers["X-Original-Host"] || request.host),
       original_host: request.headers["X-Original-Host"],
       inspect: request.inspect
     }
@@ -60,11 +62,15 @@ class Api::V1::DomainsController < Api::V1::ProjectsBaseController
     domain = domain_for_current_project
     return unless domain
 
-    updated = DomainConfigurationService.update_domain(
-      domain: domain,
-      attrs: domain_params,
-      generic_image: generic_image_param
-    )
+    # update_domain saves more than once, so saved_changes is empty by the time we read it: snapshot instead.
+    tracked = domain_params.to_h.keys
+    before = domain.attributes.slice(*tracked)
+    updated = ActiveRecord::Base.transaction do
+      u = DomainConfigurationService.update_domain(domain: domain, attrs: domain_params, generic_image: generic_image_param)
+      audit!("domain.updated", instance_id: @project.instance_id, target: audit_target(u),
+             changes: { "before" => before, "after" => u.attributes.slice(*tracked) })
+      u
+    end
 
     render json: { domain: DomainSerializer.serialize(updated) }, status: :ok
   rescue ArgumentError => e
@@ -84,19 +90,48 @@ class Api::V1::DomainsController < Api::V1::ProjectsBaseController
     domain = domain_for_current_project
     return unless domain
 
-    updated = DomainConfigurationService.update_domain(
-      domain: domain,
-      attrs: { google_tracking_id: google_tracking_id_param }
-    )
+    before = { "google_tracking_id" => domain.google_tracking_id }
+    updated = ActiveRecord::Base.transaction do
+      u = DomainConfigurationService.update_domain(domain: domain, attrs: { google_tracking_id: google_tracking_id_param })
+      audit!("domain.google_tracking_id_updated", instance_id: @project.instance_id, target: audit_target(u),
+             changes: { "before" => before, "after" => { "google_tracking_id" => u.google_tracking_id } })
+      u
+    end
 
     render json: { domain: DomainSerializer.serialize(updated) }, status: :ok
   end
 
   def custom_domain
     ch = @project.custom_hostnames.primary.first
-    return render(json: { custom_domain: nil }, status: :ok) unless ch
+    return render(json: deployment_fields.merge(custom_domain: nil), status: :ok) unless ch
 
-    render json: { custom_domain: CustomHostnameSerializer.serialize(ch) }, status: :ok
+    render json: deployment_fields.merge(custom_domain: CustomHostnameSerializer.serialize(ch)), status: :ok
+  end
+
+  # One named hostname, not every pending row: each probe can hold a Puma thread for 6s.
+  def verify_custom_domain
+    hostname = params[:hostname].to_s.strip.downcase.chomp(".").sub(/:\d+\z/, "")
+    ch = @project.custom_hostnames.find_by(hostname: hostname)
+    return render(json: { error: "Custom domain not found" }, status: :not_found) unless ch
+
+    unless ch.manual?
+      return render(json: { error: "This domain is verified by Cloudflare" }, status: :unprocessable_entity)
+    end
+    unless ch.status == "pending"
+      return render(json: deployment_fields.merge(custom_domain: CustomHostnameSerializer.serialize(ch)), status: :ok)
+    end
+
+    result = SelfHostedDomainVerificationService.verify(ch.hostname, source: "verify_now")
+    if result.active
+      ActiveRecord::Base.transaction do
+        CustomHostnameActivation.apply!(ch)
+        audit!("custom_domain.verified", instance_id: @project.instance_id, target: custom_hostname_target(ch))
+      end
+    else
+      CustomHostnameActivation.record_failure!(ch, result.error)
+    end
+
+    render json: deployment_fields.merge(custom_domain: CustomHostnameSerializer.serialize(ch.reload)), status: :ok
   end
 
   def create_custom_domain
@@ -109,16 +144,20 @@ class Api::V1::DomainsController < Api::V1::ProjectsBaseController
       return render(json: { error: result.error }, status: result.status)
     end
 
-    render json: { custom_domain: CustomHostnameSerializer.serialize(result.custom_hostname) }, status: :created
+    audit!("custom_domain.created", instance_id: @project.instance_id, target: custom_hostname_target(result.custom_hostname))
+    render json: deployment_fields.merge(custom_domain: CustomHostnameSerializer.serialize(result.custom_hostname)), status: :created
   end
 
   def delete_custom_domain
     ch = @project.custom_hostnames.primary.first
     return render(json: { error: "No custom domain configured" }, status: :not_found) unless ch
 
+    target = custom_hostname_target(ch)
     if CustomDomainProvisioningService.destroy(ch)
+      audit!("custom_domain.deleted", instance_id: @project.instance_id, target: target)
       render json: { message: "Custom domain removed" }, status: :ok
     else
+      audit!("custom_domain.deleted", instance_id: @project.instance_id, target: target, outcome: "pending")
       render json: { message: "Custom domain disabled; cleanup will retry" }, status: :accepted
     end
   end
@@ -128,7 +167,7 @@ class Api::V1::DomainsController < Api::V1::ProjectsBaseController
     hostnames = @project.custom_hostnames.order(
       Arel.sql("CASE purpose WHEN 'primary' THEN 0 WHEN 'migration' THEN 1 ELSE 2 END")
     )
-    render json: { custom_domains: hostnames.map { |ch| CustomHostnameSerializer.serialize(ch) } }, status: :ok
+    render json: deployment_fields.merge(custom_domains: hostnames.map { |ch| CustomHostnameSerializer.serialize(ch) }), status: :ok
   end
 
   def create_custom_domain_v2
@@ -146,7 +185,8 @@ class Api::V1::DomainsController < Api::V1::ProjectsBaseController
       return render(json: { error: result.error }, status: result.status)
     end
 
-    render json: { custom_domain: CustomHostnameSerializer.serialize(result.custom_hostname) }, status: :created
+    audit!("custom_domain.created", instance_id: @project.instance_id, target: custom_hostname_target(result.custom_hostname))
+    render json: deployment_fields.merge(custom_domain: CustomHostnameSerializer.serialize(result.custom_hostname)), status: :created
   end
 
   def delete_custom_domain_v2
@@ -158,9 +198,12 @@ class Api::V1::DomainsController < Api::V1::ProjectsBaseController
     ch = @project.custom_hostnames.where(purpose: purpose).first
     return render(json: { error: "No custom domain configured" }, status: :not_found) unless ch
 
+    target = custom_hostname_target(ch)
     if CustomDomainProvisioningService.destroy(ch)
+      audit!("custom_domain.deleted", instance_id: @project.instance_id, target: target)
       render json: { message: "Custom domain removed" }, status: :ok
     else
+      audit!("custom_domain.deleted", instance_id: @project.instance_id, target: target, outcome: "pending")
       render json: { message: "Custom domain disabled; cleanup will retry" }, status: :accepted
     end
   end
@@ -179,7 +222,7 @@ class Api::V1::DomainsController < Api::V1::ProjectsBaseController
                     status: :unprocessable_entity)
     end
 
-    expected = CloudflareCustomHostnameService.cname_target
+    expected = expected_cname_target_for(hostname)
     cache_key = "custom_domain:preflight:#{@project.id}:#{hostname}"
     actual, dns_error, checked_at = Rails.cache.fetch(cache_key, expires_in: PREFLIGHT_CACHE_TTL) do
       lookup_actual, lookup_error = DnsCnameLookupService.lookup(hostname)
@@ -201,10 +244,22 @@ class Api::V1::DomainsController < Api::V1::ProjectsBaseController
 
   private
 
+  def custom_hostname_target(hostname_row)
+    audit_target(hostname_row).merge("hostname" => hostname_row.hostname, "purpose" => hostname_row.purpose)
+  end
+
   def require_custom_domains_enabled
     return if Grovs.custom_domains_enabled?
 
     render json: { error: "Custom domains are not enabled" }, status: :not_found
+  end
+
+  # Row identity when registered, mode otherwise — env changes must not repoint existing rows.
+  def expected_cname_target_for(hostname)
+    ch = @project.custom_hostnames.find_by(hostname: hostname)
+    return ch.manual? ? Grovs.ingress_host : CloudflareCustomHostnameService.cname_target if ch
+
+    Grovs.manual_custom_domains? ? Grovs.ingress_host : CloudflareCustomHostnameService.cname_target
   end
 
   def custom_domain_param

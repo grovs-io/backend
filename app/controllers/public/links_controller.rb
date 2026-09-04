@@ -57,12 +57,16 @@ class Public::LinksController < Public::BaseController
 
     @device = DeviceService.device_for_website_visit(request, response, @project)
 
+    # The preview host's cookie device can carry a stale platform; this render is about the live browser.
+    live_platform = @device.user_agent_platform
+
     if @project
-      name_and_image = WebConfigurationService.name_and_image_for_project_and_platform(@project, @device.platform)
+      name_and_image = WebConfigurationService.name_and_image_for_project_and_platform(@project, live_platform)
       @name, @image = name_and_image.values_at(:name, :image)
     end
 
     @redirect_url = LinksService.build_redirect_url_for_preview(url_param, link, @device)
+    @copy_payload = link.copy_to_clipboard_for?(live_platform) ? url_param : nil
     @skip_client_data = true
     assign_generic_data(link)
 

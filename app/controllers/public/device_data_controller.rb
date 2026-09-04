@@ -25,7 +25,7 @@ class Public::DeviceDataController < Public::BaseController
   end
 
   def recache_device_if_needed(device)
-    domain = Domain.redis_find_by_multiple_conditions({ domain: request.domain, subdomain: request.subdomain }) ||
+    domain = LinksService.main_domain_for(request) ||
              LinksService.custom_hostname_for(request.host)
     FingerprintingService.cache_device(device, request, domain.project_id) if domain
   end

@@ -46,6 +46,10 @@ class ProcessPurchaseEventJob
 
       process_event(event)
     end
+
+    # Fire-and-forget CH dual-write — after PG transaction succeeds.
+    # CH failures are logged but don't affect the PG pipeline.
+    self.class.dual_write_clickhouse(event)
   rescue StandardError => e
     Rails.logger.error "Failed to process purchase event #{purchase_event_id}: #{e.message}"
     Rails.logger.error e.backtrace.join("\n")
@@ -58,13 +62,16 @@ class ProcessPurchaseEventJob
     platform   = determine_platform(event)
     event_date = event_date_for(event)
     revenue    = event.revenue_delta || 0
+    visitor    = event.device&.visitor_for_project_id(event.project_id)
+
+    persist_ledger_snapshots(event, platform, visitor)
 
     if event.usd_price_cents.nil? && event.buy? && (event.price_cents.blank? || event.currency.blank?)
       Rails.logger.warn "ProcessPurchaseEventJob: event #{event.id} (#{event.event_type}) has no price data, revenue will be 0"
     end
 
     if revenue != 0
-      update_visitor_stats(event, platform, event_date, revenue)
+      update_visitor_stats(event, platform, event_date, revenue, visitor: visitor)
       update_link_stats(event, platform, event_date, revenue)
     end
 
@@ -88,15 +95,23 @@ class ProcessPurchaseEventJob
     correction = (new_delta || 0) - (old_delta || 0)
     return if correction == 0
 
-    platform   = determine_platform(event)
+    # Snapshot platform, not a recompute — a device whose platform changed since
+    # processing must not split one purchase's money across two platforms.
+    platform   = event.revenue_platform || determine_platform(event)
     event_date = event_date_for(event)
 
     ActiveRecord::Base.transaction do
-      update_visitor_stats(event, platform, event_date, correction)
+      # Snapshot visitor too — a device re-pointed to a different visitor since
+      # processing must not split one purchase's money across two visitors.
+      update_visitor_stats(event, platform, event_date, correction, visitor: event.visitor)
       update_link_stats(event, platform, event_date, correction)
       InAppProductEventService.apply_revenue_correction(event, platform: platform, event_date: event_date, correction: correction)
       DailyProjectMetric.increment!(event.project_id, platform, event_date, revenue: correction)
     end
+
+    # Re-insert the corrected row so CH rollups converge — ReplacingMergeTree
+    # keeps the newest version, and the MV re-signs from the new usd_price_cents.
+    self.class.dual_write_clickhouse(event, version_ts: Time.current)
   end
 
   def retry_currency_conversion!(event)
@@ -112,12 +127,18 @@ class ProcessPurchaseEventJob
     end
   end
 
+  # Ledger snapshots: platform/visitor as counted. Written only here and by
+  # ReattributePurchaseJob — never recomputed at read time, never touched by corrections.
+  def persist_ledger_snapshots(event, platform, visitor)
+    event.update_columns(revenue_platform: platform, visitor_id: visitor&.id)
+  end
+
   # --- stats writers ---------------------------------------------------
 
-  def update_visitor_stats(event, platform, event_date, value)
+  def update_visitor_stats(event, platform, event_date, value, visitor: nil)
     return unless event.device
 
-    visitor = event.device.visitor_for_project_id(event.project_id)
+    visitor ||= event.device.visitor_for_project_id(event.project_id)
     return unless visitor
 
     VisitorDailyStatService.increment_visitor_event(
@@ -152,6 +173,48 @@ class ProcessPurchaseEventJob
     InAppProductEventService.record_purchase(event, platform: platform, event_date: event_date)
   end
 
+  # version_ts overrides the RMT version column (created_at) so a re-insert supersedes the original.
+  def self.dual_write_clickhouse(event, version_ts: nil)
+    ch_row = build_clickhouse_purchase_row(event, version_ts: version_ts)
+    # Durable delivery (bounded retry -> DLQ): revenue must not silently drop on a CH hiccup.
+    ClickhouseWriteService.deliver_purchase_events([ch_row])
+  rescue StandardError => e
+    Rails.logger.error("ProcessPurchaseEventJob: CH dual-write failed for event #{event.id}: #{e.class} - #{e.message}")
+  end
+
+  def self.build_clickhouse_purchase_row(event, version_ts: nil)
+    # Snapshot when present (just persisted / backfilled); live resolve only for
+    # pre-backfill rows hit by a correction.
+    visitor_id = event.visitor_id || event.device&.visitor_for_project_id(event.project_id)&.id
+
+    {
+      project_id:              event.project_id,
+      event_type:              event.event_type.to_s,
+      purchase_type:           event.purchase_type.to_s,
+      product_id:              event.product_id.to_s,
+      usd_price_cents:         event.usd_price_cents.to_i,
+      currency:                event.currency.to_s,
+      quantity:                event.quantity || 1,
+      transaction_id:          event.transaction_id.to_s,
+      original_transaction_id: event.original_transaction_id.to_s,
+      store_source:            event.store_source.to_s,
+      device_id:               event.device_id.to_i,
+      link_id:                 event.link_id.to_i,
+      visitor_id:              visitor_id.to_i,
+      session_id:              event.session_id.to_s,
+      purchase_date:           event.date || event.created_at,
+      created_at:              version_ts || event.created_at
+    }
+  end
+
+  # CH purchase identity is the SAME key PG enforces unique: (project_id, transaction_id,
+  # event_type) — CH purchase_events ORDER BY mirrors idx_purchase_events_unique_txn. This is
+  # already correct per purchase-event-type: a renewal carries a fresh transaction_id (new
+  # row), a refund/cancel differs by event_type (coexists with the buy), and a restore reuses
+  # the original transaction_id (PG rejects the dup; CH collapses it). PurchaseEvent guarantees
+  # a non-blank transaction_id at save (assign_unique_transaction_id), so no fallback is needed
+  # here — the no-provider-id case gets a unique id upstream.
+
   # --- helpers ----------------------------------------------------------
 
   def determine_platform(event)
@@ -162,8 +225,6 @@ class ProcessPurchaseEventJob
       event.store_platform
     elsif event.device
       event.device.platform_for_metrics || Grovs::Platforms::WEB
-    elsif event.store?
-      Grovs::Platforms::WEB
     else
       Grovs::Platforms::WEB
     end

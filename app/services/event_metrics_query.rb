@@ -1,9 +1,19 @@
 class EventMetricsQuery
+  # avg_engagement_time on the CH path = average engaged-session seconds for the link.
+  ZERO_METRICS = { view: 0, open: 0, install: 0, reinstall: 0,
+                   reactivation: 0, avg_engagement_time: 0.0 }.freeze
+  METRIC_SORT_ID_CAP = Clickhouse::MAX_IN_LIST_IDS
+
   def initialize(project:)
     @project = project
   end
 
   def metrics_for_link_ids(link_ids, start_date, end_date)
+    if Clickhouse.analytics_rollups_read_enabled?
+      ch = ch_metrics_for_link_ids(link_ids, start_date, end_date)
+      return ch unless ch.nil?
+    end
+
     events = Event.for_project(@project.id)
                   .where(link_id: link_ids)
                   .where(created_at: start_date.beginning_of_day..end_date.end_of_day)
@@ -12,6 +22,12 @@ class EventMetricsQuery
   end
 
   def sorted_by_links(links:, page:, event_type:, asc:, start_date:, end_date:)
+    if Clickhouse.analytics_rollups_read_enabled?
+      ch = ch_sorted_by_links(links: links, page: page, event_type: event_type,
+                              asc: asc, start_date: start_date, end_date: end_date)
+      return ch unless ch.nil?
+    end
+
     asc_value = asc ? "ASC" : "DESC"
 
     subquery = Event.for_project(@project.id)
@@ -98,21 +114,45 @@ class EventMetricsQuery
     results = results
         .group("DATE_TRUNC('#{period}', events.created_at)", :event)
         .select("DATE_TRUNC('#{period}', events.created_at) as date", :event, 'COUNT(*) AS count', 'AVG(engagement_time) AS avg_engagement_time')
-        .order(date: :asc)
+        # event: :asc matches CH's order so the order-dependent running avg agrees.
+        .order(date: :asc, event: :asc)
 
-    data = {}
-
-    results.each do |result|
-      date = result.date.to_s
-      event_type = result.event
-      count = result.count
-      avg_engagement_time = result.avg_engagement_time.to_f.round(2)
-
-      data[date] ||= { view: 0, open: 0, install: 0, reinstall: 0, reactivation: 0, avg_engagement_time: 0.0, user_referred: 0, app_open: 0 }
-      data[date][event_type.to_sym] = count
-      data[date][:avg_engagement_time] = ((data[date][:avg_engagement_time] + avg_engagement_time) / 2.0).to_f.round(2)
+    rows = results.map do |r|
+      { date: r.date.to_s, event: r.event, count: r.count, avg_engagement_time: r.avg_engagement_time.to_f.round(2) }
     end
+    accumulate_overview(rows)
+  end
 
+  # CH-served overview: same daily shape as #overview, from raw CH events. Only
+  # valid when link.active is not being filtered (not a CH events column) — the
+  # caller enforces that before routing here. period is always "day" upstream.
+  # Returns nil when CH is unavailable so the caller falls back to the PG #overview.
+  def overview_ch(project_ids, start_date, end_date, sdk_generated: nil, ads_platform: nil,
+                  campaign_ids: nil, app_versions: nil, build_versions: nil, platforms: nil)
+    ch_rows = ClickhouseReadService.event_overview_rows(
+      project_ids, start_date: start_date, end_date: end_date,
+      campaign_ids: campaign_ids, sdk_generated: sdk_generated, ads_platform: ads_platform,
+      app_versions: app_versions, build_versions: build_versions, platforms: platforms
+    )
+    return nil if ch_rows.nil?
+
+    rows = ch_rows.map do |r|
+      { date: "#{r['date']} 00:00:00 UTC", event: r['event_type'],
+        count: r['count'].to_i, avg_engagement_time: r['avg_engagement_time'].to_f.round(2) }
+    end
+    accumulate_overview(rows)
+  end
+
+  # Shared accumulation for PG and CH rows — identical output (incl. the legacy
+  # order-dependent running avg_engagement_time). Rows: {date:, event:, count:, avg_engagement_time:}.
+  def accumulate_overview(rows)
+    data = {}
+    rows.each do |r|
+      date = r[:date]
+      data[date] ||= { view: 0, open: 0, install: 0, reinstall: 0, reactivation: 0, avg_engagement_time: 0.0, user_referred: 0, app_open: 0 }
+      data[date][r[:event].to_sym] = r[:count]
+      data[date][:avg_engagement_time] = ((data[date][:avg_engagement_time] + r[:avg_engagement_time]) / 2.0).to_f.round(2)
+    end
     data
   end
 
@@ -154,6 +194,94 @@ class EventMetricsQuery
   end
 
   private
+
+  # nil = CH disabled/failed → caller falls back to PG; {} = CH succeeded, no data.
+  def ch_metrics_for_link_ids(link_ids, start_date, end_date)
+    rows = ClickhouseReadService.link_event_type_counts(
+      @project.id, link_ids: link_ids, start_date: start_date, end_date: end_date
+    )
+    return nil if rows.nil?
+
+    data = rows.each_with_object({}) do |row, acc|
+      metrics = (acc[row["link_id"].to_i] ||= ZERO_METRICS.dup)
+      metrics[row["event_type"].to_sym] = row["cnt"].to_i
+    end
+    apply_session_averages(data, start_date, end_date)
+  end
+
+  # An all-empty result is indistinguishable from real zeroes, so it is counted, not silent.
+  def apply_session_averages(data, start_date, end_date)
+    return data if data.empty?
+
+    averages = ClickhouseReadService.link_session_avg_seconds(
+      @project.id, link_ids: data.keys, start_date: start_date, end_date: end_date
+    )
+    return data if averages.nil?
+
+    Grovs::Metrics.increment("clickhouse.link_session_rollup.empty") if averages.empty?
+    averages.each { |link_id, seconds| data[link_id][:avg_engagement_time] = seconds if data[link_id] }
+    data
+  end
+
+  # No-activity links sort LAST in BOTH directions, as in LinkStatisticsQuery.
+  def ch_sorted_by_links(links:, page:, event_type:, asc:, start_date:, end_date:)
+    return nil unless Grovs::Events::ALL.include?(event_type.to_s)
+
+    ids = links.limit(metric_sort_id_cap + 1).pluck(:id)
+    return Clickhouse.id_cap_exceeded!(:link_event_sort, metric_sort_id_cap, fallback: :events) if ids.size > metric_sort_id_cap
+
+    per = page ? Link.default_per_page : [ids.size, 1].max
+    offset = page ? ([page.to_i, 1].max - 1) * per : 0
+
+    result = ClickhouseReadService.link_event_sorted_page(
+      @project.id, link_ids: ids, event_type: event_type.to_s, direction: asc ? "asc" : "desc",
+      start_date: start_date, end_date: end_date, limit: per, offset: offset
+    )
+    return nil if result.nil?
+
+    page_ids = result[:rows].map { |r| r["link_id"].to_i }
+    # The contract requires view_count (a PG SELECT alias), so the CH path carries it too.
+    counts = result[:rows].to_h { |r| [r["link_id"].to_i, r["metric"].to_i] }
+
+    remaining = per - page_ids.size
+    if remaining.positive? && ids.size > result[:active_count]
+      active_ids = ClickhouseReadService.link_event_active_ids(
+        @project.id, link_ids: ids, event_type: event_type.to_s,
+        start_date: start_date, end_date: end_date
+      )
+      return nil if active_ids.nil?
+
+      zero_offset = [offset - result[:active_count], 0].max
+      page_ids += (ids - active_ids).sort[zero_offset, remaining] || []
+    end
+
+    # Same source as metrics_for_link_ids so both surfaces report identical shapes.
+    metrics_by_id = ch_metrics_for_link_ids(page_ids, start_date, end_date)
+    return nil if metrics_by_id.nil?
+
+    links_by_id = links_with_view_count(page_ids, counts).index_by(&:id)
+    return_metrics = page_ids.filter_map do |id|
+      link = links_by_id[id]
+      next unless link # PG-deleted but still in CH until the next rebuild
+
+      { link: link, metrics: metrics_by_id[id] }
+    end
+
+    return return_metrics unless page
+
+    { result: return_metrics, page: page, total_pages: (ids.size / per.to_f).ceil }
+  end
+
+  # Carries view_count as a real attribute, not a Hash — callers expect Link records.
+  def links_with_view_count(page_ids, counts)
+    return Link.none if page_ids.empty?
+
+    cases = page_ids.map { |id| "WHEN #{id.to_i} THEN #{counts.fetch(id, 0).to_i}" }.join(" ")
+    Link.select("links.*, CASE links.id #{cases} ELSE 0 END AS view_count").where(id: page_ids)
+  end
+
+  # Method (not constant ref) so tests can stub the cap.
+  def metric_sort_id_cap = METRIC_SORT_ID_CAP
 
   def aggregate(events)
     results = events

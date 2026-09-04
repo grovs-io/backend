@@ -10,13 +10,14 @@ class DeleteInstanceJobTest < ActiveSupport::TestCase
   setup do
     @instance = instances(:one)
     @project = projects(:one)
-    # Clean up stripe_subscriptions FK that DeleteInstanceJob doesn't handle
-    StripeSubscription.where(instance_id: @instance.id).delete_all
     EnterpriseSubscription.delete_all
     CustomHostname.delete_all
   end
 
   test "deletes instance and all associated data" do
+    # Instance one has a Stripe sub the job must clear (FK blocks destroy!).
+    assert_operator StripeSubscription.where(instance_id: @instance.id).count, :>, 0
+
     job = DeleteInstanceJob.new
 
     job.perform(@instance.id)
@@ -26,6 +27,17 @@ class DeleteInstanceJobTest < ActiveSupport::TestCase
     assert_equal 0, Domain.where(project_id: @project.id).count
     assert_equal 0, Visitor.where(project_id: @project.id).count
     assert_equal 0, VisitorDailyStatistic.where(project_id: @project.id).count
+    assert_equal 0, StripeSubscription.where(instance_id: @instance.id).count
+    assert_equal 0, StripePaymentIntent.where(instance_id: @instance.id).count
+  end
+
+  test "purges ClickHouse data for the instance's projects" do
+    project_ids = Project.where(instance_id: @instance.id).pluck(:id)
+    captured = nil
+    ClickhouseDeleteService.stub(:delete_projects, ->(ids) { captured = ids }) do
+      DeleteInstanceJob.new.perform(@instance.id)
+    end
+    assert_equal project_ids.sort, Array(captured).sort
   end
 
   test "nonexistent instance returns early without deleting anything" do
@@ -151,6 +163,17 @@ class DeleteInstanceJobTest < ActiveSupport::TestCase
       "All visitor daily statistics for deleted instance should be removed"
     assert VisitorDailyStatistic.exists?(other_stat.id),
       "Visitor daily statistics for other instances should be untouched"
+  end
+
+  test "deletes screen aliases so the projects FK does not block deletion" do
+    ScreenAlias.create!(project: @project, screen_identifier: "home", alias_name: "Home")
+    other_alias = ScreenAlias.create!(project: projects(:two), screen_identifier: "home", alias_name: "Home")
+
+    DeleteInstanceJob.new.perform(@instance.id)
+
+    assert_nil Instance.find_by(id: @instance.id)
+    assert_equal 0, ScreenAlias.where(project_id: @project.id).count
+    assert ScreenAlias.exists?(other_alias.id)
   end
 
   test "with_local_timeouts rejects invalid format" do

@@ -1,12 +1,18 @@
 class Api::V1::ExportController < Api::V1::ProjectsBaseController
   include DashboardAuthorization
+  include Api::V1::Concerns::AnalyticsRetentionGate
+  # wrap_parameters nests JSON bodies under :export, breaking the strict request contract.
+  wrap_parameters false
   before_action :doorkeeper_authorize!
   before_action :authorize_and_load_project, only: [:export_link_data]
   before_action :load_instance, only: [:export_usage_data]
+  before_action :validate_campaign_id!, only: [:export_link_data]
+  # export_usage_data reads CH but is instance-scoped MAU/billing, so it stays ungated.
+  before_action :enforce_ch_retention_window!, only: [:export_link_data]
 
   def export_link_data
-    campaign_id = validated_campaign_id
-    return if performed?
+    campaign_id = campaign_id_param
+    return if campaign_id && !campaign_owned_by_project?(campaign_id)
 
     safe_params = {
       "active" => ActiveModel::Type::Boolean.new.cast(params[:active]),
@@ -22,11 +28,14 @@ class Api::V1::ExportController < Api::V1::ProjectsBaseController
       safe_params,
       current_user.id
     )
+    audit!("export.link_data", instance_id: @project.instance_id, target: audit_target(@project), changes: { "after" => safe_params })
 
     render json: { message: "Export job has been queued. You will be notified when it's ready." }, status: :accepted
   end
 
+  # DEPRECATED (2026-07-25): remove route+job+ActiveUsersReport after zero-traffic check.
   def export_usage_data
+    Grovs::Metrics.increment("deprecated_endpoint.hit", tags: { endpoint: "export/usage_data" })
     safe_params = {
       "start_date" => params[:start_date].presence,
       "end_date" => params[:end_date].presence,
@@ -37,29 +46,16 @@ class Api::V1::ExportController < Api::V1::ProjectsBaseController
       safe_params,
       current_user.id
     )
+    audit!("export.usage_data", instance_id: @instance.id, target: audit_target(@instance), changes: { "after" => safe_params })
 
     render json: { message: "Export job has been queued. You will be notified when it's ready." }, status: :accepted
   end
 
   private
 
-  # Returns the campaign id as an integer, or nil when the param is absent.
-  # Renders 400/404 (check performed?) for malformed or foreign campaign ids.
-  def validated_campaign_id
-    raw = params.permit(:campaign_id)[:campaign_id].presence
-    return nil unless raw
-
-    campaign_id = Integer(raw, exception: false)
-    if campaign_id.nil?
-      render json: { error: "campaign_id must be an integer" }, status: :bad_request
-      return
-    end
-
-    unless @project.campaigns.exists?(id: campaign_id)
-      render json: { error: "Campaign not found" }, status: :not_found
-      return
-    end
-
-    campaign_id
+  def campaign_owned_by_project?(campaign_id)
+    return true if @project.campaigns.exists?(id: campaign_id)
+    render json: { error: "Campaign not found" }, status: :not_found
+    false
   end
 end

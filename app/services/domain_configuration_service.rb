@@ -51,7 +51,8 @@ class DomainConfigurationService
 
     parsed = PublicSuffix.parse(host)
     return false if parsed.trd.blank?
-    return false if Grovs::Domains::MAIN.include?(parsed.domain)
+    # Same predicate the resolver uses, or we accept hosts it will short-circuit forever.
+    return false if LinksService.deployment_host?(host)
     return false if CustomHostname.exists?(hostname: host)
     return false if Domain.exists?(domain: parsed.domain, subdomain: parsed.trd)
 

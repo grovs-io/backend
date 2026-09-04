@@ -6,6 +6,12 @@ class ActionsServiceTest < ActiveSupport::TestCase
   setup do
     @device = devices(:ios_device)
     @link   = links(:basic_link)
+
+    # Fixture timestamps are frozen when the file is loaded, so in a long suite
+    # "1.minute.ago" is already outside VALIDITY_MINUTES by the time this runs.
+    actions(:recent_action).update_columns(created_at: 1.minute.ago)
+    actions(:action_for_second_link).update_columns(created_at: 2.minutes.ago)
+    actions(:old_action).update_columns(created_at: 10.minutes.ago)
   end
 
   # ---------------------------------------------------------------------------
@@ -108,5 +114,19 @@ class ActionsServiceTest < ActiveSupport::TestCase
 
     assert recent.reload.handled
     assert_not future.reload.handled
+  end
+
+  test "create_if_needed is a no-op when the link was hard-deleted mid-request" do
+    link = Link.create!(domain: domains(:one), redirect_config: redirect_configs(:one),
+                        path: "fk-race-#{SecureRandom.hex(4)}",
+                        generated_from_platform: Grovs::Platforms::IOS)
+    Action.where(link_id: link.id).delete_all
+    Link.where(id: link.id).delete_all # link object still in memory — the race
+
+    assert_nothing_raised do
+      ActionsService.create_if_needed(@device, link)
+    end
+    assert_equal 0, Action.where(link_id: link.id).count,
+      "no orphan action may be created for a deleted link"
   end
 end

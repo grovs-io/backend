@@ -13,6 +13,157 @@ class RefreshCustomHostnameStatusJobTest < ActiveSupport::TestCase
   end
   teardown { disable_custom_domains! }
 
+  def manual_pending(hostname: "links.selfhosted.com", purpose: "primary")
+    CustomHostname.create!(project: projects(:one), domain: domains(:one), hostname: hostname,
+                           cf_custom_hostname_id: nil, status: "pending",
+                           source: "enterprise", purpose: purpose)
+  end
+
+  test "a manual pending row activates when the probe succeeds" do
+    enable_manual_custom_domains!
+    ch = manual_pending
+    SelfHostedDomainVerificationService.stub(:verify, ->(*) { SelfHostedDomainVerificationService::Result.new(active: true) }) do
+      RefreshCustomHostnameStatusJob.new.perform
+    end
+
+    assert_equal "active", ch.reload.status
+    assert_equal ch.hostname, domains(:one).reload.active_custom_host
+  end
+
+  test "a failing probe records why and leaves the row pending" do
+    enable_manual_custom_domains!
+    ch = manual_pending
+    result = SelfHostedDomainVerificationService::Result.new(active: false, error: "No valid certificate for this host yet")
+    SelfHostedDomainVerificationService.stub(:verify, ->(*) { result }) do
+      RefreshCustomHostnameStatusJob.new.perform
+    end
+
+    assert_equal "pending", ch.reload.status
+    assert_equal "No valid certificate for this host yet", ch.verification_errors
+    assert_not_nil ch.last_checked_at
+  end
+
+  test "a manual row is never failed by the 72h deadline" do
+    enable_manual_custom_domains!
+    ch = manual_pending
+    ch.update_columns(created_at: 100.hours.ago)
+    result = SelfHostedDomainVerificationService::Result.new(active: false, error: "Host did not respond within 3s")
+    SelfHostedDomainVerificationService.stub(:verify, ->(*) { result }) do
+      RefreshCustomHostnameStatusJob.new.perform
+    end
+
+    assert_equal "pending", ch.reload.status
+  end
+
+  test "automatic probing stops after the 72h window" do
+    enable_manual_custom_domains!
+    ch = manual_pending
+    ch.update_columns(created_at: 100.hours.ago)
+    called = false
+    SelfHostedDomainVerificationService.stub(:verify, lambda { |*|
+      called = true
+      SelfHostedDomainVerificationService::Result.new(active: true)
+    }) do
+      RefreshCustomHostnameStatusJob.new.perform
+    end
+
+    assert_not called, "abandoned rows must stop generating outbound probes"
+    assert_equal "pending", ch.reload.status
+  end
+
+  # find_each reorders by id, so an abandoned low-id row would otherwise fill the batch forever.
+  test "an abandoned row does not starve a newly added domain" do
+    enable_manual_custom_domains!
+    abandoned = manual_pending(hostname: "abandoned.example.com")
+    abandoned.update_columns(created_at: 100.hours.ago)
+    fresh = CustomHostname.create!(project: projects(:two), domain: domains(:two),
+                                   hostname: "fresh.example.com", cf_custom_hostname_id: nil,
+                                   status: "pending", source: "enterprise", purpose: "primary")
+    assert_operator abandoned.id, :<, fresh.id, "guard: the abandoned row must sort first by id"
+
+    job = RefreshCustomHostnameStatusJob
+    original = job::MAX_ROWS_PER_RUN
+    job.send(:remove_const, :MAX_ROWS_PER_RUN)
+    job.const_set(:MAX_ROWS_PER_RUN, 1)
+
+    probed = []
+    SelfHostedDomainVerificationService.stub(:verify, lambda { |hostname, **|
+      probed << hostname
+      SelfHostedDomainVerificationService::Result.new(active: true)
+    }) do
+      job.new.perform
+    end
+
+    assert_equal ["fresh.example.com"], probed
+    assert_equal "active", fresh.reload.status
+  ensure
+    job.send(:remove_const, :MAX_ROWS_PER_RUN)
+    job.const_set(:MAX_ROWS_PER_RUN, original)
+  end
+
+  test "a manual migration row activates without becoming outbound branding" do
+    enable_manual_custom_domains!
+    ch = manual_pending(hostname: "link.customer.com", purpose: "migration")
+    SelfHostedDomainVerificationService.stub(:verify, ->(*) { SelfHostedDomainVerificationService::Result.new(active: true) }) do
+      RefreshCustomHostnameStatusJob.new.perform
+    end
+
+    assert_equal "active", ch.reload.status
+    assert_nil domains(:one).reload.active_custom_host
+  end
+
+  # Transactional fixtures keep one transaction open, so depth is what distinguishes a held lock.
+  test "manual rows are probed without holding the row lock" do
+    enable_manual_custom_domains!
+    manual_pending
+    baseline = ActiveRecord::Base.connection.open_transactions
+    depth_during_probe = nil
+    SelfHostedDomainVerificationService.stub(:verify, lambda { |*|
+      depth_during_probe = ActiveRecord::Base.connection.open_transactions
+      SelfHostedDomainVerificationService::Result.new(active: true)
+    }) do
+      RefreshCustomHostnameStatusJob.new.perform
+    end
+
+    assert_equal baseline, depth_during_probe,
+      "the probe must not run inside the row lock's transaction"
+  end
+
+  test "a cloudflare pending row is still polled at Cloudflare, not probed" do
+    probed = false
+    SelfHostedDomainVerificationService.stub(:verify, lambda { |*|
+      probed = true
+      SelfHostedDomainVerificationService::Result.new(active: true)
+    }) do
+      CloudflareCustomHostnameService.stub(:status, { success: true, status: "active", ssl_status: "active" }) do
+        ch = pending_hostname
+        RefreshCustomHostnameStatusJob.new.perform
+        assert_equal "active", ch.reload.status
+      end
+    end
+
+    assert_not probed, "Cloudflare rows must keep using the Cloudflare poll"
+  end
+
+  test "recover_stuck_provisioning skips entirely when Cloudflare is unconfigured" do
+    stuck = CustomHostname.create!(project: projects(:one), domain: domains(:one),
+                                   hostname: "links.stuck.com", cf_custom_hostname_id: nil,
+                                   status: "provisioning", source: "enterprise")
+    stuck.update_columns(created_at: 1.hour.ago)
+    enable_manual_custom_domains!
+
+    called = false
+    CloudflareCustomHostnameService.stub(:lookup, lambda { |**|
+      called = true
+      { success: false }
+    }) do
+      RefreshCustomHostnameStatusJob.new.perform
+    end
+
+    assert_not called, "no Cloudflare lookup should be attempted without credentials"
+    assert CustomHostname.exists?(id: stuck.id), "the row must be left for a deployment that can clean it up"
+  end
+
   def pending_hostname
     CustomHostname.create!(project: projects(:one), domain: domains(:one),
                            hostname: "links.acme.com", cf_custom_hostname_id: "cf_1",

@@ -21,6 +21,16 @@ class FingerprintingServiceTest < ActiveSupport::TestCase
     REDIS.del(*@keys_to_clean) unless @keys_to_clean.empty?
   end
 
+  test "fingerprint bucket is keyed by both request ip and remote ip" do
+    request = OpenStruct.new(ip: "#{@unique_ip}-edge", remote_ip: @unique_ip)
+    expected_key = "fp:#{@unique_ip}-edge:#{@unique_ip}"
+    @keys_to_clean << expected_key
+
+    FingerprintingService.cache_device(@device, request, @project_id)
+
+    assert_equal 1, REDIS.zcard(expected_key)
+  end
+
   # --- cache_device pipeline: 4 writes in 1 round-trip ---
 
   test "cache_device stores member in sorted set" do

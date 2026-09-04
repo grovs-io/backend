@@ -75,6 +75,11 @@ class IapUtilsTest < ActiveSupport::TestCase
     assert_equal "GPA.3345-3232", IapUtils.extract_google_original_txn_id(purchase, "fallback")
   end
 
+  test "extract_google_original_txn_id strips a renewal ..N suffix without leaving a trailing dot" do
+    purchase = OpenStruct.new(order_id: "GPA.3345-3232..0")
+    assert_equal "GPA.3345-3232", IapUtils.extract_google_original_txn_id(purchase, "fallback")
+  end
+
   test "extract_google_original_txn_id uses order_id without suffix as-is" do
     purchase = OpenStruct.new(order_id: "GPA.3345-3232")
     assert_equal "GPA.3345-3232", IapUtils.extract_google_original_txn_id(purchase, "fallback")

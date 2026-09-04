@@ -1,5 +1,6 @@
 class McpSubdomain
   def self.matches?(request)
-    request.subdomain == Grovs::Subdomains::MCP && Grovs::Domains::MAIN.include?(request.domain)
+    label, = Grovs::Domains.split(request.host)
+    label == Grovs::Subdomains::MCP
   end
 end

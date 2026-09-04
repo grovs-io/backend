@@ -14,16 +14,24 @@ class MigrationSource < ApplicationRecord
   DEGRADED_EMAIL_THRESHOLD = 1.hour
   DEGRADED_EMAIL_COOLDOWN  = 24.hours
 
+  HOSTNAME_FORMAT = /\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\z/
+  MAX_HOSTNAME_LENGTH = 253
+
   validates :provider, inclusion: { in: Grovs::Migrations::MVP_PROVIDERS }
   validates :old_host, presence: true, uniqueness: true,
+            length: { maximum: MAX_HOSTNAME_LENGTH },
             format: {
-              with: /\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\z/,
+              with: HOSTNAME_FORMAT,
               message: "must be a valid bare hostname (no scheme, no port, no path)"
             }
   validate :credentials_shape_for_provider
-  validate :custom_hostname_exists_for_project
+  # Provider-hosted domains (e.g. xyz.app.link) never point DNS at Grovs — no CustomHostname.
+  validate :custom_hostname_exists_for_project, unless: :provider_hosted?
+  validate :extra_hosts_shape
+  validate :no_host_overlap_with_other_sources
 
   before_validation :normalize_old_host
+  before_validation :normalize_extra_hosts
   before_update :reset_counters_if_credentials_or_enabled_changed
 
   def cache_keys_to_clear
@@ -86,6 +94,10 @@ class MigrationSource < ApplicationRecord
     !enabled && auto_disabled_at.present?
   end
 
+  def matches_host?(host)
+    old_host == host || Array(extra_hosts).include?(host)
+  end
+
   private
 
   def clear_degraded_gate_if_cooled_down
@@ -102,6 +114,35 @@ class MigrationSource < ApplicationRecord
   def normalize_old_host
     return if old_host.blank?
     self.old_host = old_host.to_s.strip.downcase.chomp(".").sub(/:\d+\z/, "")
+  end
+
+  def normalize_extra_hosts
+    return if extra_hosts.blank?
+    self.extra_hosts = Array(extra_hosts)
+                       .map { |h| h.to_s.strip.downcase.chomp(".").sub(/:\d+\z/, "") }
+                       .reject(&:blank?).uniq - [old_host]
+  end
+
+  def extra_hosts_shape
+    return if extra_hosts.blank?
+    return errors.add(:extra_hosts, "are only supported on provider-hosted sources") unless provider_hosted?
+
+    bad = extra_hosts.reject { |h| h.length <= MAX_HOSTNAME_LENGTH && h.match?(HOSTNAME_FORMAT) }
+    errors.add(:extra_hosts, "contains invalid hostnames: #{bad.join(', ')}") if bad.any?
+  end
+
+  # extra_hosts have no unique index (JSONB), so cross-source collisions are caught here.
+  def no_host_overlap_with_other_sources
+    mine_extra = Array(extra_hosts)
+    return if old_host.blank? && mine_extra.empty?
+
+    others = self.class.where.not(id: id).pluck(:old_host, :extra_hosts)
+                 .flat_map { |oh, extras| [oh] + Array(extras) }
+    if old_host.present? && others.include?(old_host) && errors[:old_host].none?
+      errors.add(:old_host, "already in use by another migration source")
+    end
+    taken = mine_extra & others
+    errors.add(:extra_hosts, "already in use by another migration source: #{taken.join(', ')}") if taken.any?
   end
 
   def reset_counters_if_credentials_or_enabled_changed

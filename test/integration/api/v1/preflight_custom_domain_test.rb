@@ -8,10 +8,11 @@ class Api::V1::PreflightCustomDomainTest < ActionDispatch::IntegrationTest
            :stripe_payment_intents, :stripe_subscriptions
 
   setup do
+    # Capture first: a raise later in setup must not let teardown restore nil and poison the worker.
+    @previous_cache = Rails.cache
     enable_custom_domains!
     # Test env defaults to :null_store; swap in MemoryStore so cache assertions work.
     REDIS.flushdb
-    @previous_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
   end
 

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_03_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -87,6 +87,48 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.index ["instance_id"], name: "index_applications_on_instance_id"
   end
 
+  create_table "audit_chain_heads", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "head_hash"
+    t.bigint "instance_id", null: false
+    t.bigint "sequence", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.index ["instance_id"], name: "index_audit_chain_heads_on_instance_id", unique: true
+  end
+
+  create_table "audit_events", force: :cascade do |t|
+    t.string "action", null: false
+    t.jsonb "actor", default: {}, null: false
+    t.jsonb "changes_data", default: {}, null: false
+    t.datetime "created_at", null: false
+    t.string "hash_value", null: false
+    t.bigint "instance_id", null: false
+    t.string "ip"
+    t.datetime "occurred_at", null: false
+    t.string "outcome", default: "success", null: false
+    t.string "prev_hash"
+    t.string "request_id"
+    t.bigint "sequence", null: false
+    t.jsonb "target", default: {}, null: false
+    t.string "user_agent"
+    t.index ["instance_id", "action"], name: "index_audit_events_on_instance_id_and_action"
+    t.index ["instance_id", "occurred_at"], name: "index_audit_events_on_instance_id_and_occurred_at"
+    t.index ["instance_id", "sequence"], name: "index_audit_events_on_instance_id_and_sequence", unique: true
+  end
+
+  create_table "audit_export_tokens", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.bigint "created_by_user_id"
+    t.bigint "instance_id", null: false
+    t.datetime "last_used_at"
+    t.string "name", null: false
+    t.datetime "revoked_at"
+    t.string "token_digest", null: false
+    t.datetime "updated_at", null: false
+    t.index ["instance_id"], name: "index_audit_export_tokens_on_instance_id"
+    t.index ["token_digest"], name: "index_audit_export_tokens_on_token_digest", unique: true
+  end
+
   create_table "campaigns", force: :cascade do |t|
     t.boolean "archived", default: false
     t.datetime "created_at", null: false
@@ -94,6 +136,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.bigint "project_id", null: false
     t.datetime "updated_at", null: false
     t.index ["project_id"], name: "index_campaigns_on_project_id"
+  end
+
+  create_table "clickhouse_event_spills", force: :cascade do |t|
+    t.integer "attempts", default: 0, null: false
+    t.jsonb "ch_row", null: false
+    t.datetime "event_created_at", null: false
+    t.string "event_id", null: false
+    t.text "last_error"
+    t.bigint "project_id", null: false
+    t.datetime "spilled_at", null: false
+    t.index ["event_id"], name: "index_clickhouse_event_spills_on_event_id", unique: true
+    t.index ["project_id", "event_created_at"], name: "idx_on_project_id_event_created_at_8e14669d19"
+    t.index ["spilled_at", "id"], name: "index_ch_event_spills_drainable", where: "(attempts < 10)"
   end
 
   create_table "custom_hostnames", force: :cascade do |t|
@@ -172,6 +227,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.index ["application_id"], name: "index_desktop_configurations_on_application_id", unique: true
   end
 
+  create_table "device_last_seens", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.bigint "device_id", null: false
+    t.datetime "last_seen_at", null: false
+    t.bigint "project_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["project_id", "device_id"], name: "uniq_dls_on_project_and_device", unique: true
+  end
+
   create_table "device_product_purchases", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.bigint "device_id", null: false
@@ -199,9 +263,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.string "webgl_renderer"
     t.string "webgl_vendor"
     t.index ["id"], name: "idx_devices_id_with_platform", include: ["platform"]
-    t.index ["ip"], name: "index_devices_on_ip"
-    t.index ["remote_ip"], name: "index_devices_on_remote_ip"
-    t.index ["updated_at"], name: "index_devices_on_updated_at"
     t.index ["vendor"], name: "index_devices_on_vendor"
   end
 
@@ -278,6 +339,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.index ["device_id"], name: "index_events_on_device_id"
     t.index ["link_id"], name: "index_events_on_link_id"
     t.index ["project_id", "device_id", "created_at"], name: "index_events_on_project_id_and_device_id_and_created_at"
+    t.index ["project_id", "event", "created_at"], name: "index_events_on_project_id_and_event_and_created_at"
     t.index ["project_id"], name: "index_events_on_project_id"
     t.index ["vendor_id"], name: "index_events_on_vendor_id"
   end
@@ -357,13 +419,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.string "role", null: false
     t.datetime "updated_at", null: false
     t.bigint "user_id"
+    t.index ["instance_id", "user_id"], name: "index_instance_roles_on_instance_id_and_user_id", unique: true
     t.index ["instance_id"], name: "index_instance_roles_on_instance_id"
     t.index ["user_id"], name: "index_instance_roles_on_user_id"
   end
 
   create_table "instances", force: :cascade do |t|
     t.string "api_key", null: false
+    t.integer "cold_storage_days", default: 365, null: false
     t.datetime "created_at", null: false
+    t.integer "delete_days", default: 730, null: false
     t.boolean "get_started_dismissed", default: false
     t.datetime "last_quota_exceeded_sent_at"
     t.datetime "last_quota_warning_sent_at"
@@ -373,6 +438,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.string "uri_scheme", null: false
     t.index ["api_key"], name: "index_instances_on_api_key", unique: true
     t.index ["uri_scheme"], name: "index_instances_on_uri_scheme"
+    t.check_constraint "cold_storage_days > 0", name: "instances_cold_storage_days_positive"
+    t.check_constraint "delete_days >= cold_storage_days", name: "instances_delete_days_gte_cold_storage"
   end
 
   create_table "ios_configurations", force: :cascade do |t|
@@ -431,6 +498,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.boolean "active", default: true
     t.string "ads_platform"
     t.bigint "campaign_id"
+    t.boolean "copy_to_clipboard_android"
+    t.boolean "copy_to_clipboard_ios"
     t.datetime "created_at", null: false
     t.json "data"
     t.bigint "domain_id"
@@ -452,10 +521,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.datetime "updated_at", null: false
     t.bigint "visitor_id"
     t.index ["campaign_id"], name: "index_links_on_campaign_id"
-    t.index ["domain_id"], name: "index_links_on_domain_id"
     t.index ["domain_id", "created_at"], name: "index_links_on_domain_id_active", order: { created_at: :desc }, where: "active"
+    t.index ["domain_id"], name: "index_links_on_domain_id"
     t.index ["path"], name: "index_links_on_path"
     t.index ["redirect_config_id"], name: "index_links_on_redirect_config_id"
+    t.index ["updated_at"], name: "index_links_on_updated_at"
     t.index ["visitor_id"], name: "index_links_on_visitor_id"
   end
 
@@ -533,11 +603,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.text "credentials"
     t.datetime "degraded_email_sent_at"
     t.boolean "enabled", default: true, null: false
+    t.jsonb "extra_hosts", default: [], null: false
     t.datetime "first_failure_at"
     t.integer "last_error_status"
     t.string "old_host", null: false
     t.bigint "project_id", null: false
     t.string "provider", null: false
+    t.boolean "provider_hosted", default: false, null: false
     t.datetime "updated_at", null: false
     t.index ["old_host"], name: "index_migration_sources_on_old_host", unique: true
     t.index ["project_id"], name: "index_migration_sources_on_project_id", unique: true
@@ -646,11 +718,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.bigint "project_id"
     t.string "purchase_type"
     t.integer "quantity", default: 1, null: false
+    t.string "revenue_platform"
+    t.string "session_id", default: "", null: false
     t.boolean "store", default: false
     t.string "store_source"
     t.string "transaction_id"
     t.datetime "updated_at", null: false
     t.bigint "usd_price_cents"
+    t.bigint "visitor_id"
     t.boolean "webhook_validated", default: false
     t.index ["date"], name: "index_purchase_events_on_date"
     t.index ["device_id", "project_id", "product_id", "event_type"], name: "idx_purchase_events_device_project_product_event"
@@ -661,9 +736,12 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.index ["link_id"], name: "index_purchase_events_on_link_id"
     t.index ["order_id", "project_id"], name: "idx_purchase_events_order_project"
     t.index ["project_id", "date", "event_type"], name: "index_purchase_events_on_project_date_event"
+    t.index ["project_id", "device_id", "product_id", "date", "id"], name: "idx_purchase_events_ledger_firsts", where: "(processed AND ((event_type)::text = ANY ((ARRAY['buy'::character varying, 'refund_reversed'::character varying])::text[])) AND (device_id IS NOT NULL))"
+    t.index ["project_id", "link_id", "date"], name: "idx_purchase_events_ledger_link", where: "processed"
     t.index ["project_id", "original_transaction_id", "event_type"], name: "idx_purchase_events_project_orig_txn_type"
     t.index ["project_id", "product_id", "event_type", "device_id"], name: "idx_purchase_events_arppu"
     t.index ["project_id", "transaction_id", "event_type"], name: "idx_purchase_events_unique_txn", unique: true
+    t.index ["project_id", "visitor_id", "date"], name: "idx_purchase_events_ledger_visitor", where: "processed"
     t.index ["project_id"], name: "index_purchase_events_on_project_id"
     t.index ["transaction_id"], name: "index_purchase_events_on_transaction_id"
   end
@@ -688,6 +766,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
   end
 
   create_table "redirect_configs", force: :cascade do |t|
+    t.boolean "copy_to_clipboard_android", default: false, null: false
+    t.boolean "copy_to_clipboard_ios", default: false, null: false
     t.datetime "created_at", null: false
     t.string "default_fallback"
     t.bigint "project_id"
@@ -782,6 +862,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.index ["delivered", "failed", "processing", "deliver_after", "created_at"], name: "index_rpush_notifications_multi", where: "((NOT delivered) AND (NOT failed))"
   end
 
+  create_table "screen_aliases", force: :cascade do |t|
+    t.string "alias_name", null: false
+    t.datetime "created_at", null: false
+    t.bigint "project_id", null: false
+    t.string "screen_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["project_id", "screen_identifier"], name: "index_screen_aliases_on_project_id_and_screen_identifier", unique: true
+    t.index ["project_id"], name: "index_screen_aliases_on_project_id"
+  end
+
   create_table "setup_progress_steps", force: :cascade do |t|
     t.string "category", null: false
     t.datetime "completed_at"
@@ -791,6 +881,37 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.datetime "updated_at", null: false
     t.index ["instance_id", "category", "step_identifier"], name: "idx_setup_progress_unique", unique: true
     t.index ["instance_id", "category"], name: "idx_setup_progress_instance_category"
+  end
+
+  create_table "sso_connection_domains", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "domain", null: false
+    t.bigint "sso_connection_id", null: false
+    t.datetime "updated_at", null: false
+    t.string "verification_token", null: false
+    t.datetime "verified_at"
+    t.index ["domain"], name: "index_sso_connection_domains_one_verified_owner", unique: true, where: "(verified_at IS NOT NULL)"
+    t.index ["sso_connection_id", "domain"], name: "index_sso_connection_domains_on_sso_connection_id_and_domain", unique: true
+    t.index ["sso_connection_id"], name: "index_sso_connection_domains_on_sso_connection_id"
+  end
+
+  create_table "sso_connections", force: :cascade do |t|
+    t.string "admin_claim_value"
+    t.string "client_id", null: false
+    t.string "client_secret", null: false
+    t.datetime "client_secret_expires_at"
+    t.datetime "created_at", null: false
+    t.boolean "enabled", default: true, null: false
+    t.boolean "enforce", default: false, null: false
+    t.bigint "instance_id", null: false
+    t.string "issuer", null: false
+    t.boolean "jit_provision", default: true, null: false
+    t.boolean "scim_enabled", default: false, null: false
+    t.datetime "scim_last_used_at"
+    t.string "scim_token_digest"
+    t.datetime "updated_at", null: false
+    t.index ["instance_id"], name: "index_sso_connections_on_instance_id", unique: true
+    t.index ["scim_token_digest"], name: "index_sso_connections_on_scim_token_digest", unique: true, where: "(scim_token_digest IS NOT NULL)"
   end
 
   create_table "store_images", force: :cascade do |t|
@@ -874,6 +995,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.datetime "remember_created_at", precision: nil
     t.datetime "reset_password_sent_at", precision: nil
     t.string "reset_password_token"
+    t.string "scim_external_id"
+    t.string "scim_user_name"
     t.boolean "super_admin", default: false
     t.string "uid"
     t.datetime "updated_at", null: false
@@ -881,6 +1004,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.index ["invitation_token"], name: "index_users_on_invitation_token", unique: true
     t.index ["invited_by_id"], name: "index_users_on_invited_by_id"
     t.index ["invited_by_type", "invited_by_id"], name: "index_users_on_invited_by"
+    t.index ["provider", "scim_external_id"], name: "index_users_on_provider_and_scim_external_id", unique: true, where: "(scim_external_id IS NOT NULL)"
+    t.index ["provider", "scim_user_name"], name: "index_users_on_provider_and_scim_user_name", unique: true, where: "(scim_user_name IS NOT NULL)"
     t.index ["provider", "uid"], name: "index_users_on_provider_and_uid", unique: true
     t.index ["reset_password_token"], name: "index_users_on_reset_password_token", unique: true
   end
@@ -906,6 +1031,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.index ["event_date", "project_id"], name: "idx_vds_date_project"
     t.index ["invited_by_id"], name: "idx_vds_invited_by_id", where: "(invited_by_id IS NOT NULL)"
     t.index ["project_id", "event_date", "visitor_id"], name: "idx_vds_project_date_visitor"
+    t.index ["project_id", "platform", "visitor_id", "event_date"], name: "idx_vds_prior_visit_lookup"
     t.index ["project_id", "visitor_id", "event_date", "platform"], name: "uniq_vds_proj_visitor_date_platform", unique: true
     t.index ["visitor_id"], name: "idx_vds_visitor_id"
   end
@@ -955,6 +1081,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
     t.index ["application_id"], name: "index_web_configurations_on_application_id", unique: true
   end
 
+  add_foreign_key "actions", "links", on_delete: :cascade
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "android_push_configurations", "android_configurations"
@@ -988,12 +1115,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_06_10_130000) do
   add_foreign_key "oauth_access_tokens", "oauth_applications", column: "application_id"
   add_foreign_key "projects", "instances"
   add_foreign_key "purchase_events", "devices"
-  add_foreign_key "purchase_events", "links"
   add_foreign_key "purchase_events", "projects"
   add_foreign_key "redirect_configs", "projects"
   add_foreign_key "redirects", "applications"
   add_foreign_key "redirects", "redirect_configs"
+  add_foreign_key "screen_aliases", "projects"
   add_foreign_key "setup_progress_steps", "instances"
+  add_foreign_key "sso_connection_domains", "sso_connections", on_delete: :cascade
+  add_foreign_key "sso_connections", "instances"
   add_foreign_key "stripe_subscriptions", "instances"
   add_foreign_key "stripe_subscriptions", "stripe_payment_intents"
   add_foreign_key "subscription_states", "projects", on_delete: :cascade

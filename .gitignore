@@ -1,12 +1,17 @@
 /extensions
-
-# Environment and secrets
-.env
-.env.*
-!.env.example
-config/master.key
-config/credentials.yml.enc
-.kamal/secrets
-
-# Resources (may contain private keys)
 /resources
+
+# MaxMind GeoIP database (binary, download separately)
+/db/GeoLite2-City.mmdb
+
+# ClickHouse local data (created by run_clickhouse.sh)
+/.clickhouse/
+/tmp/clickhouse-data/
+
+# SimpleCov output
+/coverage/
+
+# Local-only dev files (never commit — may hold credentials)
+.env.local
+*.bak
+Procfile.local

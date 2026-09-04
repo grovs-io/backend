@@ -50,12 +50,23 @@ class IosPushConfigurationSerializerTest < ActiveSupport::TestCase
     end
   end
 
-  test "key_id returns the certificate_password value" do
+  test "never exposes the stored certificate password" do
     config = ios_push_configurations(:one)
-    config.certificate_password = "ABC123KEYID"
+    config.certificate_password = "s3cr3t-apns-pass"
     result = IosPushConfigurationSerializer.serialize(config)
 
-    assert_equal "ABC123KEYID", result["key_id"]
+    assert_not_includes result.values, "s3cr3t-apns-pass"
+    assert_not_includes result.keys, "key_id"
+    assert_not_includes result.keys, "certificate_password"
+  end
+
+  test "reports whether a password is configured, as a boolean" do
+    config = ios_push_configurations(:one)
+    config.certificate_password = "anything"
+    assert_equal true, IosPushConfigurationSerializer.serialize(config)["configured"]
+
+    config.certificate_password = nil
+    assert_equal false, IosPushConfigurationSerializer.serialize(config)["configured"]
   end
 
   # ---------------------------------------------------------------------------
@@ -84,10 +95,10 @@ class IosPushConfigurationSerializerTest < ActiveSupport::TestCase
   # ---------------------------------------------------------------------------
   # 5. EDGE CASES -- only certificate key present in output
   # ---------------------------------------------------------------------------
-  test "output contains only certificate and key_id keys" do
+  test "output contains only certificate and configured keys" do
     config = ios_push_configurations(:one)
     result = IosPushConfigurationSerializer.serialize(config)
 
-    assert_equal %w[certificate key_id].sort, result.keys.sort
+    assert_equal %w[certificate configured].sort, result.keys.sort
   end
 end

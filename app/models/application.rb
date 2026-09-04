@@ -14,7 +14,8 @@ class Application < ApplicationRecord
 
   # Methods
   def configuration
-    Rails.cache.fetch([self, 'configuration'], expires_in: 1.hour) do
+    # skip_nil: a cached miss would mask a config created later (no after_create busts this key).
+    Rails.cache.fetch([self, 'configuration'], expires_in: 1.hour, skip_nil: true) do
       case platform.downcase
           when Grovs::Platforms::IOS then ios_configuration
           when Grovs::Platforms::ANDROID then android_configuration

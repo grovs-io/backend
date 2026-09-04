@@ -1,9 +1,109 @@
 class VisitorReferralStatisticsQuery < VisitorStatisticsQueryBase
   SORTABLE_VISITOR_FIELDS = %w[sdk_identifier uuid created_at updated_at].freeze
+  # Inviter columns CH has no copy of: PG orders, CH supplies population + metrics.
+  PG_ORDERED_FIELDS = %w[sdk_identifier uuid updated_at].freeze
+
+  def call
+    if Clickhouse.analytics_rollups_read_enabled? && ch_orderable?
+      ch = ch_call
+      return ch if ch
+    end
+
+    result = super
+    # Skipped on an invited-revenue SORT so order and displayed values stay consistent.
+    if RevenueLedger.reads_enabled? && project && sort_by != "revenue"
+      overlay_ledger_invited_revenue(result)
+    end
+    result
+  end
 
   private
 
   def sortable_visitor_fields = SORTABLE_VISITOR_FIELDS
+  def pg_ordered_fields = PG_ORDERED_FIELDS
+  def ch_metric_prefix = "invited_"
+  def ch_hydration_scope = Visitor.where(project_id: project.id)
+
+  # Population comes from CH: the rollup groups the EVENT-TIME inviter, not visitors.inviter_id.
+  # Over-cap is decided on the CH population, BEFORE PG drops merged/deleted inviters —
+  # otherwise enough stale ids could pull the survivor count under the cap and serve a
+  # silently truncated population instead of falling back.
+  def candidate_scope
+    scope = Visitor.where(project_id: project.id)
+    # A detail lookup already knows the id; term_scope scopes it and CH filters inviter_id
+    # IN (id), so the project-wide population scan buys nothing.
+    unless visitor_id
+      ids = ch_inviter_population
+      return nil if ids.nil?
+      return Clickhouse.id_cap_exceeded!(:inviter_population, term_id_cap) if ids.size > term_id_cap
+
+      scope = scope.where(id: ids)
+    end
+    return scope unless platform
+
+    # PG filters the INVITER's own device platform; matching it keeps the population
+    # identical across the flag. The metrics stay all-platform, as on the PG path.
+    scope.joins(:device).where(
+      Arel::Nodes::NamedFunction.new("LOWER", [devices[:platform]]).eq(platform.downcase)
+    )
+  end
+
+  # A merged-away inviter is deleted in PG but lives in the rollup, so CH must not page it.
+  def restrict_to_candidate_ids? = true
+  # Only true when the ids actually came from CH — a visitor_id lookup skips that query.
+  def candidate_scope_from_ch? = visitor_id.blank?
+
+  def ch_active_ids(ids)
+    ClickhouseReadService.inviter_active_ids(
+      project.id, inviter_ids: ids, start_date: start_date, end_date: end_date
+    )
+  end
+
+  def ch_inviter_population
+    return @ch_inviter_population if defined?(@ch_inviter_population)
+
+    @ch_inviter_population = ClickhouseReadService.inviter_population_ids(
+      project.id, start_date: start_date, end_date: end_date, limit: term_id_cap + 1
+    )
+  end
+
+  # No platform filter: PG sums invited metrics across every platform, and the population
+  # is already scoped to inviters on this platform by candidate_scope.
+  def ch_metrics_page(order:, direction:, limit:, offset:, ids:)
+    ClickhouseReadService.inviter_metrics_page(
+      project.id, start_date: start_date, end_date: end_date,
+      order: order, direction: direction,
+      limit: limit, offset: offset, inviter_ids: ids
+    )
+  end
+
+  # All-platform, matching the metrics beside it and the PG path.
+  def ch_page_revenue(page_ids)
+    if RevenueLedger.reads_enabled?
+      ledger = RevenueLedgerQuery.by_inviter(
+        project.id, inviter_ids: page_ids, start_date: start_date, end_date: end_date
+      )
+      return ledger unless ledger.nil?
+    end
+
+    VisitorDailyStatistic.where(project_id: project.id, invited_by_id: page_ids,
+                                event_date: date_range)
+                         .group(:invited_by_id).sum(:revenue)
+  end
+
+  # Only revenue moves to the ledger; an invited_revenue SORT still orders by stat sums.
+  def overlay_ledger_invited_revenue(result)
+    rows = result[:visitors]
+    return if rows.blank?
+
+    ledger = RevenueLedgerQuery.by_inviter(
+      project.id, inviter_ids: rows.map { |r| r["id"] },
+      start_date: start_date, end_date: end_date
+    )
+    return if ledger.nil?
+
+    rows.each { |r| r["invited_revenue"] = ledger.fetch(r["id"], 0) }
+  end
 
   def apply_joins(scope)
     scope.left_joins(:referral_daily_statistics, :device)

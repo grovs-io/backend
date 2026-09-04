@@ -15,6 +15,16 @@ class SdkPaymentService
 
     identifier = event_params[:bundle_id] || @identifier
 
+    # Contract: the client's price_cents is a PER-UNIT amount in the currency's
+    # smallest unit; usd_price_cents is derived from it by CurrencyConversionService
+    # (never pre-multiplied by quantity). quantity is NOT a client-settable param
+    # here, so it stays 1 — which keeps the CH purchase rollups' quantity-weighting
+    # (sum(usd_price_cents * quantity)) correct for this path. If a client quantity
+    # is ever permitted, price_cents must remain per-unit.
+    #
+    # Link attribution is LAST-TOUCH: the visitor's most recent clicked link
+    # (VisitorLastVisit). The Apple/Google webhook path attributes differently
+    # (SubscriptionState/PurchaseEvent by original_transaction_id).
     attributed_link_id = VisitorLastVisit.find_by(
       visitor_id: @visitor.id, project_id: @project.id
     )&.link_id
@@ -59,7 +69,7 @@ class SdkPaymentService
       project_id: @project.id
     )
     if existing
-      backfill_and_enqueue(existing, attributed_link_id)
+      backfill_and_enqueue(existing, attributed_link_id, session_id: event_params[:session_id])
     end
     { success: true, message: "Event added" }
   rescue ActiveRecord::RecordInvalid => e
@@ -70,7 +80,7 @@ class SdkPaymentService
 
   def update_existing(event, identifier, attributed_link_id, event_params)
     unless event.webhook_validated?
-      event.assign_attributes(event_params.except(:bundle_id).to_h.compact)
+      event.assign_attributes(event_params.except(:bundle_id, :session_id).to_h.compact)
       event.identifier = identifier
     end
     event.date ||= Time.current
@@ -78,19 +88,33 @@ class SdkPaymentService
 
     device_was_nil = event.device_id.nil?
     event.device = @device
-    backfill_and_enqueue(event, attributed_link_id, device_was_nil)
+    backfill_and_enqueue(event, attributed_link_id, device_was_nil, session_id: event_params[:session_id])
   end
 
-  def backfill_and_enqueue(event, attributed_link_id, device_was_nil = event.device_id.nil?)
+  def backfill_and_enqueue(event, attributed_link_id, device_was_nil = event.device_id.nil?, session_id: nil)
     event.device ||= @device
     event.link_id ||= attributed_link_id
     event.save!
+
+    session_filled = claim_session(event, session_id)
 
     if event.processed? && device_was_nil && event.device_id.present?
       ReattributePurchaseJob.perform_async(event.id)
     else
       enqueue_validation(event)
     end
+
+    # A processed event skips the pipeline above, so nothing else carries the session to CH.
+    RefreshPurchaseClickhouseRowJob.perform_async(event.id) if session_filled && event.processed?
+  end
+
+  # The WHERE makes first-writer-wins atomic, so concurrent reports can't race two CH refreshes.
+  def claim_session(event, session_id)
+    return false if session_id.blank?
+
+    filled = PurchaseEvent.where(id: event.id, session_id: "").update_all(session_id: session_id) == 1
+    event.session_id = session_id if filled
+    filled
   end
 
   def enqueue_validation(event)

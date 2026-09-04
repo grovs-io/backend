@@ -36,6 +36,7 @@ module McpAuthentication
 
     @mcp_token.touch_last_used!
     @current_user = @mcp_token.user
+    Current.actor = AuditActor.user(@current_user, via: "mcp_token")
   end
 
   def render_unauthorized(message, error_code: nil)

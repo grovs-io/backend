@@ -143,6 +143,14 @@ class CampaignStatisticsQueryTest < ActiveSupport::TestCase
     assert_equal views, views.sort.reverse
   end
 
+  test "accepts ascending as alias for ascendent" do
+    Campaign.create!(name: "AAA First", project: @project)
+    result = build_query(sort_by: "name", ascending: true).call
+    names = result.map(&:name)
+
+    assert_equal names.sort, names
+  end
+
   test "defaults to created_at desc for unknown sort field" do
     older_campaign = Campaign.create!(name: "Older", project: @project)
     older_campaign.update_column(:created_at, 2.days.ago)

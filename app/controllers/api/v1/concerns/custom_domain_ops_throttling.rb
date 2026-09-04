@@ -10,6 +10,11 @@ module Api::V1::Concerns
 
     private
 
+    def deployment_fields
+      { tls_mode: Grovs.manual_custom_domains? ? "manual" : "cloudflare",
+        ingress_host: Grovs.manual_custom_domains? ? Grovs.ingress_host : nil }
+    end
+
     def throttle_custom_domain_ops!
       return if custom_domain_ops_rate_ok?
       response.headers["Retry-After"] = "60"

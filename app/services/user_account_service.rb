@@ -2,7 +2,7 @@ class UserAccountService
   # Registers a new user or accepts a pending invitation.
   # Returns the User record.
   def self.register(email:, password:, name:)
-    user = User.find_by(email: email)
+    user = User.find_for_email(email)
 
     if user
       if user.invitation_token.present? && user.invitation_accepted_at.nil?
@@ -24,21 +24,23 @@ class UserAccountService
   # Sends Devise reset_password_instructions.
   # Returns the User or nil if not found.
   def self.request_password_reset(email:)
-    user = User.find_by(email: email)
+    user = User.find_for_email(email)
     return nil unless user
 
     user.send_reset_password_instructions
     user
   end
 
-  # Resets password using Devise token.
-  # Returns User or raises if token is invalid.
+  # Resets the password via Devise so the reset_password_within window is enforced.
+  # Raises if the token is invalid or expired.
   def self.reset_password(token:, new_password:)
-    digested = Devise.token_generator.digest(User, :reset_password_token, token)
-    user = User.find_by(reset_password_token: digested)
-    raise ActiveRecord::RecordNotFound, "Invalid data" unless user
+    user = User.reset_password_by_token(
+      reset_password_token: token,
+      password: new_password,
+      password_confirmation: new_password
+    )
+    raise ActiveRecord::RecordNotFound, "Invalid data" if user.errors.any?
 
-    user.update!(password: new_password)
     user
   end
 
@@ -67,13 +69,21 @@ class UserAccountService
 
       if role.role == "admin"
         other_admins = instance.instance_roles.where(role: "admin").where.not(user_id: user.id)
-        instance.destroy! if other_admins.empty?
+        if other_admins.empty?
+          # Audit first (the enqueue is not rollback-able), then the dashboard path: roles wiped, job enqueued.
+          Audit.record(instance_id: instance.id, action: "instance.deletion_requested",
+                            actor: AuditActor.user(user, via: "dashboard"), target: Audit.target_for(instance))
+          InstanceProvisioningService.new(current_user: user).destroy(instance)
+          next
+        end
       end
 
       role.destroy!
     end
 
     Doorkeeper::AccessToken.where(resource_owner_id: user.id).destroy_all
+    McpToken.where(user_id: user.id).delete_all
+    McpAuthorizationCode.where(user_id: user.id).delete_all
     user.destroy!
   end
 

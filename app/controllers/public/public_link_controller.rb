@@ -14,9 +14,22 @@ class Public::PublicLinkController < ActionController::Base
   end
 
   def create
+    go_domain = domain
+    # Self-hosted installs do not seed the go domain; fail cleanly rather than 500.
+    unless go_domain
+      render json: { error: "Quick links are not enabled on this deployment" }, status: :not_found
+      return
+    end
+
     link = QuickLink.new(link_params)
-    link.domain = domain
-    link.path = generate_random_path()
+    link.domain = go_domain
+    begin
+      link.path = generate_random_path(go_domain)
+    rescue LinksService::PathGenerationError => e
+      Rails.logger.error("links.path_generation_failed #{e.message}")
+      render json: { error: "Could not allocate a link path" }, status: :service_unavailable
+      return
+    end
 
     if image_param
       link.image.attach(image_param)
@@ -51,16 +64,14 @@ class Public::PublicLinkController < ActionController::Base
     Domain.find_by(domain: Grovs::Domains::LIVE, subdomain: Grovs::Subdomains::GO)
   end
 
-  # Escalating lengths + bounded attempts: 16^5 is only ~1M paths, so an
-  # exhausted namespace must degrade to longer paths, never spin forever.
-  # "create" is reserved (routes collide with the create action).
-  def generate_random_path
+  # QuickLink#valid_path? validates against Link on this domain, so both tables must be checked.
+  def generate_random_path(domain)
     [5, 8, 10, 12].each do |length|
       5.times do
         path = SecureRandom.hex((length + 1) / 2)[0, length]
-        next if path == "create"
+        next if QuickLink.exists?(path: path)
 
-        return path unless QuickLink.exists?(path: path)
+        return path unless Link.exists?(domain: domain, path: path)
       end
     end
 

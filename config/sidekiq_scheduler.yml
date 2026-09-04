@@ -6,9 +6,14 @@
   enabled: true
   schedule:
     disable_quotas_task:
-      cron: "*/10 * * * *"
+      # Uncached exact MAU per instance; raising it delays enforcement and undercounts Stripe.
+      cron: "7,37 * * * *"
       class: "DisableQuotasJob"
       queue: default
+    precompute_enterprise_maus:
+      cron: "14,44 * * * *"  # 30 min; the cached value's 45-min TTL outlives this
+      class: "PrecomputeEnterpriseMausJob"
+      queue: maintenance
     backfill_last_3_days:
       cron: "3,13,23,33,43,53 * * * *"
       class: "BackfillLast3DaysJob"
@@ -21,6 +26,14 @@
       cron: "* * * * *"
       class: "BatchEventProcessorJob"
       queue: batch_events
+    session_build:
+      cron: "1-59/2 * * * *"  # every 2 min on odd minutes, off the 10-min rollup/backfill lanes; a pass is ~10-25s
+      class: "SessionBuildJob"
+      queue: maintenance
+    refresh_android_device_models:
+      cron: "12 4 * * *"
+      class: "RefreshAndroidDeviceModelsJob"
+      queue: maintenance
     mcp_cleanup:
       cron: "0 3 * * *"
       class: "McpCleanupJob"
@@ -40,4 +53,34 @@
     orphaned_actions_cleanup:
       cron: "0 4 * * *"
       class: "OrphanedActionsCleanupJob"
+      queue: maintenance
+    analytics_retention_deletion:
+      cron: "30 4 * * *"  # daily at 04:30 UTC — deletes analytics rows older than each instance's delete_days
+      class: "AnalyticsRetentionDeletionJob"
+      queue: maintenance
+    drain_canonical_dlq:
+      cron: "4,9,14,19,24,29,34,39,44,49,54,59 * * * *"  # every 5 min — replays DLQ'd canonical CH batches
+      class: "DrainCanonicalDlqJob"
+      queue: maintenance
+    drain_clickhouse_spill:
+      cron: "* * * * *"  # every minute — replays PG-spilled events into CH (primary mode)
+      class: "DrainClickhouseSpillJob"
+      queue: maintenance
+    reconcile_link_dimensions:
+      cron: "23 * * * *"  # hourly — repairs dropped dimension writes and tombstones deleted links
+      class: "ReconcileLinkDimensionsJob"
+      queue: maintenance
+    rebuild_clickhouse_rollups:
+      cron: "8,18,28,38,48,58 * * * *"  # every 10 min — rebuilds exact CH rollups from canonical (dual-run, parity-checked)
+      class: "RebuildClickhouseRollupsJob"
+      queue: maintenance
+    rebuild_clickhouse_rollups_catchup:
+      cron: "40 1 * * *"  # daily — rebuilds dirty partitions older than the watermark window (late events)
+      class: "RebuildClickhouseRollupsJob"
+      args: ["catchup"]
+      queue: maintenance
+    rebuild_clickhouse_rollups_fast:
+      cron: "* * * * *"  # every minute — current-month-only fast lane; no-ops unless CLICKHOUSE_ROLLUP_FAST_LANE=true
+      class: "RebuildClickhouseRollupsJob"
+      args: ["current_month"]
       queue: maintenance

@@ -1,5 +1,7 @@
 class DailyProjectMetric < ApplicationRecord
   def self.increment!(project_id, platform, event_date, revenue: 0, units_sold: 0, cancellations: 0)
+    return unless Grovs.pg_shadow_writes?
+
     ActiveRecord::Base.with_connection do |conn|
       sql = <<~SQL
         INSERT INTO daily_project_metrics

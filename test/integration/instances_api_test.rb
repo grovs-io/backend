@@ -28,6 +28,15 @@ class InstancesApiTest < ActionDispatch::IntegrationTest
     assert_not_includes instance_ids, @instance_two.id, "must not return instances user doesn't belong to"
   end
 
+  test "list omits an instance that has lost its test project" do
+    @instance.test.destroy!
+    headers = doorkeeper_headers_for(@admin_user)
+    get "#{API_PREFIX}/instances", headers: headers
+    assert_response :ok
+    instance_ids = JSON.parse(response.body)["instances"].map { |i| i["id"] }
+    assert_not_includes instance_ids, @instance.id, "an instance without both projects is not a dashboard instance"
+  end
+
   # --- Instance Details ---
 
   test "member gets correct instance details with all SDK setup flags" do
@@ -135,6 +144,54 @@ class InstancesApiTest < ActionDispatch::IntegrationTest
     ENV.delete("REACT_HOST")
   end
 
+  test "self-hosted re-adding a pending invitee to another instance returns a fresh invite_url" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    ENV["REACT_HOST_PROTOCOL"] = "https://"
+    ENV["REACT_HOST"] = "dash.example.com"
+    headers = doorkeeper_headers_for(@admin_user)
+
+    post "#{API_PREFIX}/instances/#{@instance.id}/members",
+      params: { email: "pending-twice@example.com", role: "member" }, headers: headers
+    assert_response :ok
+    first_url = JSON.parse(response.body)["invite_url"]
+
+    InstanceRole.create!(role: Grovs::Roles::ADMIN, instance_id: @instance_two.id, user_id: @admin_user.id)
+    post "#{API_PREFIX}/instances/#{@instance_two.id}/members",
+      params: { email: "pending-twice@example.com", role: "member" }, headers: headers
+    assert_response :ok
+    second_url = JSON.parse(response.body)["invite_url"]
+    assert second_url.present?, "a pending invitee must get a fresh invite link, not just the added-to-project mail"
+    assert_not_equal first_url, second_url
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+    ENV.delete("REACT_HOST_PROTOCOL")
+    ENV.delete("REACT_HOST")
+  end
+
+  test "add_member returns 200 with invite_url when smtp delivery fails" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    ENV["MAILER_DELIVERY_METHOD"] = "smtp"
+    ENV["REACT_HOST_PROTOCOL"] = "https://"
+    ENV["REACT_HOST"] = "dash.example.com"
+    headers = doorkeeper_headers_for(@admin_user)
+
+    boom = ->(*) { raise Net::SMTPFatalError, "554 Message rejected: Email address is not verified" }
+    Devise::Mailer.stub(:invitation_instructions, boom) do
+      post "#{API_PREFIX}/instances/#{@instance.id}/members",
+        params: { email: "smtp-fail-member@example.com", role: "member" },
+        headers: headers
+    end
+
+    assert_response :ok
+    assert JSON.parse(response.body)["invite_url"].present?,
+           "a rejected invite email must not 500 the request; the copyable link must survive"
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+    ENV.delete("MAILER_DELIVERY_METHOD")
+    ENV.delete("REACT_HOST_PROTOCOL")
+    ENV.delete("REACT_HOST")
+  end
+
   test "non-self-hosted add-member response has NO invite_url (SaaS response unchanged)" do
     ENV.delete("GROVS_SELF_HOSTED")
     headers = doorkeeper_headers_for(@admin_user)
@@ -157,6 +214,27 @@ class InstancesApiTest < ActionDispatch::IntegrationTest
         headers: headers
     end
     assert_response :forbidden
+  end
+
+  # --- Revenue Collection Toggle (Admin-Only) ---
+
+  test "member cannot toggle revenue_collection_enabled" do
+    @instance.update!(revenue_collection_enabled: false)
+    headers = doorkeeper_headers_for(@member_user)
+    put "#{API_PREFIX}/instances/#{@instance.id}/revenue_collection",
+      params: { revenue_collection_enabled: true }, headers: headers
+    assert_response :forbidden
+    assert_not @instance.reload.revenue_collection_enabled,
+      "member must not be able to flip the revenue flag"
+  end
+
+  test "admin can toggle revenue_collection_enabled" do
+    @instance.update!(revenue_collection_enabled: false)
+    headers = doorkeeper_headers_for(@admin_user)
+    put "#{API_PREFIX}/instances/#{@instance.id}/revenue_collection",
+      params: { revenue_collection_enabled: true }, headers: headers
+    assert_response :ok
+    assert @instance.reload.revenue_collection_enabled
   end
 
   # --- Remove Member (Admin-Only) ---
@@ -182,21 +260,6 @@ class InstancesApiTest < ActionDispatch::IntegrationTest
         headers: headers
     end
     assert_response :forbidden
-  end
-
-  # --- Revenue Collection Toggle ---
-
-  test "member can toggle revenue collection and value persists" do
-    headers = doorkeeper_headers_for(@member_user)
-    put "#{API_PREFIX}/instances/#{@instance.id}/revenue_collection",
-      params: { revenue_collection_enabled: true },
-      headers: headers
-    assert_response :ok
-    json = JSON.parse(response.body)
-    assert json["instance"]["revenue_collection_enabled"]
-
-    @instance.reload
-    assert @instance.revenue_collection_enabled, "value must persist in DB"
   end
 
   # --- Members List ---
@@ -276,6 +339,67 @@ class InstancesLifecycleTest < ActionDispatch::IntegrationTest
     assert_equal "Fresh Workspace", created.production.name
     role = InstanceRole.find_by(instance_id: created.id, user_id: @admin_user.id)
     assert_equal Grovs::Roles::ADMIN, role.role, "creator must be instance admin"
+  end
+
+  test "self-hosted create_instance returns invite_urls for members invited at creation" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    ENV["REACT_HOST_PROTOCOL"] = "https://"
+    ENV["REACT_HOST"] = "dash.example.com"
+
+    post "#{API_PREFIX}/instances",
+      params: { name: "SH Multi", members: [
+        { email: "sh-create-a@example.com", role: "member" },
+        { email: "sh-create-b@example.com", role: "admin" },
+        { email: @member_user.email, role: "member" }
+      ] },
+      headers: @admin_headers
+
+    assert_response :ok
+    urls = JSON.parse(response.body)["invite_urls"]
+    assert_equal %w[sh-create-a@example.com sh-create-b@example.com], urls.keys.sort,
+                 "one link per freshly-invited user; existing users get none"
+    urls.each_value do |url|
+      assert_match %r{\Ahttps://dash\.example\.com/accept-invite\?token=.+}, url
+      token = url.split("token=").last
+      assert User.find_by_invitation_token(token, true), "each token must be a valid pending invitation"
+    end
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+    ENV.delete("REACT_HOST_PROTOCOL")
+    ENV.delete("REACT_HOST")
+  end
+
+  test "create_instance returns 200 with invite_urls when smtp delivery fails" do
+    ENV["GROVS_SELF_HOSTED"] = "true"
+    ENV["MAILER_DELIVERY_METHOD"] = "smtp"
+    ENV["REACT_HOST_PROTOCOL"] = "https://"
+    ENV["REACT_HOST"] = "dash.example.com"
+
+    boom = ->(*) { raise Net::SMTPFatalError, "554 Message rejected: Email address is not verified" }
+    Devise::Mailer.stub(:invitation_instructions, boom) do
+      post "#{API_PREFIX}/instances",
+        params: { name: "SMTP Fail Multi", members: [{ email: "smtp-fail-create@example.com", role: "member" }] },
+        headers: @admin_headers
+    end
+
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert json["invite_urls"]&.key?("smtp-fail-create@example.com"),
+           "a rejected invite email must not 500 creation; the copyable link must survive"
+  ensure
+    ENV.delete("GROVS_SELF_HOSTED")
+    ENV.delete("MAILER_DELIVERY_METHOD")
+    ENV.delete("REACT_HOST_PROTOCOL")
+    ENV.delete("REACT_HOST")
+  end
+
+  test "non-self-hosted create_instance response has NO invite_urls (SaaS unchanged)" do
+    post "#{API_PREFIX}/instances",
+      params: { name: "SaaS Multi", members: [{ email: "saas-create@example.com", role: "member" }] },
+      headers: @admin_headers
+
+    assert_response :ok
+    assert_not JSON.parse(response.body).key?("invite_urls"), "SaaS response must not include invite_urls"
   end
 
   test "create_instance with blank name returns 400 and creates nothing" do

@@ -31,15 +31,24 @@ class SelfHostedSeedBootstrapTest < ActiveSupport::TestCase
     admin = User.find_by(email: "bootstrap-admin@example.com")
     assert_not_nil admin, "bootstrap admin must be created"
     assert admin.valid_password?("bootstrap-pass-123")
-    assert_equal 1, admin.instances.count, "admin must own exactly one instance"
-    role = InstanceRole.find_by(user_id: admin.id, instance_id: admin.instances.first.id)
-    assert_equal Grovs::Roles::ADMIN, role.role, "bootstrap admin must be ROLE_ADMIN of its instance"
+    assert_equal 0, admin.instances.count,
+                 "no instance is seeded; the admin creates one through onboarding"
 
-    # Idempotency: re-running must not duplicate the instance or rotate the password.
+    # Idempotency: re-running must not duplicate the user or rotate the password.
     Rails.application.load_seed
     admin.reload
-    assert_equal 1, admin.instances.count, "re-seeding must not duplicate the admin's instance"
+    assert_equal 1, User.where(email: "bootstrap-admin@example.com").count,
+                 "re-seeding must not duplicate the admin"
     assert admin.valid_password?("bootstrap-pass-123"), "re-seeding must not rotate the password"
+  end
+
+  test "re-seeding with differently-cased bootstrap email does not duplicate the admin" do
+    Rails.application.load_seed
+    ENV["BOOTSTRAP_ADMIN_EMAIL"] = "  Bootstrap-Admin@Example.COM  "
+    Rails.application.load_seed
+
+    assert_equal 1, User.where(email: "bootstrap-admin@example.com").count,
+                 "Devise downcases on save, so the lookup must normalize too"
   end
 
   test "with bootstrap env unset, no admin is created (SaaS unchanged)" do

@@ -92,6 +92,12 @@ class CustomDomainLifecycleJob
   def finalize_teardown(custom_hostname)
     return unless CloudflareCustomHostnameService.delete(cf_id: custom_hostname.cf_custom_hostname_id)
 
-    custom_hostname.destroy!
+    target = Audit.target_for(custom_hostname).merge("hostname" => custom_hostname.hostname, "purpose" => custom_hostname.purpose)
+    instance_id = custom_hostname.project.instance_id
+    ActiveRecord::Base.transaction do
+      custom_hostname.destroy!
+      Audit.record(instance_id: instance_id, action: "custom_domain.torn_down",
+                        actor: AuditActor.system(self.class.name), target: target)
+    end
   end
 end

@@ -71,4 +71,7 @@ on_worker_boot do
   rescue StandardError => e
     Rails.logger.error("Failed to re-create Redis pool in worker: #{e.message}") if defined?(Rails)
   end
+
+  # Reset ClickHouse connection after fork so workers get their own HTTP connections.
+  Clickhouse.reset_connection! if defined?(Clickhouse)
 end

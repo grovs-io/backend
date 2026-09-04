@@ -1,5 +1,6 @@
 class Api::V1::Mcp::BaseController < ApplicationController
   include McpAuthentication
+  include Api::V1::Concerns::CampaignIdParam
 
   QUOTA_WARNING = begin
     msg = "Your Grovs usage has exceeded the free tier limit. Your deep links are not working."

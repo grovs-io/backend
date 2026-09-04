@@ -182,6 +182,58 @@ class OauthTokenTest < ActionDispatch::IntegrationTest
     assert_equal "invalid_grant", json["error"]
   end
 
+  # === Token revocation (SPA logout) ===
+
+  test "revoke with only the token succeeds for SSO-issued tokens" do
+    access_token = TokenServices.generate_sso_access_token(@user)
+
+    post "/oauth/revoke", params: { token: access_token.token }
+    assert_response :ok
+    assert access_token.reload.revoked?
+  end
+
+  test "revoke accepts the refresh token string" do
+    access_token = TokenServices.generate_sso_access_token(@user)
+
+    post "/oauth/revoke", params: { token: access_token.refresh_token }
+    assert_response :ok
+    assert access_token.reload.revoked?
+  end
+
+  test "revoke with client credentials still works for password-grant tokens" do
+    post "/oauth/token", params: {
+      grant_type: "password",
+      email: @user.email,
+      password: @password,
+      client_id: @client_app.uid,
+      client_secret: @client_app.secret
+    }
+    assert_response :ok
+    token = JSON.parse(response.body)["access_token"]
+
+    post "/oauth/revoke", params: {
+      token: token,
+      client_id: @client_app.uid,
+      client_secret: @client_app.secret
+    }
+    assert_response :ok
+    assert Doorkeeper::AccessToken.by_token(token).revoked?
+  end
+
+  test "revoke with unknown token returns 200 without revealing validity" do
+    post "/oauth/revoke", params: { token: "not-a-real-token" }
+    assert_response :ok
+  end
+
+  test "revoke is idempotent for already-revoked tokens" do
+    access_token = TokenServices.generate_sso_access_token(@user)
+    access_token.revoke
+
+    post "/oauth/revoke", params: { token: access_token.token }
+    assert_response :ok
+    assert access_token.reload.revoked?
+  end
+
   private
 
   # Enable 2FA using model setters (not update_columns) so that

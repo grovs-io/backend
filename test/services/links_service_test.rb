@@ -1,6 +1,7 @@
 require "test_helper"
 
 class LinksServiceTest < ActiveSupport::TestCase
+  include MainDomainsHelper
   fixtures :projects, :domains, :links, :instances, :redirect_configs, :custom_redirects, :devices, :visitors
 
   setup do
@@ -45,6 +46,67 @@ class LinksServiceTest < ActiveSupport::TestCase
     disable_custom_domains!
   end
 
+  def with_main_domains(hosts)
+    original = Grovs::Domains::MAIN
+    Grovs::Domains.send(:remove_const, :MAIN)
+    Grovs::Domains.const_set(:MAIN, hosts.freeze)
+    yield
+  ensure
+    Grovs::Domains.send(:remove_const, :MAIN)
+    Grovs::Domains.const_set(:MAIN, original)
+  end
+
+  test "custom_hostname_for: short-circuits on a three-label deployment domain (no PG query)" do
+    enable_custom_domains!
+    with_main_domains(%w[links.app.com test-links.app.com]) do
+      %w[links.app.com acme.links.app.com scanner-junk.links.app.com].each do |host|
+        called = false
+        CustomHostname.stub(:redis_find_by, lambda { |*|
+          called = true
+          nil
+        }) do
+          assert_nil LinksService.custom_hostname_for(host)
+        end
+        assert_not called, "deployment host #{host} should not trigger a CH lookup"
+      end
+    end
+  ensure
+    disable_custom_domains!
+  end
+
+  test "custom_hostname_for: a genuine custom host is not swallowed by the suffix guard" do
+    enable_custom_domains!
+    with_main_domains(%w[links.app.com]) do
+      called_with = nil
+      CustomHostname.stub(:redis_find_by, lambda { |_attr, value|
+        called_with = value
+        nil
+      }) do
+        assert_nil LinksService.custom_hostname_for("go.otherbrand.io")
+      end
+      assert_equal "go.otherbrand.io", called_with,
+        "a host outside the deployment domain must still be looked up"
+    end
+  ensure
+    disable_custom_domains!
+  end
+
+  test "custom_hostname_for: a host merely ending in the deployment domain's text is not short-circuited" do
+    enable_custom_domains!
+    with_main_domains(%w[app.com]) do
+      called = false
+      CustomHostname.stub(:redis_find_by, lambda { |*|
+        called = true
+        nil
+      }) do
+        assert_nil LinksService.custom_hostname_for("evilapp.com")
+      end
+      assert called, "evilapp.com only ends with the string 'app.com'; it is not a subdomain of it"
+    end
+  ensure
+    disable_custom_domains!
+  end
+
   test "custom_hostname_for: external hostnames still pay the lookup (legit custom-domain resolution)" do
     enable_custom_domains!
     called_with = nil
@@ -66,6 +128,22 @@ class LinksServiceTest < ActiveSupport::TestCase
     request = OpenStruct.new(domain: "sqd.link", subdomain: "example", path: "/test-path")
     result = LinksService.link_for_request(request)
     assert_equal @link, result
+  end
+
+  test "link_for_request prefers the active link when an archived one shares the path" do
+    @link.update_column(:active, false)
+    replacement = Link.create!(domain_id: @link.domain_id, redirect_config_id: @link.redirect_config_id,
+                               path: @link.path, active: true, generated_from_platform: "web")
+
+    request = OpenStruct.new(domain: "sqd.link", subdomain: "example", path: "/test-path")
+    assert_equal replacement, LinksService.link_for_request(request)
+  end
+
+  test "link_for_request still resolves an archived link with no active replacement" do
+    @link.update_column(:active, false)
+
+    request = OpenStruct.new(domain: "sqd.link", subdomain: "example", path: "/test-path")
+    assert_equal @link, LinksService.link_for_request(request)
   end
 
   test "link_for_request returns nil when domain not found" do
@@ -127,8 +205,13 @@ class LinksServiceTest < ActiveSupport::TestCase
     assert_nil LinksService.parse_universal_link("not-a-url")
   end
 
-  test "parse_universal_link returns nil for non-public-suffix host" do
-    assert_nil LinksService.parse_universal_link("http://localhost/path")
+  test "parse_universal_link returns nil for non-public-suffix host outside MAIN" do
+    assert_nil LinksService.parse_universal_link("http://intranethost/path")
+  end
+
+  test "parse_universal_link parses MAIN hosts directly, bypassing PublicSuffix" do
+    result = LinksService.parse_universal_link("http://localhost/path")
+    assert_equal({ domain: "localhost", subdomain: nil, path: "path" }, result)
   end
 
   # === strip_query_params ===
@@ -161,6 +244,17 @@ class LinksServiceTest < ActiveSupport::TestCase
   end
 
   # === link_for_url ===
+
+  test "link_for_url resolves a link on a nested (3-label) MAIN link domain" do
+    nested = Domain.create!(project_id: @project.id, domain: "links.example.com", subdomain: "myapp")
+    link = Link.create!(path: "nested-path", domain: nested, redirect_config: @link.redirect_config,
+                        generated_from_platform: "ios")
+
+    with_main_domains(["links.example.com", "grovs.example.com"]) do
+      result = LinksService.link_for_url("https://myapp.links.example.com/nested-path", @project)
+      assert_equal link, result
+    end
+  end
 
   test "link_for_url resolves HTTP URL to link via domain+path lookup" do
     result = LinksService.link_for_url("https://example.sqd.link/test-path", @project)
@@ -231,6 +325,23 @@ class LinksServiceTest < ActiveSupport::TestCase
     assert_match(/\A[0-9a-f]{6}\z/, hex_part)
   end
 
+  test "generate_valid_path escalates to the next tier once a tier is exhausted" do
+    calls = 0
+    Link.stub(:exists?, ->(*_) { (calls += 1) <= LinksService::ATTEMPTS_PER_LENGTH }) do
+      path = LinksService.generate_valid_path(@domain)
+      assert_equal LinksService::PATH_LENGTHS[1], path.length,
+        "should graduate to the second tier after exhausting the first"
+    end
+  end
+
+  test "generate_valid_path raises rather than spinning when every tier collides" do
+    Link.stub(:exists?, ->(*_) { true }) do
+      assert_raises(LinksService::PathGenerationError) do
+        LinksService.generate_valid_path(@domain)
+      end
+    end
+  end
+
   test "generate_valid_path retries on collision until unique" do
     # Create a link with a known path that will collide
     collision_path = "aabb11"
@@ -272,6 +383,43 @@ class LinksServiceTest < ActiveSupport::TestCase
     assert_not_nil url_param
     assert_equal @link.access_path, url_param[1]
     assert url.start_with?("https://preview.sqd.link")
+  ensure
+    ENV.delete("PREVIEW_BASE_URL")
+  end
+
+  test "link_for_url resolves a URL carrying a gd query param" do
+    link = links(:basic_link)
+    url = "#{link.access_path}?gd=AbC123xyz"
+
+    resolved = LinksService.link_for_url(url, link.domain.project)
+
+    assert_equal link.id, resolved.id
+  end
+
+  test "build_preview_url embeds gd device hashid inside the url param" do
+    ENV["PREVIEW_BASE_URL"] = "https://preview.sqd.link"
+    device = devices(:ios_device)
+
+    url = LinksService.build_preview_url(@link, gd_device: device)
+    params = URI.decode_www_form(URI.parse(url).query)
+    url_param = params.find { |k, _| k == "url" }
+
+    assert_equal "#{@link.access_path}?gd=#{device.hashid}", url_param[1]
+  ensure
+    ENV.delete("PREVIEW_BASE_URL")
+  end
+
+  test "build_preview_url survives an unparseable access_path by dropping gd" do
+    ENV["PREVIEW_BASE_URL"] = "https://preview.sqd.link"
+    device = devices(:ios_device)
+    link = OpenStruct.new(access_path: "https://example.sqd.link/bad path")
+
+    url = LinksService.build_preview_url(link, gd_device: device)
+    params = URI.decode_www_form(URI.parse(url).query)
+    url_param = params.find { |k, _| k == "url" }
+
+    assert_equal "https://example.sqd.link/bad path", url_param[1]
+    assert_no_match(/gd=/, url_param[1])
   ensure
     ENV.delete("PREVIEW_BASE_URL")
   end

@@ -1,4 +1,5 @@
 require "test_helper"
+require "sidekiq/testing"
 require_relative "auth_test_helper"
 
 class MigrationBehaviorTest < ActionDispatch::IntegrationTest
@@ -58,6 +59,24 @@ class MigrationBehaviorTest < ActionDispatch::IntegrationTest
     end
     assert_response :moved_permanently
     assert_equal 1, upstream_calls, "second click must NOT call upstream"
+  end
+
+  test "first hit on a pending manual migration host is served, not 404, and enqueues activation" do
+    enable_manual_custom_domains!
+    ENV["MIGRATIONS_ENABLED"] = "true"
+    @ch.update_columns(cf_custom_hostname_id: nil, status: "pending")
+    @ch.reload.send(:clear_cache)
+
+    body = { "data" => { "$ios_url" => "myapp://ios" } }
+    Sidekiq::Testing.fake! do
+      ActivateCustomHostnameJob.clear
+      HTTParty.stub(:get, ->(*) { fake_branch(code: 200, body: body) }) do
+        get "/firsthit", headers: { "Host" => "links.acme.com" }
+      end
+      assert_response :moved_permanently
+      assert_equal 1, ActivateCustomHostnameJob.jobs.size
+    end
+    assert_equal "pending", @ch.reload.status, "activation is async — the request itself must not flip status"
   end
 
   # ---------------------------------------------------------------------------

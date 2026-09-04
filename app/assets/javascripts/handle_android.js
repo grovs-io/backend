@@ -28,6 +28,7 @@ function handleConfigPhone() {
     return false;
   }
 
+  registerClipboardCopy(phoneConfig);
   configureAndroidData(
     phoneConfig.title,
     phoneConfig.image,
@@ -50,6 +51,7 @@ function handleConfigTablet() {
     return handleConfigPhone();
   }
 
+  registerClipboardCopy(tabletConfig);
   configureAndroidData(
     tabletConfig.title,
     tabletConfig.image,

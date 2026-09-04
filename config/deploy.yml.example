@@ -33,7 +33,7 @@ servers:
   worker_batch:
     hosts:
       - 1.2.3.4
-    cmd: bundle exec sidekiq -C config/sidekiq_batch.yml -c 2
+    cmd: bundle exec sidekiq -C config/sidekiq_batch.yml -c <%= ENV.fetch("SIDEKIQ_BATCH_CONCURRENCY", 2) %>
 
   worker_maintenance:
     hosts:
@@ -56,7 +56,7 @@ registry:
 # Configure builder setup.
 builder:
   arch: amd64
-  dockerfile: "Dockerfile.production"
+  dockerfile: "Dockerfile"
   context: "."
 
 proxy:

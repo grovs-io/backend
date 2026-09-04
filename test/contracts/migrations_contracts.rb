@@ -3,12 +3,14 @@ require_relative "external_api_contracts"
 module ApiContracts
   # credentials is intentionally absent — MigrationSourceSerializer excludes it.
   MIGRATION_SOURCE = strict_object(
-    required: %w[id provider old_host enabled health consecutive_failures
-                 first_failure_at last_error_status created_at updated_at],
+    required: %w[id provider old_host provider_hosted extra_hosts enabled health
+                 consecutive_failures first_failure_at last_error_status created_at updated_at],
     properties: {
       "id"                   => { "type" => "integer" },
       "provider"             => { "type" => "string", "enum" => %w[branch appsflyer] },
       "old_host"             => { "type" => "string" },
+      "provider_hosted"      => { "type" => "boolean" },
+      "extra_hosts"          => { "type" => "array", "items" => STRING },
       "enabled"              => { "type" => "boolean" },
       "health"               => { "type" => "string", "enum" => %w[healthy degraded disabled] },
       "consecutive_failures" => { "type" => "integer" },
@@ -46,9 +48,11 @@ module ApiContracts
   MIGRATIONS_CREATE_REQUEST = strict_object(
     required: %w[hostname provider credentials],
     properties: {
-      "hostname"    => STRING,
-      "provider"    => { "type" => "string", "enum" => %w[branch appsflyer] },
-      "credentials" => MIGRATION_CREDENTIALS_INPUT
+      "hostname"        => STRING,
+      "provider"        => { "type" => "string", "enum" => %w[branch appsflyer] },
+      "credentials"     => MIGRATION_CREDENTIALS_INPUT,
+      "provider_hosted" => { "type" => "boolean" },
+      "extra_hosts"     => { "type" => "array", "items" => STRING }
     }
   )
 
@@ -58,7 +62,8 @@ module ApiContracts
     "required" => [],
     "properties" => {
       "enabled"     => { "type" => "boolean" },
-      "credentials" => MIGRATION_CREDENTIALS_INPUT
+      "credentials" => MIGRATION_CREDENTIALS_INPUT,
+      "extra_hosts" => { "type" => "array", "items" => STRING }
     }
   }.freeze
 
@@ -86,17 +91,24 @@ module ApiContracts
   # glob loads custom_ before migrations_.
   migrations_create_response = {
     "type" => "object", "additionalProperties" => false,
-    "required" => %w[custom_domain migration_source],
+    "required" => %w[custom_domain migration_source tls_mode ingress_host],
     "properties" => {
       "custom_domain"    => CUSTOM_HOSTNAME,
       "migration_source" => MIGRATION_SOURCE
-    }
+    }.merge(DEPLOYMENT_FIELDS)
+  }.freeze
+
+  # provider_hosted sources have no CustomHostname and no DNS setup to describe.
+  provider_hosted_create_response = {
+    "type" => "object", "additionalProperties" => false,
+    "required" => %w[migration_source],
+    "properties" => { "migration_source" => MIGRATION_SOURCE }
   }.freeze
 
   register "Api::V1::MigrationsController#create",
            request: MIGRATIONS_CREATE_REQUEST,
            responses: {
-             201 => migrations_create_response,
+             201 => { "oneOf" => [migrations_create_response, provider_hosted_create_response] },
              402 => ERROR, 409 => ERROR, 422 => ERROR, 502 => ERROR, 404 => ERROR,
              429 => ERROR,
              401 => AUTH_ERROR, 403 => ERROR, 503 => ERROR

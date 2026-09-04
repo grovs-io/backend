@@ -313,6 +313,44 @@ class PublicLinksHtmlTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "preview redirect carries gd when copy toggle enabled" do
+    @link.update!(show_preview_ios: true, copy_to_clipboard_ios: true)
+
+    stub_external_stores do
+      get "/#{@link.path}", headers: public_host_headers, env: { "HTTP_USER_AGENT" => iphone_ua }
+
+      assert_response :redirect
+      assert_match(/gd%3D/, response.headers["Location"])
+      assert_equal true, ClipboardActivityService.active?(@project)
+    end
+  ensure
+    ClipboardActivityService.clear(@project)
+  end
+
+  test "preview redirect has no gd when copy toggle disabled" do
+    @link.update!(show_preview_ios: true)
+
+    stub_external_stores do
+      get "/#{@link.path}", headers: public_host_headers, env: { "HTTP_USER_AGENT" => iphone_ua }
+
+      assert_response :redirect
+      assert_no_match(/gd%3D/, response.headers["Location"])
+    end
+  end
+
+  test "embedded config copy keys are off by default" do
+    stub_external_stores do
+      get "/#{@link.path}", headers: public_host_headers, env: { "HTTP_USER_AGENT" => iphone_ua }
+      assert_response :ok
+
+      doc = Nokogiri::HTML(response.body)
+      ios_json = JSON.parse(doc.at_css("#popup")["ios"])
+
+      assert_equal false, ios_json["phone"]["copy_to_clipboard"]
+      assert_nil ios_json["phone"]["copy_payload"]
+    end
+  end
+
   private
 
   def stub_external_stores(&block)

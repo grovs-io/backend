@@ -123,6 +123,28 @@ class MigrationFirstHitTest < ActionDispatch::IntegrationTest
       "AASA on the migration host must include the applinks block"
   end
 
+  # Apple's CDN caches a 404, so the file must serve during the pending window at cutover.
+  test "AASA serves on a pending manual migration host" do
+    @migration_ch.update_columns(cf_custom_hostname_id: nil, status: "pending")
+    @migration_ch.reload.send(:clear_cache)
+    enable_manual_custom_domains!
+    ENV["MIGRATIONS_ENABLED"] = "true"
+
+    get "/.well-known/apple-app-site-association", headers: { "Host" => MIGRATION_HOST }
+
+    assert_response :ok
+    assert JSON.parse(response.body).key?("applinks")
+  end
+
+  test "AASA still 404s on a pending Cloudflare migration host" do
+    @migration_ch.update_columns(status: "pending", cf_custom_hostname_id: "cf_pending_1")
+    @migration_ch.reload.send(:clear_cache)
+
+    get "/.well-known/apple-app-site-association", headers: { "Host" => MIGRATION_HOST }
+
+    assert_response :not_found
+  end
+
   test "assetlinks.json on the migration host serves the project's Android verification file" do
     get "/.well-known/assetlinks.json", headers: { "Host" => MIGRATION_HOST }
 

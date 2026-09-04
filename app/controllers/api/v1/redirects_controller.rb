@@ -13,13 +13,19 @@ class Api::V1::RedirectsController < Api::V1::ProjectsBaseController
     unless redirect_config
       redirect_config = RedirectConfig.new(redirect_config_params)
       redirect_config.project = @project
-      redirect_config.save!
+      ActiveRecord::Base.transaction do
+        redirect_config.save!
+        audit!("redirect_config.updated", instance_id: @project.instance_id, target: audit_target(redirect_config), changes: audit_diff(redirect_config))
+      end
 
       render json: {redirect_config: RedirectConfigSerializer.serialize(redirect_config)}, status: :ok
       return
     end
 
-    redirect_config.update(redirect_config_params)
+    ActiveRecord::Base.transaction do
+      redirect_config.update!(redirect_config_params)
+      audit!("redirect_config.updated", instance_id: @project.instance_id, target: audit_target(redirect_config), changes: audit_diff(redirect_config))
+    end
     render json: {redirect_config: redirect_config}, status: :ok
   end
 
@@ -31,7 +37,12 @@ class Api::V1::RedirectsController < Api::V1::ProjectsBaseController
     end
 
     redirect = redirect_config.redirect_for_platform_and_variation(platform_param, variation_param)
-    redirect.update!(redirect_params)
+    ActiveRecord::Base.transaction do
+      redirect.update!(redirect_params)
+      audit!("redirect.updated", instance_id: @project.instance_id,
+             target: audit_target(redirect).merge("platform" => platform_param, "variation" => variation_param),
+             changes: audit_diff(redirect))
+    end
 
     fallback = redirect_params[:fallback_url]
     enabled = redirect_params[:enabled]
@@ -59,7 +70,8 @@ class Api::V1::RedirectsController < Api::V1::ProjectsBaseController
   end
 
   def redirect_config_params
-    params.permit(:default_fallback, :show_preview_android, :show_preview_ios)
+    params.permit(:default_fallback, :show_preview_android, :show_preview_ios,
+                  :copy_to_clipboard_android, :copy_to_clipboard_ios)
   end
 
   def render_validation_error(exception)

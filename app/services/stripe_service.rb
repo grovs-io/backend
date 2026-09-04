@@ -117,7 +117,10 @@ class StripeService
       billing_cycle_start = billing_cycle[:start]
       billing_cycle_end = billing_cycle[:end]
 
-      quantity = ProjectService.new.compute_maus_per_month_total(instance, billing_cycle_start, billing_cycle_end)
+      # Never push a stale cached unsettled-month value to Stripe.
+      quantity = ProjectService.new.compute_maus_per_month_total(
+        instance, billing_cycle_start, billing_cycle_end, fresh_unsettled_months: true
+      )
 
       Stripe::SubscriptionItem.create_usage_record(
           subscription.subscription_item_id,

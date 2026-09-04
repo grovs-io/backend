@@ -279,6 +279,29 @@ class QuotaAlertJobTest < ActiveSupport::TestCase
     ENV.delete("GROVS_SELF_HOSTED")
   end
 
+  # --- CH-primary MAU failure ---
+
+  test "primary-mode CH MAU failure skips the alert without email or timestamp" do
+    sent = false
+    prev = Rails.application.config.clickhouse_primary
+    Rails.application.config.clickhouse_primary = true
+
+    ClickhouseReadService.stub(:billing_active_visitors_exact, ->(*_a, **_k) { nil }) do
+      QuotaMailer.stub(:quota_exceeded, ->(*_) { sent = true; OpenStruct.new(deliver_now: true) }) do
+        QuotaMailer.stub(:quota_progress, ->(*_) { sent = true; OpenStruct.new(deliver_now: true) }) do
+          @job.perform(@instance.id) # must not raise
+        end
+      end
+    end
+
+    assert_not sent, "no quota email from a failed CH MAU read"
+    @instance.reload
+    assert_nil @instance.last_quota_exceeded_sent_at
+    assert_nil @instance.last_quota_warning_sent_at
+  ensure
+    Rails.application.config.clickhouse_primary = prev
+  end
+
   private
 
   def create_visitors_with_stats(project, count)

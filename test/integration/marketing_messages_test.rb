@@ -121,6 +121,22 @@ class MarketingMessagesTest < ActionDispatch::IntegrationTest
     assert_not_includes response.body, "data:"
   end
 
+  test "javascript: protocol in img src is stripped" do
+    @notification.update_columns(html: '<img src="javascript:alert(1)" alt="x">')
+
+    get "/mm/#{@notification.hashid}", headers: public_host_headers
+    assert_response :ok
+    assert_not_includes response.body, "javascript:"
+  end
+
+  test "data: URI scheme in img src is stripped" do
+    @notification.update_columns(html: '<img src="data:text/html,&lt;script&gt;alert(1)&lt;/script&gt;" alt="x">')
+
+    get "/mm/#{@notification.hashid}", headers: public_host_headers
+    assert_response :ok
+    assert_not_includes response.body, "data:"
+  end
+
   # --- Allowed content preserved ---
 
   test "safe inline styles are preserved" do

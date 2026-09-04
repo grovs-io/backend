@@ -22,6 +22,32 @@ class McpConfigurationsTest < ActionDispatch::IntegrationTest
   # Setup Redirects
   # ==========================================================================
 
+  test "setup_redirects sets copy_to_clipboard standalone without default_fallback" do
+    put "#{MCP_PREFIX}/redirects",
+      params: { project_id: @project.hashid, copy_to_clipboard_ios: true },
+      headers: @admin_headers
+    assert_response :ok
+
+    assert_equal true, @project.redirect_config.reload.copy_to_clipboard_ios
+  end
+
+  test "setup_redirects sets copy_to_clipboard toggles alongside default_fallback" do
+    put "#{MCP_PREFIX}/redirects",
+      params: {
+        project_id: @project.hashid,
+        default_fallback: "https://example.com/fallback",
+        copy_to_clipboard_ios: true,
+        copy_to_clipboard_android: false
+      },
+      headers: @admin_headers
+    assert_response :ok
+
+    config = @project.redirect_config.reload
+    assert_equal true, config.copy_to_clipboard_ios
+    assert_equal false, config.copy_to_clipboard_android
+    assert_equal true, json_response["redirect_config"]["copy_to_clipboard_ios"]
+  end
+
   test "setup_redirects sets default fallback with full RedirectConfigSerializer schema" do
     headers = @admin_headers
     assert_no_difference "RedirectConfig.count" do

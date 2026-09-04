@@ -1,0 +1,7 @@
+web: bundle exec rails s -b 0.0.0.0 -p 3000
+worker: bundle exec sidekiq -C config/sidekiq_worker.yml -c 20
+batch: bundle exec sidekiq -C config/sidekiq_batch.yml -c ${SIDEKIQ_BATCH_CONCURRENCY:-3}
+scheduler: bundle exec sidekiq -C config/sidekiq_scheduler.yml
+dev_updates: bundle exec sidekiq -C config/sidekiq_device_updates.yml -c 3
+maintenance: bundle exec sidekiq -C config/sidekiq_maintenance.yml -c 3
+clickhouse: clickhouse server --config-file=config/clickhouse-dev.xml

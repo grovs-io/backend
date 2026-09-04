@@ -5,6 +5,7 @@ class User < ApplicationRecord
   devise :invitable, :registerable,
          :recoverable, :rememberable, :validatable, :omniauthable, 
          omniauth_providers: [:google_oauth2, :microsoft_graph]
+  include ScimUser if defined?(ScimUser)
 
   validates :email, format: URI::MailTo::EMAIL_REGEXP
 
@@ -12,6 +13,14 @@ class User < ApplicationRecord
   has_many :instances, through: :instance_roles
 
   has_many :stripe_payment_intents
+
+  # Devise canonicalizes email on save, so a raw find_by misses "User@Example.com".
+  def self.find_for_email(email)
+    canonical = email.to_s.strip.downcase
+    return nil if canonical.empty?
+
+    find_by(email: canonical)
+  end
 
   # the authenticate method from devise documentation
   def self.authenticate(email, password, otp_code)

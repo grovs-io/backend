@@ -20,9 +20,9 @@ class LinksViewsReportDashboard
 
     results = results.group(:event_date).sum(:link_views)
 
-    # Populate actual values into the result
+    # Key with the Date (seeded key type) — a String key duplicates on JSON serialization.
     results.each do |date, views|
-      daily_counts[date.to_s] = views.to_i
+      daily_counts[date] = views.to_i
     end
 
     daily_counts

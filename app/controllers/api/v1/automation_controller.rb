@@ -1,4 +1,6 @@
 class Api::V1::AutomationController < Api::V1::ProjectsBaseController
+  include Api::V1::Concerns::AnalyticsRetentionGate
+
   before_action :authenticate_request
 
   def metrics_for_user
@@ -26,10 +28,12 @@ class Api::V1::AutomationController < Api::V1::ProjectsBaseController
     end
 
     # metrics = Visitor.count_own_visitor_events(project.id).where(id: visitor.id).as_json(skip_invites: true)
-    metrics = VisitorStatisticsQuery.new(params: { visitor_id: visitor.id, sort_by: 'views', start_date: Time.at(0).to_date }, 
+    @project = project
+    floor = retention_floor(Time.at(0).to_date)
+    metrics = VisitorStatisticsQuery.new(params: { visitor_id: visitor.id, sort_by: 'views', start_date: floor },
 project: project).call[:visitors][0]
     number_of_links = Link.where(visitor_id: visitor.id, domain_id: project.domain.id).count
-    aggregated_metrics = VisitorReferralStatisticsQuery.new(params: { visitor_id: visitor.id, sort_by: 'views', start_date: Time.at(0).to_date }, 
+    aggregated_metrics = VisitorReferralStatisticsQuery.new(params: { visitor_id: visitor.id, sort_by: 'views', start_date: floor },
 project: project).call[:visitors][0]
 
     render json: {
@@ -52,14 +56,15 @@ project: project).call[:visitors][0]
       project = instance.test
     end
 
-    link = Link.find_by(domain_id: project.domain.id, path: path_param)
+    link = Link.includes(:custom_redirects, :domain).find_by(domain_id: project.domain.id, path: path_param)
     unless link
       render json: {link: nil, metrics: nil}
       return
     end
 
 
-    metrics = LinkStatisticsQuery.new(params: { link_id: link.id, sort_by: 'views', start_date: Time.at(0).to_date, active: "true" }, 
+    @project = project
+    metrics = LinkStatisticsQuery.new(params: { link_id: link.id, sort_by: 'views', start_date: retention_floor(Time.at(0).to_date), active: "true" },
 project: project).call[:links][0]
     render json: {link: LinkSerializer.serialize(link), metrics: metrics}
   end

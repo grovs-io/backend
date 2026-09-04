@@ -95,6 +95,27 @@ class McpLinksTest < ActionDispatch::IntegrationTest
     assert json["error"].present?, "should return error message for duplicate path"
   end
 
+  test "create_link accepts tags and data as JSON structures, the MCP tool schema format" do
+    assert_difference "Link.count", 1 do
+      post "#{MCP_PREFIX}/links",
+        params: { project_id: @project.hashid, name: "Structured", path: "structured-link",
+                  tags: %w[promo summer], data: [{ key: "offer", value: "50off" }] },
+        headers: @admin_headers, as: :json
+    end
+    assert_response :created
+    assert_equal %w[promo summer], json_response["link"]["tags"]
+    assert_equal [{ "key" => "offer", "value" => "50off" }], json_response["link"]["data"]
+  end
+
+  test "create_link rejects non-array tags and malformed data with 400, never a 500" do
+    post "#{MCP_PREFIX}/links", params: { project_id: @project.hashid, name: "Bad", path: "bad-tags", tags: '"promo"' },
+         headers: @admin_headers, as: :json
+    assert_response :bad_request
+    post "#{MCP_PREFIX}/links", params: { project_id: @project.hashid, name: "Bad", path: "bad-data", data: "just text" },
+         headers: @admin_headers, as: :json
+    assert_response :bad_request
+  end
+
   test "create_link with tags and data params" do
     headers = @admin_headers
     tags_json = '["promo","summer"]'
@@ -287,6 +308,17 @@ class McpLinksTest < ActionDispatch::IntegrationTest
     json = json_response
     assert_equal "Updated Title", json["link"]["title"]
     assert_equal "Updated Title", @link.reload.title
+  end
+
+  test "update_link sets copy_to_clipboard toggles" do
+    headers = @admin_headers
+    patch "#{MCP_PREFIX}/links/#{@link.id}",
+      params: { project_id: @project.hashid, copy_to_clipboard_ios: true },
+      headers: headers
+    assert_response :ok
+    assert_equal true, json_response["link"]["copy_to_clipboard_ios"]
+    assert_equal true, @link.reload.copy_to_clipboard_ios
+    assert_nil @link.copy_to_clipboard_android
   end
 
   test "update_link updates link path" do

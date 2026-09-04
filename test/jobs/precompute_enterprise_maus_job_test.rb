@@ -52,4 +52,20 @@ class PrecomputeEnterpriseMausJobTest < ActiveSupport::TestCase
     end
     assert_nil @cache.read("enterprise_mau:#{@instance.id}")
   end
+
+  # Must outlive the 30-min cron, or a web request recomputes the exact read itself.
+  test "the cached value outlives the precompute interval" do
+    EnterpriseSubscription.create!(instance: @instance, active: true,
+                                   start_date: Date.current.beginning_of_month,
+                                   end_date: 1.year.from_now, total_maus: 50_000)
+    captured = nil
+
+    Rails.stub(:cache, @cache) do
+      @cache.stub(:write, ->(_k, _v, opts) { captured = opts[:expires_in] }) do
+        PrecomputeEnterpriseMausJob.new.perform
+      end
+    end
+
+    assert_operator captured, :>, 30.minutes, "TTL must exceed the cron interval"
+  end
 end

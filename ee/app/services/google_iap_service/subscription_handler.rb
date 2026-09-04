@@ -81,10 +81,13 @@ module GoogleIapService::SubscriptionHandler
     original_txn_id = IapUtils.extract_google_original_txn_id(purchase_data, purchase_token)
     order_id = purchase_data.respond_to?(:order_id) ? purchase_data.order_id : nil
 
+    # Renewal orders (..N) need their own identity: the reused token would dedup them into the initial BUY.
+    transaction_id = order_id&.match?(/\.\.\d+\z/) ? order_id : purchase_token
+
     handle_google_purchase_event(
       event_type: event_type,
       project: project,
-      transaction_id: purchase_token,
+      transaction_id: transaction_id,
       original_transaction_id: original_txn_id,
       product_id: subscription_id,
       identifier: identifier,

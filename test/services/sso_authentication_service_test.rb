@@ -3,9 +3,45 @@ require "test_helper"
 class SsoAuthenticationServiceTest < ActiveSupport::TestCase
   # === find_or_create_from_auth ===
 
-  def mock_auth(provider:, uid:, email:, name:, display_name: nil)
+  def mock_auth(provider:, uid:, email:, name:, display_name: nil, email_verified: nil)
     info = OpenStruct.new(display_name: display_name || name, name: name, email: email)
-    OpenStruct.new(provider: provider, uid: uid, info: info)
+    extra = OpenStruct.new(raw_info: { "xms_edov" => email_verified }.compact)
+    OpenStruct.new(provider: provider, uid: uid, info: info, extra: extra)
+  end
+
+  # === nOAuth: an unverified email must not take over an existing account ===
+
+  test "a Microsoft login with an unverified email cannot claim an existing password account" do
+    email = "victim_#{SecureRandom.hex(4)}@corp.com"
+    victim = User.create!(email: email, password: "password123") # no provider (password account)
+
+    # attacker sets their Entra mail to the victim's address; Microsoft does not assert verification
+    auth = mock_auth(provider: "microsoft_graph", uid: "attacker-uid", email: email, name: "Attacker")
+
+    assert_raises(RuntimeError) { SsoAuthenticationService.find_or_create_from_auth(auth_hash: auth) }
+    assert_nil victim.reload.uid, "the victim account must not be linked to the attacker's IdP identity"
+    assert_nil victim.provider
+  end
+
+  test "a Microsoft login with a verified email (xms_edov) may link an existing account" do
+    email = "verified_#{SecureRandom.hex(4)}@corp.com"
+    User.create!(email: email, password: "password123")
+
+    auth = mock_auth(provider: "microsoft_graph", uid: "ms-verified", email: email, name: "Real", email_verified: true)
+
+    user = SsoAuthenticationService.find_or_create_from_auth(auth_hash: auth)
+    assert_equal "microsoft_graph", user.reload.provider
+    assert_equal "ms-verified", user.uid
+  end
+
+  test "a returning SSO user is matched by provider+uid regardless of the email claim" do
+    email = "returning_#{SecureRandom.hex(4)}@corp.com"
+    u = User.create!(email: email, password: "password123", provider: "microsoft_graph", uid: "stable-uid")
+
+    # even a mismatched/forged email claim resolves to the same account via the stable uid
+    auth = mock_auth(provider: "microsoft_graph", uid: "stable-uid", email: "someone-else@evil.com", name: "R")
+
+    assert_equal u.id, SsoAuthenticationService.find_or_create_from_auth(auth_hash: auth).id
   end
 
   test "find_or_create_from_auth creates new user with all fields" do
@@ -19,6 +55,88 @@ class SsoAuthenticationServiceTest < ActiveSupport::TestCase
       assert_equal "google_oauth2", user.provider
       assert_equal "g123", user.uid
       assert user.persisted?
+    end
+  end
+
+  test "SSO claim consumes the pending invitation so the invite link cannot be replayed" do
+    email = "sso_invite_#{SecureRandom.hex(4)}@test.com"
+    invited = User.invite!(email: email) { |u| u.skip_invitation = true }
+    assert invited.invitation_token.present?, "precondition: invite is pending"
+
+    auth = mock_auth(provider: "google_oauth2", uid: "inv-claim", email: email, name: "Invited")
+    Grovs.stub(:self_hosted?, true) do
+      SsoAuthenticationService.find_or_create_from_auth(auth_hash: auth)
+    end
+
+    invited.reload
+    assert_not_nil invited.invitation_accepted_at, "SSO sign-in must accept the invitation"
+    assert_nil invited.invitation_token, "invite token must be cleared, or the link stays replayable"
+  end
+
+  test "find_or_create_from_auth canonicalizes the email on the SaaS path too" do
+    email = "sso_saas_mixed_#{SecureRandom.hex(4)}@test.com"
+    existing = User.create!(email: email, password: "password123")
+    auth = mock_auth(provider: "google_oauth2", uid: "saas1", email: email.upcase, name: "SaaS Mixed")
+
+    assert_no_difference "User.count", "mixed case must not create a duplicate on SaaS" do
+      assert_equal existing.id, SsoAuthenticationService.find_or_create_from_auth(auth_hash: auth).id
+    end
+  end
+
+  test "find_or_create_from_auth stores a downcased email for a new SSO user" do
+    email = "SSO_New_#{SecureRandom.hex(4)}@Example.COM"
+    auth = mock_auth(provider: "google_oauth2", uid: "dc1", email: email, name: "New")
+
+    user = SsoAuthenticationService.find_or_create_from_auth(auth_hash: auth)
+    assert_equal email.strip.downcase, user.reload.email
+  end
+
+  test "find_or_create_from_auth raises when the IdP supplies no email" do
+    auth = mock_auth(provider: "google_oauth2", uid: "noemail", email: nil, name: "No Email")
+
+    assert_no_difference "User.count" do
+      error = assert_raises(RuntimeError) { SsoAuthenticationService.find_or_create_from_auth(auth_hash: auth) }
+      assert_match(/email address/i, error.message)
+    end
+  end
+
+  test "find_or_create_from_auth matches an invited user when the IdP returns a mixed-case email" do
+    email = "sso_mixed_#{SecureRandom.hex(4)}@test.com"
+    invited = User.create!(email: email, password: "password123")
+    auth = mock_auth(provider: "google_oauth2", uid: "mx1", email: "  #{email.upcase}  ", name: "Mixed")
+
+    Grovs.stub(:self_hosted?, true) do
+      assert_no_difference "User.count" do
+        assert_equal invited.id, SsoAuthenticationService.find_or_create_from_auth(auth_hash: auth).id
+      end
+    end
+  end
+
+  test "find_or_create_from_auth blocks a brand-new SSO account when self-hosted" do
+    email = "sso_selfhosted_#{SecureRandom.hex(4)}@test.com"
+    auth = mock_auth(provider: "google_oauth2", uid: "sh1", email: email, name: "Uninvited")
+
+    Grovs.stub(:self_hosted?, true) do
+      assert_no_difference "User.count" do
+        error = assert_raises(RuntimeError) do
+          SsoAuthenticationService.find_or_create_from_auth(auth_hash: auth)
+        end
+        assert_match(/invite/i, error.message)
+      end
+    end
+  end
+
+  test "find_or_create_from_auth still lets an invited (existing) user sign in via SSO when self-hosted" do
+    email = "sso_invited_#{SecureRandom.hex(4)}@test.com"
+    invited = User.create!(email: email, password: "password123")
+    auth = mock_auth(provider: "google_oauth2", uid: "inv1", email: email, name: "Invited")
+
+    Grovs.stub(:self_hosted?, true) do
+      assert_no_difference "User.count" do
+        user = SsoAuthenticationService.find_or_create_from_auth(auth_hash: auth)
+        assert_equal invited.id, user.id
+        assert_equal "google_oauth2", user.reload.provider
+      end
     end
   end
 
@@ -186,5 +304,96 @@ class SsoAuthenticationServiceTest < ActiveSupport::TestCase
     # SSO user should not be able to authenticate with any password
     assert_not user.valid_password?("password123"), "SSO user should not have a usable password"
     assert_not user.valid_password?(""), "SSO user should not authenticate with empty password"
+  end
+
+  # === provider configuration gating (self-hosted) ===
+
+  SSO_ENV_KEYS = %w[GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
+                    MICROSOFT_CLIENT_ID MICROSOFT_CLIENT_SECRET].freeze
+
+  def with_sso_env(**overrides)
+    snapshot = SSO_ENV_KEYS.index_with { |k| ENV[k] }
+    SSO_ENV_KEYS.each { |k| ENV.delete(k) }
+    overrides.each { |k, v| v.nil? ? ENV.delete(k.to_s) : ENV[k.to_s] = v }
+    yield
+  ensure
+    snapshot.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+  end
+
+  test "provider_configured? is true only when both id and secret are present" do
+    with_sso_env(GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret") do
+      assert SsoAuthenticationService.provider_configured?(Grovs::SSO::GOOGLE)
+    end
+  end
+
+  test "provider_configured? is false when secret is missing" do
+    with_sso_env(GOOGLE_CLIENT_ID: "id") do
+      assert_not SsoAuthenticationService.provider_configured?(Grovs::SSO::GOOGLE)
+    end
+  end
+
+  test "provider_configured? is false when id is missing" do
+    with_sso_env(GOOGLE_CLIENT_SECRET: "secret") do
+      assert_not SsoAuthenticationService.provider_configured?(Grovs::SSO::GOOGLE)
+    end
+  end
+
+  test "provider_configured? treats blank string as unconfigured" do
+    with_sso_env(GOOGLE_CLIENT_ID: "  ", GOOGLE_CLIENT_SECRET: "secret") do
+      assert_not SsoAuthenticationService.provider_configured?(Grovs::SSO::GOOGLE)
+    end
+  end
+
+  test "provider_configured? is false for unknown provider" do
+    with_sso_env(GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret") do
+      assert_not SsoAuthenticationService.provider_configured?("okta")
+    end
+  end
+
+  test "available_providers returns only the configured provider" do
+    with_sso_env(GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret") do
+      assert_equal [Grovs::SSO::GOOGLE], SsoAuthenticationService.available_providers
+    end
+  end
+
+  test "available_providers returns both when both are configured" do
+    with_sso_env(GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gsecret",
+                 MICROSOFT_CLIENT_ID: "mid", MICROSOFT_CLIENT_SECRET: "msecret") do
+      assert_equal [Grovs::SSO::GOOGLE, Grovs::SSO::MICROSOFT].sort,
+                   SsoAuthenticationService.available_providers.sort
+    end
+  end
+
+  test "available_providers is empty when nothing is configured" do
+    with_sso_env do
+      assert_empty SsoAuthenticationService.available_providers
+    end
+  end
+
+  test "sso_enabled? reflects whether any provider is configured" do
+    with_sso_env(MICROSOFT_CLIENT_ID: "mid", MICROSOFT_CLIENT_SECRET: "msecret") do
+      assert SsoAuthenticationService.sso_enabled?
+    end
+    with_sso_env do
+      assert_not SsoAuthenticationService.sso_enabled?
+    end
+  end
+
+  test "build_auth_url raises for a provider that is not configured" do
+    with_sso_env(GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret") do
+      error = assert_raises(ArgumentError) do
+        SsoAuthenticationService.build_auth_url(provider: Grovs::SSO::MICROSOFT)
+      end
+      assert_match(/not configured/i, error.message)
+    end
+  end
+
+  test "build_auth_url still raises for an invalid provider" do
+    with_sso_env(GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret") do
+      error = assert_raises(ArgumentError) do
+        SsoAuthenticationService.build_auth_url(provider: "okta")
+      end
+      assert_match(/invalid provider/i, error.message)
+    end
   end
 end

@@ -56,7 +56,8 @@ Rails.application.configure do
   # Use Redis cache store
   config.cache_store = :redis_cache_store, {
     url: ENV.fetch("REDIS_URL") { "redis://localhost:6379/1" },
-    namespace: 'grovs:cache:staging'
+    namespace: 'grovs:cache:staging',
+    ssl_params: Grovs::RedisSsl.params
   }
 
   config.action_mailer.perform_caching = false

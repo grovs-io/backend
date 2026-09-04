@@ -1,4 +1,7 @@
 class Api::V1::Sdk::AuthController < Api::V1::Sdk::BaseController
+  # Must be >= DeviceUpdateService's touch throttle, or a live device still reads as never-seen.
+  DEVICE_FRESH_WINDOW = 1.minute
+
   skip_before_action :authenticate_device
 
   def authenticate
@@ -17,34 +20,44 @@ sdk_attributes: @visitor.sdk_attributes, push_token: @device.push_token}
   end
 
   def device_for_vendor
-    last_seen = nil
+    # Without this a blank param matches an arbitrary NULL-vendor device (web visitors have none).
+    return render json: {last_seen: nil}, status: :ok if vendor_param.blank?
 
     device = Device.redis_find_by(:vendor, vendor_param)
-    unless device
-      render json: {last_seen: last_seen}, status: :ok
-      return
-    end
 
-    latest_event = Event.select('DISTINCT ON (project_id, device_id) *')
-                .where(project_id:  @project.id, device_id: device.id)
-                .order(:project_id, :device_id, created_at: :desc)
-                .first
-
-    if latest_event
-      last_seen = latest_event.created_at
-    end
-
-    render json: {last_seen: last_seen}, status: :ok
+    render json: {last_seen: device && last_seen_for(device)}, status: :ok
   end
 
   private
+
+  # devices.updated_at is global, so it only answers once a Visitor proves this device was here.
+  def last_seen_for(device)
+    return Event.where(project_id: @project.id, device_id: device.id).maximum(:created_at) unless Clickhouse.primary?
+
+    stamped = DeviceLastSeen.where(project_id: @project.id, device_id: device.id).pick(:last_seen_at)
+    return stamped if stamped
+    return nil unless Visitor.exists?(project_id: @project.id, device_id: device.id)
+    return nil if device.updated_at - device.created_at < DEVICE_FRESH_WINDOW
+
+    device.updated_at
+  end
 
   def user_agent_param
     params.require(:user_agent)
   end
 
+  # The mobile SDKs send the device model as `device`; `model` is kept for other callers.
+  # Raw hardware identifiers are mapped to marketing names server-side so a new device
+  # is a table/CSV entry here, not an SDK release.
   def model_param
-    params.permit(:model)[:model]
+    permitted = params.permit(:model, :device)
+    raw = permitted[:model].presence || permitted[:device]
+
+    if @platform == Grovs::Platforms::ANDROID
+      AndroidDeviceModels.humanize(raw)
+    else
+      AppleDeviceModels.humanize(raw)
+    end
   end
 
   def build_param

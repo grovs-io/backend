@@ -12,8 +12,15 @@ class Api::V1::Sdk::VisitorsController < Api::V1::Sdk::BaseController
       @device.push_token = push_token_param
     end
 
-    @visitor.save!
-    @device.save!
+    identity_changed = @visitor.sdk_identifier_changed? || @visitor.sdk_attributes_changed?
+
+    # Committing the visitor before a failing device save would leave nothing dirty for the retry.
+    ActiveRecord::Base.transaction do
+      @visitor.save!
+      @device.save!
+    end
+
+    SyncVisitorProfileJob.perform_later(@visitor.id) if identity_changed
 
     render json: {visitor: VisitorSerializer.serialize(@visitor)}, status: :ok
   end
@@ -24,8 +31,9 @@ class Api::V1::Sdk::VisitorsController < Api::V1::Sdk::BaseController
     params.permit(:sdk_attributes => {})[:sdk_attributes]
   end
 
+  # presence, not raw: "" would store a genuine empty string that sorts differently from NULL.
   def sdk_identifier_param
-    params.permit(:sdk_identifier)[:sdk_identifier]
+    params.permit(:sdk_identifier)[:sdk_identifier].presence
   end
 
   def push_token_param

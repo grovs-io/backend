@@ -73,6 +73,31 @@ class LinkStatisticsQueryTest < ActiveSupport::TestCase
     assert_equal names.sort, names
   end
 
+  test "sorts by link field title ascending" do
+    result = build_query(sort_by: "title", ascendent: true).call
+    titles = result[:links].map { |l| l["title"] }.compact
+
+    assert_equal titles.sort, titles
+  end
+
+  test "accepts ascending as alias for ascendent" do
+    params = {
+      start_date: "2026-03-01", end_date: "2026-03-02",
+      page: 1, per_page: 20, sort_by: "views", ascending: true, active: true
+    }
+    result = LinkStatisticsQuery.new(params: params, project: @project).call
+    views = result[:links].map { |l| l["total_views"] }
+
+    assert_equal views.sort, views
+  end
+
+  test "ascendent wins over ascending when both present" do
+    result = build_query(sort_by: "views", ascendent: true, ascending: false).call
+    views = result[:links].map { |l| l["total_views"] }
+
+    assert_equal views.sort, views
+  end
+
   test "defaults to created_at desc for unknown sort field" do
     result = build_query(sort_by: "nonexistent").call
     timestamps = result[:links].map { |l| l["updated_at"] }
@@ -161,6 +186,32 @@ class LinkStatisticsQueryTest < ActiveSupport::TestCase
 
     assert_equal 1, result[:links].size
     assert_equal @basic_link.id, result[:links].first["id"]
+  end
+
+  # ── Ads platform filtering ──
+
+  test "ads_platform filter returns only links with that ads_platform" do
+    @basic_link.update!(ads_platform: "google")
+
+    result = build_query(ads_platform: "google").call
+
+    assert_equal [@basic_link.id], result[:links].map { |l| l["id"] }
+  end
+
+  test "ads_platform filter with no matching links returns empty" do
+    result = build_query(ads_platform: "meta").call
+
+    assert_equal 0, result[:links].length
+  end
+
+  test "absent ads_platform param returns links regardless of ads_platform" do
+    @basic_link.update!(ads_platform: "google")
+
+    result = build_query.call
+    ids = result[:links].map { |l| l["id"] }
+
+    assert_includes ids, @basic_link.id
+    assert ids.length > 1, "links without ads_platform must also be returned"
   end
 
   # ── Date range ──

@@ -1,16 +1,12 @@
 class PublicSubdomain
   def self.matches?(request)
-    return false if request.domain.blank?
+    label, = Grovs::Domains.split(request.host)
+    # Custom/enterprise host (no MAIN suffix): public link host when Rails
+    # extracts a registrable domain (IPv4 literals don't get one).
+    return request.domain.present? if label.nil?
+    # On our own domains a bare apex and the reserved labels have their own handlers.
+    return false if label.blank?
 
-    # Custom / enterprise host: the registrable domain isn't one of ours, so it's
-    # always a public link host regardless of the subdomain label (sdk., api., ...).
-    return true unless Grovs::Domains::MAIN.include?(request.domain)
-
-    # Our own domain: a bare apex is not a public link host, and reserved
-    # subdomains (sdk/api/go/preview/mcp/proxy) belong to their own handlers.
-    subdomain = request.subdomain
-    return false if subdomain.blank?
-
-    !Grovs::Subdomains::FORBIDDEN.include?(subdomain)
+    !Grovs::Subdomains::FORBIDDEN.include?(label)
   end
 end

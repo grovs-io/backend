@@ -60,12 +60,15 @@ class RefreshCustomHostnameStatusJob
   end
 
   def refresh_pending
+    # Past-deadline manual rows excluded in SQL: find_each orders by id, a skip-in-loop starves.
     CustomHostname.where(status: "pending")
                   .where("last_checked_at IS NULL OR last_checked_at < ?", RECHECK_AFTER.ago)
-                  .order(Arel.sql("last_checked_at ASC NULLS FIRST"))
+                  .where("cf_custom_hostname_id IS NOT NULL OR created_at > ?", DEADLINE.ago)
                   .limit(MAX_ROWS_PER_RUN)
                   .find_each(batch_size: MAX_ROWS_PER_RUN) do |ch|
       break if budget_exhausted?
+      next refresh_manual(ch) if ch.manual?
+
       ch.with_lock do
         next unless ch.status == "pending"
 
@@ -115,10 +118,20 @@ class RefreshCustomHostnameStatusJob
     end
   end
 
-  # Handles create() crashing between CF-create and persisting cf_id. We must delete the CF
-  # hostname before freeing the DB slot — otherwise traffic stays served by a hostname we
-  # no longer own.
+  # Probes outside the lock; holding one across a network call would block deletion and teardown.
+  def refresh_manual(custom_hostname)
+    result = SelfHostedDomainVerificationService.verify(custom_hostname.hostname, source: "refresh_job")
+    return CustomHostnameActivation.apply!(custom_hostname) if result.active
+
+    CustomHostnameActivation.record_failure!(custom_hostname, result.error)
+  rescue StandardError => e
+    Rails.logger.error("[RefreshCustomHostnameStatusJob] manual probe hostname=#{custom_hostname&.id}: #{e.class} #{e.message}")
+  end
+
+  # Reaps create() crashes between CF-create and persisting cf_id; CF delete precedes slot free.
   def recover_stuck_provisioning
+    return unless Grovs.cloudflare_custom_domains?
+
     CustomHostname.where(status: "provisioning")
                   .where("created_at < ?", STALE_PROVISIONING_AFTER.ago)
                   .limit(MAX_ROWS_PER_RUN)

@@ -30,7 +30,7 @@ echo ""
 bundle exec sidekiq -C config/sidekiq_worker.yml -c 20 2>&1 | sed "s/^/${GREEN}[worker]      ${NC}/" &
 PIDS+=($!)
 
-bundle exec sidekiq -C config/sidekiq_batch.yml -c 3 2>&1 | sed "s/^/${BLUE}[batch]       ${NC}/" &
+bundle exec sidekiq -C config/sidekiq_batch.yml -c "${SIDEKIQ_BATCH_CONCURRENCY:-3}" 2>&1 | sed "s/^/${BLUE}[batch]       ${NC}/" &
 PIDS+=($!)
 
 bundle exec sidekiq -C config/sidekiq_scheduler.yml 2>&1 | sed "s/^/${YELLOW}[scheduler]   ${NC}/" &

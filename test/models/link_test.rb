@@ -2,7 +2,38 @@ require "test_helper"
 
 class LinkTest < ActiveSupport::TestCase
   fixtures :links, :domains, :redirect_configs, :projects, :instances, :campaigns,
-           :custom_redirects, :actions, :devices, :redirects, :applications
+           :custom_redirects, :actions, :devices, :redirects, :applications,
+           :link_daily_statistics
+
+  test "action_for honors the within: window" do
+    link = links(:basic_link)
+    device = devices(:android_device)
+    action = Action.create!(link: link, device: device, handled: false, created_at: 1.hour.ago)
+
+    assert_nil link.action_for(device)
+    assert_equal action.id, link.action_for(device, within: Grovs::Links::CLIPBOARD_VALIDITY).id
+  end
+
+  test "copy_to_clipboard_for? resolves tri-state against redirect config and requires preview" do
+    link = links(:basic_link)
+    link.update!(show_preview_ios: true, show_preview_android: true)
+
+    assert_equal false, link.copy_to_clipboard_for?(Grovs::Platforms::IOS)
+
+    link.redirect_config.update!(copy_to_clipboard_ios: true)
+    assert_equal true, link.copy_to_clipboard_for?(Grovs::Platforms::IOS)
+
+    link.update!(copy_to_clipboard_ios: false)
+    assert_equal false, link.copy_to_clipboard_for?(Grovs::Platforms::IOS)
+
+    link.update!(copy_to_clipboard_android: true)
+    assert_equal true, link.copy_to_clipboard_for?(Grovs::Platforms::ANDROID)
+
+    link.update!(show_preview_android: false)
+    assert_equal false, link.copy_to_clipboard_for?(Grovs::Platforms::ANDROID)
+
+    assert_equal false, link.copy_to_clipboard_for?(Grovs::Platforms::DESKTOP)
+  end
 
   # === full_path ===
 
@@ -85,6 +116,13 @@ class LinkTest < ActiveSupport::TestCase
     link = links(:basic_link)
     keys = link.cache_keys_to_clear
     expected_key = link.send(:multi_condition_cache_key, { path: link.path, domain_id: link.domain_id })
+    assert_includes keys, expected_key
+  end
+
+  test "cache_keys_to_clear includes the active-scoped resolution key" do
+    link = links(:basic_link)
+    keys = link.cache_keys_to_clear
+    expected_key = link.send(:multi_condition_cache_key, { path: link.path, domain_id: link.domain_id, active: true })
     assert_includes keys, expected_key
   end
 
@@ -264,5 +302,25 @@ class LinkTest < ActiveSupport::TestCase
   test "should_open_app_on_platform? always returns false for WEB" do
     link = links(:second_link)
     assert_not link.should_open_app_on_platform?(Grovs::Platforms::WEB)
+  end
+  # link_daily_statistics is id: false, so dependent: :destroy raised on every link with
+  # traffic — the association must delete_all instead.
+  test "a link with daily statistics can be destroyed, and takes its statistics with it" do
+    link = links(:basic_link)
+    assert_operator LinkDailyStatistic.where(link_id: link.id).count, :>, 0
+
+    assert_nothing_raised { link.destroy! }
+
+    assert_equal 0, LinkDailyStatistic.where(link_id: link.id).count
+  end
+
+  test "reusing an archived link's path for a new active link is allowed" do
+    link = links(:basic_link)
+    link.update_column(:active, false)
+
+    replacement = Link.create!(domain_id: link.domain_id, redirect_config_id: link.redirect_config_id,
+                               path: link.path, active: true, generated_from_platform: "web")
+
+    assert replacement.persisted?
   end
 end

@@ -464,6 +464,43 @@ class GoogleIapService::RefundHandlerTest < ActiveSupport::TestCase
   # Refund for purchase not in DB
   # ---------------------------------------------------------------------------
 
+  test "does not refund a purchase belonging to another instance" do
+    other_buy = PurchaseEvent.create!(
+      project: projects(:two),
+      event_type: Grovs::Purchases::EVENT_BUY,
+      transaction_id: "token_other_tenant",
+      original_transaction_id: "token_other_tenant",
+      product_id: "com.other.premium",
+      identifier: "com.other.app",
+      price_cents: 999,
+      currency: "USD",
+      usd_price_cents: 999,
+      date: Time.current,
+      purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION,
+      order_id: "GPA.other-tenant-001",
+      quantity: 1,
+      webhook_validated: true,
+      store: true,
+      store_source: Grovs::Webhooks::GOOGLE
+    )
+
+    webhook = create_webhook
+    notification = build_voided_notification(
+      purchase_token: "token_other_tenant",
+      order_id: "GPA.other-tenant-001",
+      product_type: 1,
+      refund_type: 1
+    )
+
+    result = @service_instance.send(:handle_voided_notification, notification, @instance, webhook, "com.test.app")
+
+    assert_equal false, result
+    assert_nil PurchaseEvent.find_by(
+      transaction_id: "#{other_buy.transaction_id}_refund",
+      event_type: Grovs::Purchases::EVENT_REFUND
+    ), "a webhook for instance one must not mint refunds against instance two's purchases"
+  end
+
   test "returns false when no BUY events found" do
     webhook = create_webhook
     notification = build_voided_notification(

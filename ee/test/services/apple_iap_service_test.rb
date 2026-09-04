@@ -1,7 +1,8 @@
 require "test_helper"
 
 class AppleIapServiceTest < ActiveSupport::TestCase
-  fixtures :instances, :projects, :devices, :visitors, :purchase_events, :subscription_states
+  fixtures :instances, :projects, :devices, :visitors, :purchase_events, :subscription_states,
+           :applications, :ios_configurations
 
   setup do
     @helper = AppleIapService.new
@@ -18,7 +19,7 @@ class AppleIapServiceTest < ActiveSupport::TestCase
       "notificationType" => type,
       "subtype" => subtype,
       "data" => {
-        "bundleId" => "com.test.app",
+        "bundleId" => "com.test.iosapp",
         "signedTransactionInfo" => "fake_signed_txn",
         "signedRenewalInfo" => "fake_signed_renewal"
       }
@@ -28,7 +29,7 @@ class AppleIapServiceTest < ActiveSupport::TestCase
       "transactionId" => transaction_id,
       "originalTransactionId" => original_transaction_id,
       "productId" => product_id,
-      "bundleId" => "com.test.app",
+      "bundleId" => "com.test.iosapp",
       "price" => price,
       "currency" => currency,
       "purchaseDate" => Time.current.to_i * 1000,
@@ -67,6 +68,27 @@ class AppleIapServiceTest < ActiveSupport::TestCase
   test "handle_notification returns false for missing signedPayload" do
     result = @helper.handle_notification({}, @project)
     assert_not result
+  end
+
+  test "handle_notification rejects a bundleId that isn't the project's iOS app" do
+    receipt = { "notificationType" => "SUBSCRIBED",
+                "data" => { "bundleId" => "com.attacker.otherapp", "environment" => "Sandbox",
+                            "signedTransactionInfo" => "t", "signedRenewalInfo" => "r" } }
+    AppStoreServerApi::Utils::Decoder.stub(:decode_jws!, ->(_) { receipt }) do
+      assert_no_difference "IapWebhookMessage.count" do
+        assert_not @helper.handle_notification({ "signedPayload" => "jws" }, @project)
+      end
+    end
+  end
+
+  test "handle_notification rejects an environment that doesn't match the endpoint" do
+    receipt = { "notificationType" => "SUBSCRIBED",
+                "data" => { "bundleId" => "com.test.iosapp", "environment" => Grovs::Apple::ENV_SANDBOX,
+                            "signedTransactionInfo" => "t", "signedRenewalInfo" => "r" } }
+    AppStoreServerApi::Utils::Decoder.stub(:decode_jws!, ->(_) { receipt }) do
+      assert_not @helper.handle_notification({ "signedPayload" => "jws" }, @project,
+                                             expected_environment: Grovs::Apple::ENV_PRODUCTION)
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -113,7 +135,7 @@ class AppleIapServiceTest < ActiveSupport::TestCase
     assert_equal Grovs::Purchases::EVENT_BUY, event.event_type
     assert_equal Grovs::Purchases::TYPE_SUBSCRIPTION, event.purchase_type
     assert_equal "com.test.new_product", event.product_id
-    assert_equal "com.test.app", event.identifier
+    assert_equal "com.test.iosapp", event.identifier
     assert event.webhook_validated
     assert event.store
     assert_equal Grovs::Webhooks::APPLE, event.store_source
@@ -315,7 +337,7 @@ class AppleIapServiceTest < ActiveSupport::TestCase
     assert result
 
     # The upgrade creates a cancel for the old subscription
-    cancel_txn = "#{purchase_events(:buy_event).transaction_id}_upgrade_cancel"
+    cancel_txn = "#{purchase_events(:buy_event_repeat).transaction_id}_upgrade_cancel"
     cancel = PurchaseEvent.find_by(transaction_id: cancel_txn, project: @project)
     assert cancel, "Should cancel the old subscription"
     assert_equal Grovs::Purchases::EVENT_CANCEL, cancel.event_type
@@ -443,7 +465,7 @@ class AppleIapServiceTest < ActiveSupport::TestCase
     transaction_info = {
       "originalTransactionId" => "orig_001",
       "productId" => "com.test.premium",
-      "bundleId" => "com.test.app",
+      "bundleId" => "com.test.iosapp",
       "price" => 9990,
       "currency" => "USD",
       "purchaseDate" => Time.current.to_i * 1000
@@ -467,7 +489,7 @@ class AppleIapServiceTest < ActiveSupport::TestCase
     transaction_info = {
       "transactionId" => "txn_001",
       "originalTransactionId" => "orig_001",
-      "bundleId" => "com.test.app",
+      "bundleId" => "com.test.iosapp",
       "price" => 9990,
       "currency" => "USD",
       "purchaseDate" => Time.current.to_i * 1000
@@ -516,22 +538,19 @@ class AppleIapServiceTest < ActiveSupport::TestCase
     end
   end
 
+  def upgrade_info(transaction_id, product_id: "com.test.premium")
+    { transaction_id: transaction_id, original_transaction_id: "orig_txn_001",
+      product_id: product_id, identifier: "com.test.iosapp", price: 1499, currency: "USD",
+      start_date: Time.current.to_i * 1000, purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION,
+      expires_date: 1.month.from_now }
+  end
+
   # ---------------------------------------------------------------------------
   # Upgrade orchestration (direct unit tests for revoke_old_subscription_enable_new_one)
   # ---------------------------------------------------------------------------
 
   test "revoke_old_subscription_enable_new_one creates cancel event with RecordNotUnique protection" do
-    subscription_info = {
-      transaction_id: "txn_upgrade_new",
-      original_transaction_id: "orig_txn_001",
-      product_id: "com.test.premium",
-      identifier: "com.test.app",
-      price: 1499,
-      currency: "USD",
-      start_date: Time.current.to_i * 1000,
-      purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION,
-      expires_date: 1.month.from_now
-    }
+    subscription_info = upgrade_info("txn_upgrade_new")
 
     fake_event = ->(_et, _si, _p) { true }
 
@@ -539,24 +558,50 @@ class AppleIapServiceTest < ActiveSupport::TestCase
       @helper.send(:revoke_old_subscription_enable_new_one, 'UPGRADE', 'UPGRADE', subscription_info, @project)
     end
 
-    cancel_txn_id = "#{purchase_events(:buy_event).transaction_id}_upgrade_cancel"
+    cancel_txn_id = "#{purchase_events(:buy_event_repeat).transaction_id}_upgrade_cancel"
     cancel = PurchaseEvent.find_by(transaction_id: cancel_txn_id, project: @project)
     assert cancel, "Cancel event should be created"
     assert_equal Grovs::Purchases::EVENT_CANCEL, cancel.event_type
   end
 
+  test "revoke_old_subscription_enable_new_one revokes the latest buy, never a sibling or a cancel" do
+    subscription_info = upgrade_info("txn_upgrade_deterministic")
+    # orig_txn_001 carries an older buy, a newer buy and a cancel.
+    assert_operator PurchaseEvent.where(original_transaction_id: "orig_txn_001",
+                                        project_id: @project.id).count, :>, 1
+
+    @helper.stub(:handle_subscription_event_type, ->(_et, _si, _p) { true }) do
+      @helper.send(:revoke_old_subscription_enable_new_one, 'UPGRADE', 'UPGRADE', subscription_info, @project)
+    end
+
+    cancels = PurchaseEvent.where(project: @project).where("transaction_id LIKE '%\\_upgrade\\_cancel'")
+    assert_equal ["#{purchase_events(:buy_event_repeat).transaction_id}_upgrade_cancel"],
+                 cancels.pluck(:transaction_id),
+                 "exactly one cancel, derived from the LATEST buy"
+  end
+
+  # Cold-storage tenant: no retained BUY, so the primary lookup misses and the state fallback
+  # runs. On redelivery the state already points at the incoming transaction.
+  test "the subscription_states fallback never cancels the incoming transaction" do
+    incoming = purchase_events(:buy_event_repeat).transaction_id
+    PurchaseEvent.where(original_transaction_id: "orig_txn_001", project_id: @project.id)
+                 .where.not(transaction_id: incoming).delete_all
+    SubscriptionState.where(original_transaction_id: "orig_txn_001", project_id: @project.id).delete_all
+    SubscriptionState.create!(project: @project, original_transaction_id: "orig_txn_001",
+                              latest_transaction_id: incoming, product_id: "com.test.premium_plus",
+                              purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION)
+
+    @helper.stub(:handle_subscription_event_type, ->(_et, _si, _p) { true }) do
+      @helper.send(:revoke_old_subscription_enable_new_one, 'UPGRADE', 'UPGRADE',
+                   upgrade_info(incoming, product_id: "com.test.premium_plus"), @project)
+    end
+
+    assert_nil PurchaseEvent.find_by(transaction_id: "#{incoming}_upgrade_cancel", project: @project),
+               "the fallback must not resolve to the incoming transaction"
+  end
+
   test "revoke_old_subscription_enable_new_one handles concurrent calls safely" do
-    subscription_info = {
-      transaction_id: "txn_upgrade_concurrent",
-      original_transaction_id: "orig_txn_001",
-      product_id: "com.test.premium",
-      identifier: "com.test.app",
-      price: 1499,
-      currency: "USD",
-      start_date: Time.current.to_i * 1000,
-      purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION,
-      expires_date: 1.month.from_now
-    }
+    subscription_info = upgrade_info("txn_upgrade_concurrent")
 
     fake_event = ->(_et, _si, _p) { true }
 
@@ -570,17 +615,7 @@ class AppleIapServiceTest < ActiveSupport::TestCase
   end
 
   test "revoke_old_subscription_enable_new_one looks up from subscription_states" do
-    subscription_info = {
-      transaction_id: "txn_upgrade_state_lookup",
-      original_transaction_id: "orig_txn_001",
-      product_id: "com.test.premium",
-      identifier: "com.test.app",
-      price: 1499,
-      currency: "USD",
-      start_date: Time.current.to_i * 1000,
-      purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION,
-      expires_date: 1.month.from_now
-    }
+    subscription_info = upgrade_info("txn_upgrade_state_lookup")
 
     fake_event = ->(_et, _si, _p) { true }
 
@@ -607,7 +642,7 @@ class AppleIapServiceTest < ActiveSupport::TestCase
       "transactionId" => "txn_extract_001",
       "originalTransactionId" => "orig_extract_001",
       "productId" => "com.test.premium",
-      "bundleId" => "com.test.app",
+      "bundleId" => "com.test.iosapp",
       "price" => 9990,
       "currency" => "USD",
       "purchaseDate" => Time.current.to_i * 1000,
@@ -629,7 +664,7 @@ class AppleIapServiceTest < ActiveSupport::TestCase
       assert_equal "txn_extract_001", result[:transaction_id]
       assert_equal "orig_extract_001", result[:original_transaction_id]
       assert_equal "com.test.premium", result[:product_id]
-      assert_equal "com.test.app", result[:identifier]
+      assert_equal "com.test.iosapp", result[:identifier]
       assert_equal 999, result[:price]
       assert_equal "USD", result[:currency]
     end
@@ -679,7 +714,7 @@ class AppleIapServiceTest < ActiveSupport::TestCase
       event_type: Grovs::Purchases::EVENT_BUY,
       device: devices(:ios_device),
       project: @project,
-      identifier: "com.test.app",
+      identifier: "com.test.iosapp",
       price_cents: 999,
       currency: "USD",
       usd_price_cents: 999,
@@ -713,7 +748,8 @@ class AppleIapServiceTest < ActiveSupport::TestCase
 end
 
 class AppleRenewalDedupTest < ActiveSupport::TestCase
-  fixtures :instances, :projects, :devices, :visitors, :purchase_events, :subscription_states
+  fixtures :instances, :projects, :devices, :visitors, :purchase_events, :subscription_states,
+           :applications, :ios_configurations
 
   setup do
     @helper = AppleIapService.new
@@ -722,10 +758,10 @@ class AppleRenewalDedupTest < ActiveSupport::TestCase
 
   def send_renewal(transaction_id:, original_transaction_id:)
     outer = { "notificationType" => "DID_RENEW", "subtype" => nil,
-              "data" => { "bundleId" => "com.test.app",
+              "data" => { "bundleId" => "com.test.iosapp",
                           "signedTransactionInfo" => "t", "signedRenewalInfo" => "r" } }
     txn = { "transactionId" => transaction_id, "originalTransactionId" => original_transaction_id,
-            "productId" => "com.test.premium", "bundleId" => "com.test.app",
+            "productId" => "com.test.premium", "bundleId" => "com.test.iosapp",
             "price" => 9990, "currency" => "USD",
             "purchaseDate" => Time.current.to_i * 1000,
             "expiresDate" => 1.month.from_now.to_i * 1000, "environment" => "Sandbox" }
@@ -777,7 +813,8 @@ class AppleRenewalDedupTest < ActiveSupport::TestCase
 end
 
 class AppleProductChangeCancelTest < ActiveSupport::TestCase
-  fixtures :instances, :projects, :devices, :visitors, :purchase_events, :subscription_states
+  fixtures :instances, :projects, :devices, :visitors, :purchase_events, :subscription_states,
+           :applications, :ios_configurations
 
   setup do
     @helper = AppleIapService.new
@@ -803,10 +840,10 @@ class AppleProductChangeCancelTest < ActiveSupport::TestCase
 
   def notify(type:, transaction_id:, original_transaction_id:, subtype: nil, product_id: "com.test.tier_pro")
     outer = { "notificationType" => type, "subtype" => subtype,
-              "data" => { "bundleId" => "com.test.app", "signedTransactionInfo" => "t",
+              "data" => { "bundleId" => "com.test.iosapp", "signedTransactionInfo" => "t",
                           "signedRenewalInfo" => "r" } }
     txn = { "transactionId" => transaction_id, "originalTransactionId" => original_transaction_id,
-            "productId" => product_id, "bundleId" => "com.test.app", "price" => 9990,
+            "productId" => product_id, "bundleId" => "com.test.iosapp", "price" => 9990,
             "currency" => "USD", "purchaseDate" => Time.current.to_i * 1000,
             "expiresDate" => 1.month.from_now.to_i * 1000, "environment" => "Sandbox" }
     responses = [outer, txn, { "expiresDate" => 1.month.from_now.to_i * 1000 }]

@@ -3,6 +3,47 @@ require "test_helper"
 class CustomHostnameAvailabilityTest < ActiveSupport::TestCase
   fixtures :instances, :projects, :domains, :custom_hostnames
 
+  def with_main_domains(hosts)
+    original = Grovs::Domains::MAIN
+    Grovs::Domains.send(:remove_const, :MAIN)
+    Grovs::Domains.const_set(:MAIN, hosts.freeze)
+    yield
+  ensure
+    Grovs::Domains.send(:remove_const, :MAIN)
+    Grovs::Domains.const_set(:MAIN, original)
+  end
+
+  # deployment_host? short-circuits these, so accepting one provisions a host that serves nothing.
+  test "a host under a three-label deployment domain is not available" do
+    with_main_domains(%w[links.app.com]) do
+      assert_not DomainConfigurationService.custom_hostname_available?("foo.links.app.com")
+    end
+  end
+
+  test "a host outside the deployment domain is still available" do
+    with_main_domains(%w[links.app.com]) do
+      assert DomainConfigurationService.custom_hostname_available?("go.otherbrand.io")
+    end
+  end
+
+  # Registering the ingress itself would instruct a self-referential CNAME.
+  test "the configured ingress host is not available" do
+    ENV["SELF_HOSTED_INGRESS_HOST"] = "alb.otherbrand.io"
+    assert_not DomainConfigurationService.custom_hostname_available?("alb.otherbrand.io")
+    assert DomainConfigurationService.custom_hostname_available?("go.otherbrand.io")
+  ensure
+    ENV.delete("SELF_HOSTED_INGRESS_HOST")
+  end
+
+  test "the model rejects a host under a three-label deployment domain" do
+    with_main_domains(%w[links.app.com]) do
+      ch = CustomHostname.new(project: projects(:one), domain: domains(:one),
+                              hostname: "foo.links.app.com", status: "pending", source: "enterprise")
+      assert_not ch.valid?
+      assert_includes ch.errors[:hostname], "is reserved"
+    end
+  end
+
   test "available for a fresh subdomain" do
     assert DomainConfigurationService.custom_hostname_available?("links.fresh-co.com")
   end

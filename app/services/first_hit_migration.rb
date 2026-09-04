@@ -7,8 +7,9 @@ class FirstHitMigration
   LOCK_TTL_SECONDS = 10
   # Per-source upstream call ceiling. Circuit breaker against pathologies (Redis flush,
   # scanner attacks, regression that bypasses MigratedLink cache) — NOT a normal-traffic
-  # quota. Sized at ~100/sec to align with Branch/AppsFlyer typical per-customer ceilings,
-  # so legitimate viral first-hit traffic isn't degraded to project_defaults.
+  # quota. This is a per-MINUTE cap (6000/min, ~100/sec averaged) sized to align with
+  # Branch/AppsFlyer typical per-customer ceilings; note it is a fixed-window minute
+  # bucket, so it tolerates bursts within a minute rather than smoothing to 100/sec.
   UPSTREAM_RATE_LIMIT_PER_MINUTE = 6000
 
   # Lua script for atomic CAS-unlock (NOT Ruby Kernel#eval — Redis EVAL).
@@ -94,8 +95,8 @@ class FirstHitMigration
       )
     end
     if link.nil?
-      # Builder returned nil (project missing domain/redirect_config). Cache a short
-      # transient row so repeat clicks don't burn upstream quota until the operator fixes it.
+      # Builder returned nil (missing domain/redirect_config, or an exhausted path namespace).
+      # Cache a short transient row so repeat clicks don't burn upstream quota until it's fixed.
       upsert_migrated_link(
         source: source, old_path: old_path,
         status: MigratedLink::STATUS_TRANSIENT_ERROR, link_id: nil,

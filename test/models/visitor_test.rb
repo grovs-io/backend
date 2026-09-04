@@ -13,12 +13,9 @@ class VisitorTest < ActiveSupport::TestCase
     assert_equal visitor.id, fetched.id
   end
 
-  test "fetch_by_hash_id round-trips without project_id" do
+  test "fetch_by_hash_id returns nil without project_id" do
     visitor = visitors(:ios_visitor)
-    hashid = visitor.hashid
-    fetched = Visitor.fetch_by_hash_id(hashid, nil)
-    assert_not_nil fetched
-    assert_equal visitor.id, fetched.id
+    assert_nil Visitor.fetch_by_hash_id(visitor.hashid, nil)
   end
 
   test "fetch_by_hash_id returns nil for invalid hashid" do
@@ -316,5 +313,72 @@ class VisitorTest < ActiveSupport::TestCase
     end
 
     assert called, "Expected NotificationMessageService.add_messages_for_new_visitor to be called"
+  end
+
+  test "creating a visitor stamps device_last_seens for its project and device" do
+    project = projects(:two)
+    device = devices(:ios_device)
+    DeviceLastSeen.where(project_id: project.id, device_id: device.id).delete_all
+
+    assert_difference "DeviceLastSeen.count", 1 do
+      Visitor.create!(project: project, device: device, web_visitor: false)
+    end
+
+    stamped = DeviceLastSeen.where(project_id: project.id, device_id: device.id).pick(:last_seen_at)
+    assert_in_delta Time.current.to_f, stamped.to_f, 5.0
+  end
+
+  # An existing device joining a NEW project is the gap device-creation-only stamping missed.
+  test "an existing device seen in a second project gets its own row" do
+    device = devices(:ios_device)
+    DeviceLastSeen.where(device_id: device.id).delete_all
+    Visitor.where(device_id: device.id, project_id: projects(:two).id).delete_all
+
+    Visitor.create!(project: projects(:two), device: device, web_visitor: false)
+
+    assert DeviceLastSeen.exists?(project_id: projects(:two).id, device_id: device.id)
+  end
+
+  # Pins the callback order: a raise in an after_commit halts the rest of the chain.
+  test "a notification failure does not lose the stamp" do
+    project = projects(:two)
+    device = devices(:ios_device)
+    DeviceLastSeen.where(project_id: project.id, device_id: device.id).delete_all
+    Visitor.where(device_id: device.id, project_id: project.id).delete_all
+
+    NotificationMessageService.stub(:add_messages_for_new_visitor, ->(_v) { raise "boom" }) do
+      Visitor.create!(project: project, device: device, web_visitor: false)
+    rescue RuntimeError
+      nil
+    end
+
+    assert DeviceLastSeen.exists?(project_id: project.id, device_id: device.id)
+  end
+
+  test "a stamping failure does not abort visitor creation" do
+    project = projects(:two)
+    device = devices(:ios_device)
+    Visitor.where(device_id: device.id, project_id: project.id).delete_all
+
+    DeviceLastSeen.stub(:stamp_batch!, ->(_stamps) { raise ActiveRecord::StatementInvalid, "boom" }) do
+      assert_difference "Visitor.count", 1 do
+        Visitor.create!(project: project, device: device, web_visitor: false)
+      end
+    end
+  end
+
+  # Per-pair lifetime cost, not per-request: updates must not re-stamp.
+  test "updating a visitor does not stamp again" do
+    project = projects(:two)
+    device = devices(:ios_device)
+    Visitor.where(device_id: device.id, project_id: project.id).delete_all
+    visitor = Visitor.create!(project: project, device: device, web_visitor: false)
+
+    calls = 0
+    DeviceLastSeen.stub(:stamp_batch!, ->(_stamps) { calls += 1 }) do
+      visitor.update!(web_visitor: true)
+    end
+
+    assert_equal 0, calls
   end
 end

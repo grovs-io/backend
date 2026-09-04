@@ -56,7 +56,11 @@ class Api::V1::Mcp::AuthController < ApplicationController
   # DELETE /api/v1/mcp/token
   # Self-revoke: revokes the MCP token used in the Authorization header.
   def revoke_token
-    @mcp_token.revoke!
+    ActiveRecord::Base.transaction do
+      @mcp_token.revoke!
+      Audit.record_for_user(user: current_user, action: "mcp_token.revoked", actor: AuditActor.user(current_user, via: "mcp_token"),
+                                 target: Audit.target_for(@mcp_token).merge("name" => @mcp_token.name))
+    end
     render json: { message: "Token revoked" }, status: :ok
   end
 
@@ -139,7 +143,11 @@ class Api::V1::Mcp::AuthController < ApplicationController
       return
     end
 
-    token.revoke!
+    ActiveRecord::Base.transaction do
+      token.revoke!
+      Audit.record_for_user(user: user, action: "mcp_token.revoked", actor: AuditActor.user(user, via: "dashboard"),
+                                 target: Audit.target_for(token).merge("name" => token.name))
+    end
     render json: { message: "Token revoked" }, status: :ok
   end
 

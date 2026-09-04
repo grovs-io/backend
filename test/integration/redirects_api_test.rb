@@ -66,6 +66,17 @@ class RedirectsApiTest < ActionDispatch::IntegrationTest
     assert @project.redirect_config.show_preview_ios, "show_preview_ios must persist"
   end
 
+  test "update redirect config sets copy_to_clipboard toggles" do
+    put "#{API_PREFIX}/projects/#{@project.id}/redirect_config",
+        params: { copy_to_clipboard_ios: true, copy_to_clipboard_android: false },
+        headers: @headers
+    assert_response :ok
+
+    config = @project.redirect_config.reload
+    assert_equal true, config.copy_to_clipboard_ios
+    assert_equal false, config.copy_to_clipboard_android
+  end
+
   # --- Set Platform Redirect ---
 
   test "set redirect for iOS phone with fallback URL persists in DB" do

@@ -96,6 +96,21 @@ class ExportApiTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "export links campaign_id with a leading zero is parsed as decimal, not octal" do
+    Sidekiq::Testing.fake! do
+      ExportLinkDataJob.jobs.clear
+      campaign = campaigns(:one)
+
+      post "#{API_PREFIX}/projects/#{@project.id}/exports/links",
+        params: { active: true, sdk: false, campaign_id: "0#{campaign.id}" },
+        headers: @headers
+      assert_response :accepted
+
+      safe_params = ExportLinkDataJob.jobs.first["args"][1]
+      assert_equal campaign.id, safe_params["campaign_id"]
+    end
+  end
+
   test "export links with non-integer campaign_id returns 400 and does not enqueue" do
     Sidekiq::Testing.fake! do
       ExportLinkDataJob.jobs.clear

@@ -47,10 +47,29 @@ class BranchMigrationClientTest < ActiveSupport::TestCase
       assert_equal "email",  r.payload["tracking_source"]
       assert_equal "promo",  r.payload["tracking_medium"]
       assert_equal %w[tag1 tag2], r.payload["tags"]
+      assert_equal "Hello", r.payload["name"], "name must prefer $og_title over ~feature"
       assert_equal "branch", r.payload["provider"]
       assert_equal "custom_value", r.payload["custom_data"]["custom_key"]
       assert_not r.payload["custom_data"].key?("$ios_url"), "platform URLs leaked into custom_data"
       assert_not r.payload["custom_data"].key?("$og_title"), "OG fields leaked into custom_data"
+    end
+  end
+
+  test "name prefers $link_title for dashboard quick links" do
+    body = { "data" => { "$link_title" => "bun-asa", "$marketing_title" => "bun-asa", "~feature" => "marketing" } }
+    HTTParty.stub(:get, fake_response(code: 200, body: body)) do
+      r = @client.fetch("abc")
+      assert_equal "bun-asa", r.payload["name"]
+      assert_not r.payload["custom_data"].key?("$link_title"), "title keys leaked into custom_data"
+      assert_not r.payload["custom_data"].key?("$marketing_title"), "title keys leaked into custom_data"
+    end
+  end
+
+  test "name falls back to ~feature when no title keys present" do
+    body = { "data" => { "~feature" => "sharing" } }
+    HTTParty.stub(:get, fake_response(code: 200, body: body)) do
+      r = @client.fetch("abc")
+      assert_equal "sharing", r.payload["name"]
     end
   end
 

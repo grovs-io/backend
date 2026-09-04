@@ -86,29 +86,15 @@ class QuickLinksTest < ActionDispatch::IntegrationTest
     assert_equal @go_domain.id, created_link.domain_id
   end
 
-  # --- generate_random_path logic bug (masked by path length) ---
-  #
-  # The method has a logic error on line 59:
-  #   `break path unless QuickLink.exists?(path: path) && path != "create"`
-  # Should be `||` not `&&`. With `&&`, if path == "create", the second operand
-  # is false, so `unless false` → breaks and returns "create" as the path.
-  #
-  # HOWEVER: SecureRandom.hex(32)[0, 5] always produces a 5-char hex string (0-9, a-f),
-  # and "create" is 6 characters. So path can NEVER equal "create" — the bug is
-  # unreachable. It's still wrong logic that should be fixed (if the path length
-  # ever changes, the bug becomes exploitable and "create" would conflict with
-  # POST /create route).
-
-  test "generated paths are always 5 hex characters (which prevents the create collision bug)" do
+  test "generated paths are hex-only and an allowed length" do
     5.times do |i|
       post "/create", params: { title: "Hex check #{i}" },
         headers: { "Host" => @host }
       assert_response :ok
       json = JSON.parse(response.body)
       path = json["link"]["path"]
-      assert_equal 5, path.length, "Path should be exactly 5 characters"
-      assert_match(/\A[0-9a-f]{5}\z/, path, "Path should be hex-only characters")
-      assert_not_equal "create", path
+      assert_includes [5, 8, 10, 12], path.length, "Path length should be one of the escalation tiers"
+      assert_match(/\A[0-9a-f]+\z/, path, "Path should be hex-only characters")
     end
   end
 

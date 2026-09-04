@@ -23,10 +23,56 @@ class ActiveUsersReport
 
   private
 
-  # COUNT(DISTINCT visitor_id) per day in range
+  # CH rollup when enabled (nil → PG fallback), PG otherwise
   def fetch_daily_distinct_visitors
+    if Clickhouse.analytics_rollups_read_enabled?
+      series = clickhouse_series(:day)
+      return series unless series.nil?
+    end
+    pg_daily_distinct_visitors
+  end
+
+  def fetch_monthly_distinct_visitors
+    if Clickhouse.analytics_rollups_read_enabled?
+      series = clickhouse_series(:month)
+      return series unless series.nil?
+    end
+    pg_monthly_distinct_visitors
+  end
+
+  # One read per month: a whole-range daily read holds a uniqExact state per bucket and OOMs.
+  def clickhouse_series(grouping)
+    month_windows.each_with_object({}) do |(from, to), merged|
+      series = ClickhouseReadService.active_visitors_series(
+        @project_ids, start_date: from, end_date: to, grouping: grouping
+      )
+      return nil if series.nil?
+
+      merged.merge!(series)
+    end
+  end
+
+  def month_windows
+    @month_windows ||= begin
+      windows = []
+      cursor = @start_date
+      while cursor <= @end_date
+        month_end = cursor.end_of_month
+        windows << [cursor, [month_end, @end_date].min]
+        cursor = month_end + 1
+      end
+      windows
+    end
+  end
+
+  # COUNT(DISTINCT visitor_id) per day in range
+  def pg_daily_distinct_visitors
+    month_windows.each_with_object({}) { |(from, to), merged| merged.merge!(pg_daily_window(from, to)) }
+  end
+
+  def pg_daily_window(from, to)
     rows = VisitorDailyStatistic
-      .where(project_id: @project_ids, event_date: @start_date..@end_date)
+      .where(project_id: @project_ids, event_date: from..to)
       .where.not(visitor_id: nil)
       .group(:event_date)
       .pluck(:event_date, Arel.sql("COUNT(DISTINCT visitor_id)"))
@@ -35,17 +81,21 @@ class ActiveUsersReport
   end
 
   # COUNT(DISTINCT visitor_id) per (partial) month in range
-  def fetch_monthly_distinct_visitors
+  def pg_monthly_distinct_visitors
+    month_windows.each_with_object({}) { |(from, to), merged| merged.merge!(pg_monthly_window(from, to)) }
+  end
+
+  def pg_monthly_window(from, to)
     if ActiveRecord::Base.with_connection(&:adapter_name).downcase.include?("mysql")
       rows = VisitorDailyStatistic
-        .where(project_id: @project_ids, event_date: @start_date..@end_date)
+        .where(project_id: @project_ids, event_date: from..to)
         .where.not(visitor_id: nil)
         .group(Arel.sql("DATE_FORMAT(event_date, '%Y-%m')"))
         .pluck(Arel.sql("DATE_FORMAT(event_date, '%Y-%m')"), Arel.sql("COUNT(DISTINCT visitor_id)"))
       rows.to_h
     else
       rows = VisitorDailyStatistic
-        .where(project_id: @project_ids, event_date: @start_date..@end_date)
+        .where(project_id: @project_ids, event_date: from..to)
         .where.not(visitor_id: nil)
         .group(Arel.sql("date_trunc('month', event_date)"))
         .pluck(Arel.sql("date_trunc('month', event_date)::date"),
@@ -72,6 +122,8 @@ class ActiveUsersReport
 
   def build_csv(filled_daily, filled_monthly, monthly_total)
     CSV.generate(headers: true) do |csv|
+
+      csv << ["Range", "#{@start_date} to #{@end_date}"]
 
       # Totals (dashboard-comparable)
       csv << ["Sum of Monthly Unique Active Users", monthly_total]

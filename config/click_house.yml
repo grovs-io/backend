@@ -1,0 +1,36 @@
+# ClickHouse connection configuration.
+# Env vars override all values: CLICKHOUSE_URL, CLICKHOUSE_DATABASE,
+# and username/password extracted from CLICKHOUSE_URL (user:pass@host).
+development:
+  main:
+    database: grovs_dev
+    url: http://localhost:8123
+    username: default
+    password:
+
+test:
+  main:
+    database: grovs_test
+    url: http://localhost:8123
+    username: default
+    password:
+    # Test-only deterministic writes. Production/staging intentionally do not
+    # inherit these settings.
+    variables:
+      mutations_sync: 1
+      async_insert: 0
+      wait_for_async_insert: 1
+
+staging:
+  main:
+    database: <%= ENV.fetch('CLICKHOUSE_DATABASE', 'grovs_staging') %>
+    url: <%= ENV.fetch('CLICKHOUSE_URL', 'http://localhost:8123') %>
+    username: default
+    password:
+
+production:
+  main:
+    database: <%= ENV.fetch('CLICKHOUSE_DATABASE', 'grovs_production') %>
+    url: <%= ENV.fetch('CLICKHOUSE_URL', 'http://localhost:8123') %>
+    username: default
+    password:

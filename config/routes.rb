@@ -11,6 +11,7 @@ Rails.application.routes.draw do
   constraints(PublicSubdomain) do
     get '.well-known/apple-app-site-association', to: "public/verification#generate_ios_file"
     get '.well-known/assetlinks.json',to: "public/verification#generate_android_file"
+    get '.well-known/grovs-domain-verification', to: "public/verification#domain_verification"
 
     get '/mm/*value', to: "public/marketing_messages#open_marketing_message"
     get '/*value', to: "public/links#open_app_link"
@@ -112,6 +113,7 @@ Rails.application.routes.draw do
 
         # Pure DNS lookup; does NOT require the hostname to be a registered CustomHostname.
         get    'projects/:id/custom_domains/preflight', to: "domains#preflight_custom_domain"
+        post   'projects/:id/custom_domains/verify', to: "domains#verify_custom_domain"
 
         # Combined CH + MigrationSource creation (atomic). Standalone create on
         # /migration_source was removed because every legitimate flow needs both rows.
@@ -124,6 +126,8 @@ Rails.application.routes.draw do
 
         # Links
         post 'projects/:id/links', to: "links#create_link"
+        # DEPRECATED / MARKED FOR DELETION (2026-07-15): superseded by links/search_v2.
+        # FE calls only search_v2; verify zero server traffic before removing this route + action.
         post 'projects/:id/links/search', to: "links#current_project_links"
         post 'projects/:id/links/search_v2', to: "links#current_project_links_v2"
         post 'projects/:id/links/by_ids', to: "links#links_by_ids"
@@ -136,8 +140,12 @@ Rails.application.routes.draw do
         post 'projects/:id/campaigns', to: "campaigns#create"
         patch 'projects/:id/campaigns/:campaign_id', to: "campaigns#update"
         delete 'projects/:id/campaigns/:campaign_id', to: "campaigns#archive"
+        # DEPRECATED / MARKED FOR DELETION (2026-07-15): superseded by campaigns/search_v2.
+        # Backed by EventMetricsQuery#sorted_by_campaigns (2x raw-events scans + COUNT(DISTINCT device_id)).
+        # FE calls only search_v2; verify zero server traffic before removing this route + action.
         post 'projects/:id/campaigns/search', to: "campaigns#current_project_campaigns"
         post 'projects/:id/campaigns/search_v2', to: "campaigns#current_project_campaigns_v2"
+        # DEPRECATED (2026-07-25): unused by grovs-web-app — remove after zero-traffic check
         post 'projects/:id/campaigns/metrics_overview', to: "campaigns#metrics_for_overview"
 
         # Events
@@ -149,25 +157,62 @@ Rails.application.routes.draw do
 
         # Exports
         post 'projects/:id/exports/links', to: "export#export_link_data"
+        # DEPRECATED (2026-07-25): unused by grovs-web-app — remove after zero-traffic check
         post 'instances/:id/exports/usage', to: "export#export_usage_data"
 
         # Visitors
         post 'projects/:id/visitors/aggregated', to: "visitors#aggregated_visitors"
         post 'projects/:id/visitors/search', to: "visitors#visitors"
         get 'projects/:id/visitors/:visitor_id', to: "visitors#visitor_details"
+        # DEPRECATED / MARKED FOR DELETION (2026-07-15): legacy per-visitor event CASE-sum
+        # aggregation over the RAW events table with NO date bound — catastrophic at scale.
+        # FE no longer calls these paths (only a response-type field shares the name).
+        # Verify zero server traffic, then remove these routes + the two controller actions.
         post 'projects/:id/visitors/aggregated_metrics', to: "visitors#aggregated_visitor_metrics_for_search_params"
         post 'projects/:id/visitors/metrics', to: "visitors#visitor_metrics_for_search_params"
 
         # Purchases (Enterprise)
-        if ENV.fetch("GROVS_EE", "false") == "true"
+        if Grovs.ee?
           post 'projects/:id/purchases/search', to: "purchases#purchases"
           post 'projects/:id/purchases/revenue', to: "purchases#revenue_metrics"
         end
 
         # Dashboard
+        # DEPRECATED (2026-07-25): route only — DashboardMetrics stays (MCP consumer)
         post 'projects/:id/dashboard/metrics_overview', to: "dashboard#metrics_overview"
+        # DEPRECATED (2026-07-25): unused by grovs-web-app — remove after zero-traffic check
         post 'projects/:id/dashboard/links_views', to: "dashboard#links_views"
         post 'projects/:id/dashboard/top_links', to: "dashboard#best_performing_links"
+
+        # Analytics (ClickHouse-backed)
+        scope 'projects/:id/analytics' do
+          # Events Explorer
+          get 'events', to: 'analytics/events_explorer#index'
+          get 'events/volume', to: 'analytics/events_explorer#volume'
+          get 'events/field-values', to: 'analytics/events_explorer#field_values'
+          get 'events/fields', to: 'analytics/events_explorer#fields'
+          get 'events/:event_id', to: 'analytics/events_explorer#show'
+
+          # Overview (metrics + version dimension)
+          get 'overview/key-metrics', to: 'analytics/overview#key_metrics'
+          get 'overview/key-metrics/series', to: 'analytics/overview#key_metric_series'
+          # DEPRECATED (2026-07-25): superseded by version_distribution — remove after zero-traffic check
+          get 'overview/versions', to: 'analytics/overview#versions'
+          get 'overview/versions/distribution', to: 'analytics/overview#version_distribution'
+          get 'overview/trends/users', to: 'analytics/overview#user_trends'
+          # DEPRECATED (2026-07-25): unused by grovs-web-app — remove after zero-traffic check
+          get 'overview/sources/breakdown', to: 'analytics/overview#sources_breakdown'
+
+          # Retention summary (D1/D7/D30)
+          get 'retention/summary', to: 'analytics/retention#summary'
+
+          # Sessions (Explore-only: list + detail). :session_key is an opaque
+          # encoded (session_id + visitor_id) key from list rows — URL-safe,
+          # slash-free. Named :session_key (not :id) to avoid colliding with the
+          # scope's project :id param.
+          get 'sessions', to: 'analytics/sessions#index'
+          get 'sessions/:session_key', to: 'analytics/sessions#show'
+        end
 
         # Notifications
         get 'notifications/test'
@@ -189,6 +234,21 @@ Rails.application.routes.draw do
         post 'instances/:id/dismiss_get_started', to: "instances#dismiss_get_started"
         get 'instances/:id/setup_progress', to: "instances#setup_progress"
         post 'instances/:id/setup_progress/complete', to: "instances#complete_setup_step"
+
+        # Audit log (Enterprise)
+        if Grovs.ee?
+          get 'instances/:id/audit_events', to: "audit_events#index"
+          get 'instances/:id/audit_events/head', to: "audit_events#latest"
+          get 'instances/:id/audit_export_tokens', to: "audit_export_tokens#index"
+          post 'instances/:id/audit_export_tokens', to: "audit_export_tokens#create"
+          delete 'instances/:id/audit_export_tokens/:token_id', to: "audit_export_tokens#destroy"
+          get 'instances/:id/sso_connection', to: "sso_connections#show"
+          put 'instances/:id/sso_connection', to: "sso_connections#upsert"
+          delete 'instances/:id/sso_connection', to: "sso_connections#destroy"
+          post 'instances/:id/sso_connection/verify_domains', to: "sso_connections#verify_domains"
+          post 'instances/:id/sso_connection/scim_token', to: "sso_connections#create_scim_token"
+          delete 'instances/:id/sso_connection/scim_token', to: "sso_connections#destroy_scim_token"
+        end
 
         # Billing
         post 'instances/:id/billing/subscriptions', to: "payments#create_subscription_session"
@@ -213,6 +273,7 @@ Rails.application.routes.draw do
         post 'admin/create_custom_domain', to: "admin#create_custom_domain"
         post 'admin/migrate_firebase_links', to: "admin#migrate_firebase_links"
         post 'admin/flush_events', to: "admin#flush_events"
+        patch 'admin/instance_retention', to: "admin#update_instance_retention"
 
         # Diagnostics (unchanged)
         get 'diagnostics/test_exception', to: "diagnostics#test_exception"
@@ -221,18 +282,31 @@ Rails.application.routes.draw do
         post 'diagnostics/test_logs', to: "diagnostics#test_logs"
         get 'diagnostics/test_diagnostics', to: "diagnostics#test_diagnostics"
         post 'diagnostics/test_diagnostics', to: "diagnostics#test_diagnostics"
+        get 'diagnostics/health_metrics', to: "diagnostics#health_metrics"
 
         # Webhooks (unchanged)
         post 'webhooks/stripe', to: "webhooks#stripe_webhook"
         post 'webhooks/send_stripe_quotas'
 
         # IAP (Enterprise)
-        if ENV.fetch("GROVS_EE", "false") == "true"
+        if Grovs.ee?
           post 'iap/apple/production/:path', to: 'iap#apple_prod'
           post 'iap/apple/test/:path', to: 'iap#apple_test'
           post 'iap/google/:path', to: 'iap#google_handling'
         end
 
+      end
+    end
+
+    if Grovs.ee?
+      namespace :scim_v2, path: "scim/v2" do
+        get 'Users', to: 'users#index'
+        get 'Users/:id', to: 'users#show'
+        post 'Users', to: 'users#create'
+        put 'Users/:id', to: 'users#replace'
+        patch 'Users/:id', to: 'users#update'
+        delete 'Users/:id', to: 'users#destroy'
+        mount Scimitar::Engine, at: "/"
       end
     end
   end
@@ -255,10 +329,13 @@ Rails.application.routes.draw do
         post 'sdk/data_for_device_and_url', to: "sdk/links#data_for_device_details_and_url"
         post 'sdk/data_for_device_and_path', to: "sdk/links#data_for_device_details_and_path"
         post 'sdk/link_details', to: "sdk/links#link_details"
+        post 'sdk/clipboard_status', to: "sdk/links#clipboard_status"
         post 'sdk/create_link', to: "sdk/links#create_link"
 
         # Events
         post 'sdk/event', to: "sdk/events#add_event"
+        post 'sdk/event/custom', to: "sdk/events#add_custom_event"
+        post 'sdk/events/batch', to: "sdk/events#add_batch"
 
         # Notifications
         post 'sdk/notifications_for_device', to: "sdk/notifications#notifications_for_device"
@@ -266,12 +343,15 @@ Rails.application.routes.draw do
         post 'sdk/mark_notification_as_read', to: "sdk/notifications#mark_notification_as_read"
         get 'sdk/notifications_to_display_automatically', to: "sdk/notifications#notifications_to_display_automatically"
 
+        # Screen Aliases
+        post 'sdk/screen_aliases', to: "sdk/screen_aliases#create"
+
         # Visitors
         get 'sdk/visitor_attributes', to: "sdk/visitors#visitor_attributes"
         post 'sdk/visitor_attributes', to: "sdk/visitors#set_visitor_attributes"
 
         # Payments (Enterprise)
-        if ENV.fetch("GROVS_EE", "false") == "true"
+        if Grovs.ee?
           post 'sdk/add_payment_event', to: "sdk/payments#add_payment_event"
         end
 
@@ -288,7 +368,7 @@ Rails.application.routes.draw do
   # Legacy IAP webhook routes — kept for backward compatibility with Apple/Google webhook configurations
   namespace :api do
     namespace :v1 do
-      if ENV.fetch("GROVS_EE", "false") == "true"
+      if Grovs.ee?
         # apple
         post 'iap/apple/production/:path', to: 'iap#apple_prod'
         # apple sandbox
@@ -300,7 +380,11 @@ Rails.application.routes.draw do
 
       namespace :identity do
         namespace :sso do
+          # Which SSO providers this deployment has credentials for (self-hosted).
+          get '/providers', to: 'sessions#providers'
+
           # OmniAuth callback route
+          post '/discover', to: 'sessions#discover'
           post '/auth/:provider', to: 'sessions#passthru', as: :auth_request
           get '/auth/:provider/callback', to: 'sessions#create'
           post '/auth/:provider/callback', to: 'sessions#create'

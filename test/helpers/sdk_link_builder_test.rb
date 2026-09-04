@@ -29,6 +29,29 @@ class SdkLinkBuilderTest < ActiveSupport::TestCase
     assert_equal @project.redirect_config, link.redirect_config
   end
 
+  test "retries with a fresh path when another writer takes it first" do
+    stub_params(title: "Racing link")
+    paths = [links(:basic_link).path, "f4e2b1"]
+
+    LinksService.stub(:generate_valid_path, ->(_domain) { paths.shift }) do
+      link = build_and_save_sdk_link(platform_name: "ios")
+
+      assert link.persisted?
+      assert_equal "f4e2b1", link.path
+    end
+  end
+
+  test "gives up after repeated path collisions rather than retrying forever" do
+    stub_params(title: "Hopeless link")
+    taken = links(:basic_link).path
+
+    LinksService.stub(:generate_valid_path, ->(_domain) { taken }) do
+      assert_raises(LinksService::PathGenerationError) do
+        build_and_save_sdk_link(platform_name: "ios")
+      end
+    end
+  end
+
   test "generates a unique path on the domain" do
     stub_params(title: "Path Test")
 
@@ -125,6 +148,24 @@ class SdkLinkBuilderTest < ActiveSupport::TestCase
     assert_equal false, link.show_preview_android
   end
 
+  test "copy_to_clipboard params set the per-platform toggles" do
+    stub_params(title: "Copy Link", copy_to_clipboard_ios: true, copy_to_clipboard_android: false)
+
+    link = build_and_save_sdk_link(platform_name: "ios")
+
+    assert_equal true, link.copy_to_clipboard_ios
+    assert_equal false, link.copy_to_clipboard_android
+  end
+
+  test "copy_to_clipboard params left out keep the tri-state nil" do
+    stub_params(title: "No Copy Params")
+
+    link = build_and_save_sdk_link(platform_name: "ios")
+
+    assert_nil link.copy_to_clipboard_ios
+    assert_nil link.copy_to_clipboard_android
+  end
+
   # ---------------------------------------------------------------------------
   # Custom redirects integration
   # ---------------------------------------------------------------------------
@@ -179,6 +220,8 @@ class SdkLinkBuilderTest < ActiveSupport::TestCase
   def show_preview_param   = params.permit(:show_preview)[:show_preview]
   def show_preview_ios_param     = params.permit(:show_preview_ios)[:show_preview_ios]
   def show_preview_android_param = params.permit(:show_preview_android)[:show_preview_android]
+  def copy_to_clipboard_ios_param = params.permit(:copy_to_clipboard_ios)[:copy_to_clipboard_ios]
+  def copy_to_clipboard_android_param = params.permit(:copy_to_clipboard_android)[:copy_to_clipboard_android]
   def tracking_campaign_param    = params.permit(:tracking_campaign)[:tracking_campaign]
   def tracking_source_param      = params.permit(:tracking_source)[:tracking_source]
   def tracking_medium_param      = params.permit(:tracking_medium)[:tracking_medium]

@@ -2,11 +2,12 @@ class Api::V1::InstancesController < Api::V1::ProjectsBaseController
   include DashboardAuthorization
   before_action :doorkeeper_authorize!
   before_action :load_instance, only: [
-    :set_revenue_collection_enabled, :members_for_instance, :user_role_for_instance,
+    :members_for_instance, :user_role_for_instance,
     :instance_details, :dismiss_get_started, :setup_progress, :complete_setup_step
   ]
   before_action :load_admin_instance, only: [
-    :delete_instance, :edit_instance, :add_member_to_instance, :remove_member_from_instance
+    :delete_instance, :edit_instance, :add_member_to_instance, :remove_member_from_instance,
+    :set_revenue_collection_enabled
   ]
 
   def create_instance
@@ -19,34 +20,53 @@ class Api::V1::InstancesController < Api::V1::ProjectsBaseController
     service = InstanceProvisioningService.new(current_user: current_user)
     instance = service.create(name: name_param, members: members_params)
 
-    render json: {instance: InstanceSerializer.serialize(instance)}, status: :ok
+    payload = {instance: InstanceSerializer.serialize(instance)}
+    # Self-hosted only: copyable invite links for members invited during creation.
+    if Grovs.self_hosted? && service.invitation_tokens.any?
+      payload[:invite_urls] = service.invitation_tokens.transform_values { |token| invite_url_for(token) }
+    end
+
+    render json: payload, status: :ok
   end
 
   def delete_instance
     service = InstanceProvisioningService.new(current_user: current_user)
-    service.destroy(@instance)
+    # Audit first: destroy enqueues DeleteInstanceJob immediately (not on commit), so it cannot be rolled back.
+    ActiveRecord::Base.transaction do
+      audit!("instance.deletion_requested", instance_id: @instance.id, target: audit_target(@instance))
+      service.destroy(@instance)
+    end
 
     render json: {message: "Instance deleted"}, status: :ok
   end
 
   def set_revenue_collection_enabled
     @instance.revenue_collection_enabled = revenue_collection_enabled_param
-    @instance.save!
+    ActiveRecord::Base.transaction do
+      @instance.save!
+      audit!("instance.revenue_collection_changed", instance_id: @instance.id,
+             target: audit_target(@instance), changes: audit_diff(@instance))
+    end
 
     render json: {instance: InstanceSerializer.serialize(@instance)}, status: :ok
   end
 
   def current_user_instances
     skip_authorization
-    render json: {instances: InstanceSerializer.serialize(current_user.instances.includes(production: :domain, test: :domain))}, status: :ok
+    instances = current_user.instances.with_both_projects
+                            .includes(:stripe_subscriptions, :enterprise_subscription, production: :domain, test: :domain)
+    render json: {instances: InstanceSerializer.serialize(instances)}, status: :ok
   end
 
   def edit_instance
     @instance.production.name = name_param
     @instance.test.name = name_param + "-test"
 
-    @instance.production.save!
-    @instance.test.save!
+    ActiveRecord::Base.transaction do
+      @instance.production.save!
+      @instance.test.save!
+      audit!("instance.renamed", instance_id: @instance.id, target: audit_target(@instance), changes: audit_diff(@instance.production))
+    end
 
     render json: {project: InstanceSerializer.serialize(@instance)}, status: :ok
   end
@@ -63,7 +83,15 @@ class Api::V1::InstancesController < Api::V1::ProjectsBaseController
     end
 
     service = InstanceProvisioningService.new(current_user: current_user)
-    role = service.add_member(email_param, role_param, @instance)
+    role = ActiveRecord::Base.transaction do
+      r = service.add_member(email_param, role_param, @instance)
+      next nil unless r
+
+      audit!("instance.member_added", instance_id: @instance.id,
+             target: { "type" => "instance_role", "id" => r.id, "email" => email_param.downcase },
+             changes: { "after" => { "role" => r.role } })
+      r
+    end
     unless role
       render json: {error: "Wrong data"}, status: :unprocessable_entity
       return
@@ -72,14 +100,14 @@ class Api::V1::InstancesController < Api::V1::ProjectsBaseController
     payload = {role_added: InstanceRoleSerializer.serialize(role)}
     # Self-hosted only: add a copyable invite link. SaaS response is unchanged.
     if Grovs.self_hosted? && service.last_invitation_token.present?
-      payload[:invite_url] = "#{ENV['REACT_HOST_PROTOCOL']}#{ENV['REACT_HOST']}/accept-invite?token=#{service.last_invitation_token}"
+      payload[:invite_url] = invite_url_for(service.last_invitation_token)
     end
 
     render json: payload, status: :ok
   end
 
   def remove_member_from_instance
-    user = User.find_by(email: email_param)
+    user = User.find_for_email(email_param)
     if user && user.id == current_user.id
       render json: {error: "Forbidden"}, status: :forbidden
       return
@@ -91,7 +119,12 @@ class Api::V1::InstancesController < Api::V1::ProjectsBaseController
       return
     end
 
-    user_role.destroy!
+    target = { "type" => "instance_role", "id" => user_role.id, "email" => user.email }
+    before = { "role" => user_role.role }
+    ActiveRecord::Base.transaction do
+      user_role.destroy!
+      audit!("instance.member_removed", instance_id: @instance.id, target: target, changes: { "before" => before })
+    end
 
     render json: {message: "User deleted"}, status: :ok
   end
@@ -149,6 +182,10 @@ class Api::V1::InstancesController < Api::V1::ProjectsBaseController
   end
 
   private
+
+  def invite_url_for(token)
+    "#{ENV['REACT_HOST_PROTOCOL']}#{ENV['REACT_HOST']}/accept-invite?token=#{token}"
+  end
 
   # Params
 

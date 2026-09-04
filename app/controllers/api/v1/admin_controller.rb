@@ -2,13 +2,17 @@ class Api::V1::AdminController < Api::V1::ProjectsBaseController
   before_action :authenticate_request
 
   def create_enterprise_subscription
-    subscription = EnterpriseSubscriptionService.create(
-      instance_id: params[:instance_id],
-      start_date: params[:start_date],
-      end_date: params[:end_date],
-      total_maus: params[:total_maus],
-      active: params[:active]
-    )
+    subscription = nil
+    ActiveRecord::Base.transaction do
+      subscription = EnterpriseSubscriptionService.create(
+        instance_id: params[:instance_id],
+        start_date: params[:start_date],
+        end_date: params[:end_date],
+        total_maus: params[:total_maus],
+        active: params[:active]
+      )
+      audit!("enterprise_subscription.created", instance_id: subscription.instance_id, target: audit_target(subscription), changes: audit_diff(subscription))
+    end
 
     render json: { message: "Enterprise Subscription created successfully", subscription: subscription }, status: :created
   rescue ArgumentError => e
@@ -33,19 +37,26 @@ class Api::V1::AdminController < Api::V1::ProjectsBaseController
       return
     end
 
-    result = FirebaseMigrationService.new(
-      project: project,
-      deeplink_prefix: params[:deeplink_prefix],
-      short_link_prefix: params[:short_link_prefix]
-    ).import_csv(file.path)
+    begin
+      result = FirebaseMigrationService.new(
+        project: project,
+        deeplink_prefix: params[:deeplink_prefix],
+        short_link_prefix: params[:short_link_prefix]
+      ).import_csv(file.path)
+    rescue StandardError => e
+      return render(json: { error: "Failed to parse CSV: #{e.message}" }, status: :unprocessable_entity)
+    end
+
+    audit!("links.firebase_imported", instance_id: project.instance_id, target: audit_target(project),
+           changes: { "after" => result.slice(:created_count, :skipped_count) })
     render json: result, status: :ok
-  rescue StandardError => e
-    render json: { error: "Failed to parse CSV: #{e.message}" }, status: :unprocessable_entity
   end
 
   def flush_events
     days = params[:aggregate_days] || 1
     result = EventFlushService.flush(aggregate_days: days)
+    # Global, not tenant-scoped: no AuditEvent row, operator log only.
+    Rails.logger.warn(message: "audit.events_flushed", actor: "admin_key", ip: Current.ip, aggregate_days: days)
 
     render json: {
       message: "Events flushed and metrics aggregated",
@@ -57,11 +68,47 @@ class Api::V1::AdminController < Api::V1::ProjectsBaseController
     render json: { error: e.message }, status: :internal_server_error
   end
 
+  # Super-admin setter for an instance's retention windows. Partial update;
+  # validation lives in the Instance model + DB constraint.
+  def update_instance_retention
+    instance = Instance.find_by(id: params[:instance_id])
+    return render(json: { error: "Instance not found" }, status: :not_found) unless instance
+
+    attrs = {}
+    attrs[:cold_storage_days] = Integer(params[:cold_storage_days]) if params[:cold_storage_days].present?
+    attrs[:delete_days] = Integer(params[:delete_days]) if params[:delete_days].present?
+    instance.assign_attributes(attrs)
+
+    saved = ActiveRecord::Base.transaction do
+      next false unless instance.save
+
+      audit!("instance.retention_changed", instance_id: instance.id,
+             target: audit_target(instance), changes: audit_diff(instance))
+      true
+    end
+
+    if saved
+      render json: { cold_storage_days: instance.cold_storage_days, delete_days: instance.delete_days }, status: :ok
+    else
+      render json: { error: instance.errors.full_messages.join(", ") }, status: :unprocessable_entity
+    end
+  rescue ArgumentError
+    render json: { error: "cold_storage_days and delete_days must be integers" }, status: :unprocessable_entity
+  end
+
   def update_enterprise_subscription
-    subscription = EnterpriseSubscriptionService.update(
-      id: params[:id],
-      attrs: params.permit(:active, :start_date, :end_date, :total_maus)
-    )
+    # Deactivation removes the entitlement the gate checks, so decide it from the pre-update state.
+    entitled_before = EnterpriseSubscription.find_by(id: params[:id])&.instance&.audit_log_enabled?
+    subscription = nil
+    ActiveRecord::Base.transaction do
+      subscription = EnterpriseSubscriptionService.update(
+        id: params[:id],
+        attrs: params.permit(:active, :start_date, :end_date, :total_maus)
+      )
+      Audit.record(instance_id: subscription.instance_id, action: "enterprise_subscription.updated", actor: audit_actor,
+                        target: audit_target(subscription), changes: audit_diff(subscription),
+                        entitled: entitled_before || subscription.instance.audit_log_enabled?)
+    end
 
     render json: { message: "Enterprise Subscription updated successfully", subscription: subscription }, status: :ok
   rescue ActiveRecord::RecordNotFound => e
@@ -87,6 +134,9 @@ class Api::V1::AdminController < Api::V1::ProjectsBaseController
       return render(json: { error: result.error }, status: result.status)
     end
 
+    audit!("custom_domain.created", instance_id: project.instance_id,
+           target: audit_target(result.custom_hostname).merge("hostname" => result.custom_hostname.hostname, "purpose" => purpose))
+
     render json: { custom_domain: CustomHostnameSerializer.serialize(result.custom_hostname) }, status: :created
   end
 
@@ -100,6 +150,7 @@ class Api::V1::AdminController < Api::V1::ProjectsBaseController
       return false
     end
 
+    Current.actor = AuditActor.admin_key
     true
   end
 end

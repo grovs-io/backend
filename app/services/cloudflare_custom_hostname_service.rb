@@ -69,7 +69,10 @@ class CloudflareCustomHostnameService
       { success: false }
     end
 
+    # In manual mode never fall back to Grovs' SaaS proxy; a configured target still serves CF rows.
     def cname_target
+      return ENV["CLOUDFLARE_SAAS_CNAME_TARGET"].presence if Grovs.manual_custom_domains?
+
       ENV.fetch("CLOUDFLARE_SAAS_CNAME_TARGET", "proxy.sqd.link")
     end
 

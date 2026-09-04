@@ -210,6 +210,38 @@ class DiagnosticsApiTest < ActionDispatch::IntegrationTest
     assert_response :ok
   end
 
+  test "health_metrics requires auth" do
+    get "#{API_PREFIX}/diagnostics/health_metrics", headers: diag_headers
+    assert_response :unauthorized
+  end
+
+  test "health_metrics reports queue depths and clickhouse status" do
+    get "#{API_PREFIX}/diagnostics/health_metrics",
+      headers: diag_headers("X-Diagnostics-Key" => DIAG_KEY)
+    assert_response :ok
+
+    json = JSON.parse(response.body)
+    assert_kind_of Integer, json["events_pending"]
+    Api::V1::DiagnosticsController::MONITORED_QUEUES.each do |q|
+      assert_kind_of Integer, json["sidekiq_queues"][q]
+    end
+    assert_includes [true, false, nil], json.dig("clickhouse", "up")
+    assert json["clickhouse"].key?("disk_free_pct")
+  end
+
+  test "health_metrics reports a redis outage as data, not a 500" do
+    REDIS.stub(:llen, ->(*) { raise Redis::CannotConnectError, "down" }) do
+      get "#{API_PREFIX}/diagnostics/health_metrics",
+        headers: diag_headers("X-Diagnostics-Key" => DIAG_KEY)
+    end
+    assert_response :ok
+
+    json = JSON.parse(response.body)
+    assert_nil json["events_pending"]
+    assert_nil json["sidekiq_queues"]
+    assert_equal "Redis::CannotConnectError", json["redis_error"]
+  end
+
   private
 
   def diag_headers(extra = {})

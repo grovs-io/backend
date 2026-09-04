@@ -1,5 +1,20 @@
 require "test_helper"
 
+class CloudflareCnameTargetTest < ActiveSupport::TestCase
+  teardown { disable_custom_domains! }
+
+  test "cname_target is the configured Cloudflare target in Cloudflare mode" do
+    enable_custom_domains!
+    assert_equal "proxy.sqd.link", CloudflareCustomHostnameService.cname_target
+  end
+
+  # The proxy.sqd.link default would otherwise tell a self-hosted operator to point DNS at Grovs SaaS.
+  test "cname_target is nil in manual mode" do
+    enable_manual_custom_domains!
+    assert_nil CloudflareCustomHostnameService.cname_target
+  end
+end
+
 class CloudflareCustomHostnameServiceTest < ActiveSupport::TestCase
   setup { enable_custom_domains! }
   teardown { disable_custom_domains! }

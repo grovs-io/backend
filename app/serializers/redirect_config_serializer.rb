@@ -1,5 +1,6 @@
 class RedirectConfigSerializer < BaseSerializer
-  attributes :default_fallback, :show_preview_ios, :show_preview_android
+  attributes :default_fallback, :show_preview_ios, :show_preview_android,
+             :copy_to_clipboard_ios, :copy_to_clipboard_android
 
 
   def build(**)

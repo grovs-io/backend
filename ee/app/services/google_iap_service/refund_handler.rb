@@ -20,7 +20,7 @@ module GoogleIapService::RefundHandler
 
     iap_webhook_message.update(notification_type: "VOIDED_PURCHASE")
 
-    buy_events = find_original_buy_events(order_id, purchase_token)
+    buy_events = find_original_buy_events(order_id, purchase_token, instance)
 
     if buy_events.empty?
       @logger.warn "No BUY events found for voided purchase: order_id=#{order_id}, token=#{purchase_token}"
@@ -39,28 +39,23 @@ module GoogleIapService::RefundHandler
     true
   end
 
-  def find_original_buy_events(order_id, purchase_token)
-    # Primary: look up by order_id (works for bundles and new events)
-    events = PurchaseEvent.where(
-      order_id: order_id,
+  # Instance-scoped: order_id/token are attacker-controllable, so an unscoped lookup is cross-tenant.
+  def find_original_buy_events(order_id, purchase_token, instance)
+    scope = PurchaseEvent.where(
+      project_id: Project.where(instance_id: instance.id).select(:id),
       event_type: Grovs::Purchases::EVENT_BUY
-    ).to_a
+    )
 
+    # Primary: look up by order_id (works for bundles and new events)
+    events = scope.where(order_id: order_id).to_a
     return events if events.any?
 
     # Fallback: pre-migration events without order_id — look up by transaction_id
-    events = PurchaseEvent.where(
-      transaction_id: purchase_token,
-      event_type: Grovs::Purchases::EVENT_BUY
-    ).to_a
-
+    events = scope.where(transaction_id: purchase_token).to_a
     return events if events.any?
 
     # Also try original_transaction_id (for subscription renewals where transaction_id varies)
-    PurchaseEvent.where(
-      original_transaction_id: purchase_token,
-      event_type: Grovs::Purchases::EVENT_BUY
-    ).order(created_at: :desc).limit(1).to_a
+    scope.where(original_transaction_id: purchase_token).order(created_at: :desc).limit(1).to_a
   end
 
   def create_refund_for_buy(buy_event, refund_type, package_name, purchase_token, already_refunded_map)

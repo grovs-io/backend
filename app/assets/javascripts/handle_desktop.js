@@ -2,6 +2,12 @@ function configureDefaultPage() {
   config = desktopJSONData("desktop");
   configToApply = config.linksquared;
 
+  if (configToApply == null) {
+    // No generated-page config means an explicit fallback was set — redirect to it
+    navigateToFallback(config.fallback, "", true);
+    return false;
+  }
+
   setDesktopUIData(
     configToApply.title,
     configToApply.image,
@@ -10,11 +16,7 @@ function configureDefaultPage() {
     configToApply.ios
   );
 
-  if (configToApply == null) {
-    // There's redirect link
-    navigateToFallback(config.fallback, "", true);
-    return false;
-  }
+  return true;
 }
 
 function handleMac() {

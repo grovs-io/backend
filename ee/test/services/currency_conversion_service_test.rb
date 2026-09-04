@@ -47,6 +47,22 @@ class CurrencyConversionServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "a failed fetch is not cached — next call retries and gets fresh rates" do
+    memory_store = ActiveSupport::Cache::MemoryStore.new
+
+    Rails.stub(:cache, memory_store) do
+      CurrencyConversionService.stub(:fetch_from_primary, nil) do
+        CurrencyConversionService.stub(:fetch_from_fallback, nil) do
+          assert_nil CurrencyConversionService.to_usd_cents(920, "EUR")
+        end
+      end
+
+      CurrencyConversionService.stub(:fetch_from_primary, @stub_rates) do
+        assert_equal (920.0 / 0.92).round, CurrencyConversionService.to_usd_cents(920, "EUR")
+      end
+    end
+  end
+
   test "returns nil when all sources fail and no cache" do
     memory_store = ActiveSupport::Cache::MemoryStore.new
 

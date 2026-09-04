@@ -15,6 +15,11 @@ class Api::V1::Sdk::PaymentsController < Api::V1::Sdk::BaseController
   private
 
   def payment_event_params
-    params.permit(:event_type, :bundle_id, :price_cents, :currency, :date, :transaction_id, :original_transaction_id, :product_id, :purchase_type, :store)
+    permitted = params.permit(:event_type, :bundle_id, :price_cents, :currency, :date, :transaction_id,
+                              :original_transaction_id, :product_id, :purchase_type, :store, :session_id)
+    if permitted[:session_id].present?
+      permitted[:session_id] = permitted[:session_id].to_s.truncate(Grovs::Enrichment::MAX_STRING_LENGTH, omission: "")
+    end
+    permitted
   end
 end

@@ -63,7 +63,8 @@ module WebConfigurationService::ConfigHelpers
     {apple: apple_link, google: google_link}
   end
 
-  def map_redirect_to_configuration(title, image, appstore_link, deeplink, redirect, default_fallback, device, project, show_preview, redirect_config, link)
+  def map_redirect_to_configuration(title, image, appstore_link, deeplink, redirect, default_fallback, device, project, show_preview, redirect_config, link,
+                                    copy_to_clipboard: false, copy_payload: nil)
     appstore = nil
     fallback = default_fallback
 
@@ -93,10 +94,12 @@ module WebConfigurationService::ConfigHelpers
 
     fallback = add_query_params_to_link(fallback, link)
 
-    build_configuration(title, image, appstore, deeplink, fallback, has_app_installed, nil, show_preview)
+    build_configuration(title, image, appstore, deeplink, fallback, has_app_installed, nil, show_preview,
+                        copy_to_clipboard: copy_to_clipboard, copy_payload: copy_payload)
   end
 
-  def build_configuration(title, image, appstore, deeplink, fallback, has_app_installed, open_app_if_installed, show_preview)
+  def build_configuration(title, image, appstore, deeplink, fallback, has_app_installed, open_app_if_installed, show_preview,
+                          copy_to_clipboard: false, copy_payload: nil)
     config = {}
     config["title"] = title
     config["image"] = image
@@ -106,11 +109,13 @@ module WebConfigurationService::ConfigHelpers
     config["has_app_installed"] = has_app_installed
     config["show_preview"] = show_preview
     config["open_app_if_installed"] = open_app_if_installed
+    config["copy_to_clipboard"] = copy_to_clipboard
+    config["copy_payload"] = copy_payload
 
     config
   end
 
-  def config_for_custom_redirect(config, show_preview, redirect, link, project)
+  def config_for_custom_redirect(config, show_preview, redirect, link, project, copy_to_clipboard: false, copy_payload: nil)
     unless config
       return nil
     end
@@ -124,7 +129,8 @@ module WebConfigurationService::ConfigHelpers
     image = name_and_image[:image]
 
     open_app_if_installed = config.open_app_if_installed
-    generic_conf = build_configuration(name, image, nil, nil, fallback, false, open_app_if_installed, show_preview)
+    generic_conf = build_configuration(name, image, nil, nil, fallback, false, open_app_if_installed, show_preview,
+                                       copy_to_clipboard: copy_to_clipboard, copy_payload: copy_payload)
 
     phone_config = generic_conf
     tablet_config = generic_conf
@@ -149,6 +155,12 @@ module WebConfigurationService::ConfigHelpers
     generic_conf = build_configuration(name, image, nil, nil, redirect_url, false, nil, show_preview)
 
     {"linksquared": generic_conf, "mac": generic_conf, "windows": generic_conf, fallback: generic_conf}
+  end
+
+  def clipboard_copy_payload(link, device)
+    return nil unless device
+
+    LinksService.gd_tagged_url(link.access_path, device)
   end
 
   def add_query_params_to_link(url, link)

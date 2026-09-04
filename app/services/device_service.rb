@@ -75,20 +75,17 @@ class DeviceService
     def merge_visitor_events_and_device(from_device, to_device, project)
       return if from_device.id == to_device.id
 
-      # Prevent bidirectional race: A→B and B→A can't both proceed.
-      # Canonical sorted pair ensures only one direction wins.
+      # Canonical sorted pair: A→B and B→A dedup to one direction per 5-min window
       pair = [from_device.id, to_device.id].sort.join(':')
-      pair_key = "merge_pair:#{pair}:#{project.id}"
+      pair_key = "#{MergeVisitorEventsJob::PAIR_PREFIX}:#{pair}:#{project.id}"
       return unless REDIS.set(pair_key, "1", nx: true, ex: 300)
 
-      set_key     = "#{CoalescedMergeJob::SET_PREFIX}:#{to_device.id}:#{project.id}"
-      pending_key = "#{CoalescedMergeJob::PENDING_PREFIX}:#{to_device.id}:#{project.id}"
-
-      REDIS.sadd?(set_key, from_device.id.to_s)
-      REDIS.expire(set_key, 86_400) # 24h safety net — orphaned sets self-clean
-      return unless REDIS.set(pending_key, "1", nx: true, ex: 60)
-
-      CoalescedMergeJob.perform_async(to_device.id, project.id)
+      begin
+        MergeVisitorEventsJob.perform_async(from_device.id, to_device.id, project.id)
+      rescue StandardError
+        REDIS.del(pair_key) # a merge that never enqueued must not suppress retries
+        raise
+      end
     end
 
   end

@@ -3,7 +3,12 @@ require "test_helper"
 class SsoSessionsTest < ActionDispatch::IntegrationTest
   fixtures :users
 
+  ENV_KEYS = %w[REACT_HOST_PROTOCOL REACT_HOST GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
+                MICROSOFT_CLIENT_ID MICROSOFT_CLIENT_SECRET SERVER_HOST_PROTOCOL
+                SERVER_HOST SSO_AUTHENTICATION_ENDPOINT].freeze
+
   setup do
+    @env_snapshot = ENV_KEYS.index_with { |k| ENV[k] }
     @react_app = Doorkeeper::Application.create!(
       name: "React",
       redirect_uri: "urn:ietf:wg:oauth:2.0:oob"
@@ -17,6 +22,10 @@ class SsoSessionsTest < ActionDispatch::IntegrationTest
     ENV["SERVER_HOST_PROTOCOL"] ||= "https://"
     ENV["SERVER_HOST"] ||= "api.example.com"
     ENV["SSO_AUTHENTICATION_ENDPOINT"] ||= "https://app.example.com/login"
+  end
+
+  teardown do
+    @env_snapshot.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
   end
 
   # --- passthru (POST does not trigger OmniAuth request phase) ---
@@ -167,13 +176,64 @@ class SsoSessionsTest < ActionDispatch::IntegrationTest
     assert token.refresh_token.present?
     assert_equal user.id, token.resource_owner_id
   end
+
+  # --- providers capability endpoint (self-hosted) ---
+
+  test "providers lists both configured providers" do
+    get "/api/v1/identity/sso/providers", headers: { "Host" => "api.sqd.link" }
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert_equal true, json["sso_enabled"]
+    assert_equal %w[google_oauth2 microsoft_graph].sort, json["providers"].sort
+  end
+
+  test "providers omits a provider whose credentials are blank" do
+    ENV["MICROSOFT_CLIENT_ID"] = ""
+    ENV["MICROSOFT_CLIENT_SECRET"] = ""
+
+    get "/api/v1/identity/sso/providers", headers: { "Host" => "api.sqd.link" }
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert_equal true, json["sso_enabled"]
+    assert_equal ["google_oauth2"], json["providers"]
+  end
+
+  test "providers reports sso disabled when nothing is configured" do
+    %w[GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET MICROSOFT_CLIENT_ID MICROSOFT_CLIENT_SECRET].each do |k|
+      ENV[k] = ""
+    end
+
+    get "/api/v1/identity/sso/providers", headers: { "Host" => "api.sqd.link" }
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert_equal false, json["sso_enabled"]
+    assert_empty json["providers"]
+  end
+
+  test "providers is reachable with an invalid bearer token" do
+    get "/api/v1/identity/sso/providers",
+        headers: { "Host" => "api.sqd.link", "Authorization" => "Bearer not-a-real-token" }
+    assert_response :ok, "the login page must be able to read this before authenticating"
+  end
+
+  test "passthru for an unconfigured provider returns 422" do
+    ENV["MICROSOFT_CLIENT_ID"] = ""
+    ENV["MICROSOFT_CLIENT_SECRET"] = ""
+
+    post "/api/v1/identity/sso/auth/microsoft_graph", headers: { "Host" => "api.sqd.link" }
+    assert_response :unprocessable_entity
+    assert_match(/not configured/i, JSON.parse(response.body)["error"])
+  end
 end
 
 # Callback flow via OmniAuth test mode (mocked provider exchange).
 class SsoCallbackFlowTest < ActionDispatch::IntegrationTest
   fixtures :users
 
+  ENV_KEYS = %w[REACT_HOST_PROTOCOL REACT_HOST SSO_AUTHENTICATION_ENDPOINT].freeze
+
   setup do
+    @env_snapshot = ENV_KEYS.index_with { |k| ENV[k] }
     ENV["REACT_HOST_PROTOCOL"] ||= "https://"
     ENV["REACT_HOST"] ||= "app.example.com"
     ENV["SSO_AUTHENTICATION_ENDPOINT"] ||= "https://app.example.com/login"
@@ -192,6 +252,7 @@ class SsoCallbackFlowTest < ActionDispatch::IntegrationTest
   teardown do
     OmniAuth.config.test_mode = false
     OmniAuth.config.mock_auth[:google_oauth2] = nil
+    @env_snapshot.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
   end
 
   def callback(state:)
@@ -230,15 +291,20 @@ class SsoCallbackFlowTest < ActionDispatch::IntegrationTest
     assert_no_match(/token=/, location.sub(/error=[^&]*/, ""))
   end
 
-  test "callback with expired state redirects with error" do
+  test "callback with expired state redirects to the dashboard host with an error and issues no token" do
     payload = { provider: "google_oauth2", ts: (Time.now.to_i - 700) }
     token = Base64.urlsafe_encode64(payload.to_json)
     signature = OpenSSL::HMAC.hexdigest("SHA256", Rails.application.secret_key_base, token)
 
-    callback(state: "#{token}.#{signature}")
+    assert_no_difference ["User.count", "Doorkeeper::AccessToken.count"] do
+      callback(state: "#{token}.#{signature}")
+    end
 
     assert_response :redirect
-    assert_match(/error=/, response.headers["Location"])
+    location = response.headers["Location"]
+    assert location.start_with?(@react_host), "must redirect to the dashboard host, got #{location}"
+    assert_match(/error=/, location)
+    assert_no_match(/[?&](token|refresh_token)=/, location)
   end
 
   test "callback for an email registered with password login redirects with error" do
@@ -258,6 +324,15 @@ class SsoCallbackFlowTest < ActionDispatch::IntegrationTest
     assert_match(/error=/, location)
     assert_match(/different\+login|different%20login/i, location)
     assert_no_match(/refresh_token=/, location)
+  end
+
+  test "omniauth_failure without SSO_AUTHENTICATION_ENDPOINT redirects to the dashboard with an error, not a 500" do
+    saved = ENV.delete("SSO_AUTHENTICATION_ENDPOINT")
+    get "/api/v1/identity/sso/auth/failure", headers: { "Host" => "api.sqd.link" }
+    assert_response :redirect
+    assert_match(/error=SSO\+authentication\+failed|error=SSO%20authentication%20failed/, response.headers["Location"])
+  ensure
+    ENV["SSO_AUTHENTICATION_ENDPOINT"] = saved if saved
   end
 
   test "omniauth_failure redirects to the SSO endpoint" do

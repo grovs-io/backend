@@ -1,6 +1,16 @@
 
 class Public::VerificationController < ApplicationController
 
+  # Keyed on the row, not the mode: adding CF credentials must not strand existing manual rows.
+  def domain_verification
+    return head :not_found unless Grovs.custom_domains_enabled?
+
+    ch = CustomHostname.redis_find_by(:hostname, request.host.to_s.downcase)
+    return head :not_found unless ch&.manual?
+
+    render json: { token: SelfHostedDomainVerificationService.expected_token(request.host) }, status: :ok
+  end
+
   # Generates the well know hosts iOS file
   def generate_ios_file
     domain = current_domain
@@ -81,9 +91,7 @@ class Public::VerificationController < ApplicationController
   def current_domain
     # Use the cached lookup so AASA / assetlinks fetches (every iOS / Android install)
     # match the same Redis-backed read pattern the link path uses.
-    Domain.redis_find_by_multiple_conditions(
-      { subdomain: request.subdomain, domain: request.domain }
-    ) || LinksService.custom_hostname_for(request.host)
+    LinksService.main_domain_for(request) || LinksService.custom_hostname_for(request.host)
   end
 
 end

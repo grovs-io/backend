@@ -168,6 +168,7 @@ Metrics/AbcSize:
   Max: 80
   Exclude:
     - 'lib/tasks/**/*'
+    - 'app/jobs/delete_instance_job.rb' # linear teardown checklist; already over Max at 80
 
 Metrics/CyclomaticComplexity:
   Max: 25
@@ -189,6 +190,16 @@ Metrics/BlockLength:
 
 Metrics/ParameterLists:
   Max: 16
+
+# -- Naming --
+
+Naming/MethodParameterName:
+  # `q` is the conventional search/query param across the analytics endpoints.
+  AllowedNames:
+    - q
+  inherit_mode:
+    merge:
+      - AllowedNames
 
 # -- Style --
 

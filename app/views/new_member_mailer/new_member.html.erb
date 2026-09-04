@@ -35,7 +35,7 @@
 
         <!-- Button -->
         <div style="margin:0 0 28px 0;">
-          <a href="<%= ENV['REACT_HOST_PROTOCOL'] + ENV['REACT_HOST'] + '/links?instance_id=' + @instance.id.to_s + '&env_type=Production' %>"
+          <a href="<%= ENV.fetch('REACT_HOST_PROTOCOL', 'https://') + ENV.fetch('REACT_HOST') + '/links?instance_id=' + @instance.id.to_s + '&env_type=Production' %>"
              style="background-color:#2A86FF; color:#ffffff; text-decoration:none; padding:12px 20px; border-radius:5px; display:inline-block; font-weight:500;">
             Check project
           </a>

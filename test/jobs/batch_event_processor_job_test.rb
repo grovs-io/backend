@@ -3,10 +3,11 @@ require "test_helper"
 # rubocop:disable Metrics/ClassLength
 class BatchEventProcessorJobTest < ActiveSupport::TestCase
   fixtures :instances, :projects, :devices, :visitors, :links, :domains, :redirect_configs, :events,
-          :visitor_daily_statistics, :link_daily_statistics
+          :visitor_daily_statistics, :link_daily_statistics, :campaigns
 
   setup do
     @job = BatchEventProcessorJob.new
+    @row_builder = ClickhouseEventRowBuilder.new
     @job.jid = "test-jid-#{SecureRandom.hex(4)}"
     @project = projects(:one)
     @device = devices(:ios_device)
@@ -98,6 +99,19 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
     assert_equal @link.path, event.path
     assert_equal true, event.processed
     assert_equal 100, event.engagement_time
+  end
+
+  test "persist_batch refreshes the heartbeat so a long transaction is not treated as orphaned" do
+    event_row = @job.send(:build_event_row,
+      { type: Grovs::Events::VIEW, project_id: @project.id, device_id: @device.id,
+        occurred_at: Time.current, data: nil, engagement_time: 0 },
+      @project, @device, @link
+    )
+
+    @job.send(:persist_batch, [event_row], [], Set.new, {}, [], {})
+
+    assert REDIS.exists?("events:heartbeat:#{@job.jid}"),
+      "persist_batch must refresh the heartbeat — recovery would repush a batch whose transaction still commits"
   end
 
   # --- build_stats_update ---
@@ -204,6 +218,76 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
     assert_not_includes inviter_assignments.keys, @visitor.id
   end
 
+  test "handle_referrals threads the causal install frozen source into USER_REFERRED ch_meta" do
+    referrer_device = devices(:android_device)
+    referrer_visitor = visitors(:android_visitor)
+    @link.update_column(:visitor_id, referrer_visitor.id)
+
+    parsed = [{
+      type: Grovs::Events::INSTALL, project_id: @project.id, device_id: @device.id,
+      link_id: @link.id, occurred_at: Time.current,
+      event_id: "install-eid", campaign_id: 42, sdk_generated: true, link_visitor_id: 7
+    }]
+    projects = { @project.id => @project }
+    devices_hash = { @device.id => @device, referrer_device.id => referrer_device }
+    links_hash = { @link.id => @link.reload }
+    visitors_index = {
+      [@project.id, @device.id] => @visitor,
+      [@project.id, referrer_device.id] => referrer_visitor
+    }
+
+    event_rows, = @job.send(:handle_referrals, parsed, projects, devices_hash, links_hash, visitors_index)
+
+    meta = event_rows.first[:ch_meta]
+    assert_equal 42, meta[:campaign_id]
+    assert_equal true, meta[:sdk_generated]
+    assert_equal 7, meta[:link_visitor_id]
+    assert_equal Digest::MD5.hexdigest("install-eid:user_referred"), meta[:event_id]
+  end
+
+  # --- Phase 1: frozen event-time source capture ---
+
+  test "build_event_row carries frozen ch_meta source from the payload" do
+    payload = {
+      type: Grovs::Events::OPEN, project_id: @project.id, device_id: @device.id,
+      occurred_at: Time.current, data: nil, engagement_time: nil,
+      event_id: "frozen-eid", campaign_id: 77, sdk_generated: true, link_visitor_id: 99
+    }
+    row = @job.send(:build_event_row, payload, @project, @device, @link)
+
+    assert_equal "frozen-eid", row[:ch_meta][:event_id]
+    assert_equal 77, row[:ch_meta][:campaign_id]
+    assert_equal true, row[:ch_meta][:sdk_generated]
+    assert_equal 99, row[:ch_meta][:link_visitor_id]
+  end
+
+  test "insert path strips ch_meta before persisting to Postgres" do
+    occurred_at = Time.new(2026, 6, 16, 9, 0, 0)
+    row = @job.send(:build_event_row,
+      { type: Grovs::Events::VIEW, project_id: @project.id, device_id: @device.id,
+        occurred_at: occurred_at, data: nil, engagement_time: nil,
+        event_id: "x", campaign_id: 1, sdk_generated: false, link_visitor_id: 2 },
+      @project, @device, nil)
+    assert row.key?(:ch_meta), "row should carry ch_meta"
+
+    assert_difference "Event.count", 1 do
+      @job.send(:persist_batch, [row], [], Set.new, {}, [], {})
+    end
+    assert Event.find_by(project_id: @project.id, device_id: @device.id,
+                         event: Grovs::Events::VIEW, created_at: occurred_at)
+  end
+
+  test "USER_REFERRED event_id derivation is stable across replays of the causal install" do
+    install_payload = {
+      type: Grovs::Events::INSTALL, project_id: @project.id, device_id: @device.id,
+      event_id: "install-eid", campaign_id: 1, sdk_generated: true, link_visitor_id: 2
+    }
+    meta_run_1 = EventIngestionService.referral_ch_meta(install_payload)
+    meta_run_2 = EventIngestionService.referral_ch_meta(install_payload.dup)
+    assert_equal meta_run_1[:event_id], meta_run_2[:event_id], "referral event_id must be replay-stable"
+    assert_equal Digest::MD5.hexdigest("install-eid:user_referred"), meta_run_1[:event_id]
+  end
+
   # --- persist_batch ---
 
   test "persist_batch inserts events and processes stats" do
@@ -236,19 +320,19 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
   # --- bulk_upsert_visitor_last_visits ---
 
   test "bulk_upsert_visitor_last_visits last event wins" do
-    second_link = links(:second_link)
+    other_link = links(:no_custom_redirect_link) # same project as @link (domain: one → project: one)
     parsed = [
       { type: Grovs::Events::VIEW, project_id: @project.id, device_id: @device.id,
         link_id: @link.id, occurred_at: Time.current },
       { type: Grovs::Events::VIEW, project_id: @project.id, device_id: @device.id,
-        link_id: second_link.id, occurred_at: Time.current }
+        link_id: other_link.id, occurred_at: Time.current }
     ]
     visitors_index = { [@project.id, @device.id] => @visitor }
 
     @job.send(:bulk_upsert_visitor_last_visits, parsed, visitors_index)
 
     vlv = VisitorLastVisit.find_by(project_id: @project.id, visitor_id: @visitor.id)
-    assert_equal second_link.id, vlv.link_id, "Last event's link should win"
+    assert_equal other_link.id, vlv.link_id, "Last event's link should win"
   end
 
   # ===========================================================================
@@ -266,8 +350,8 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
       conn.del("events:processing:#{@job.jid}")
       conn.del("events:heartbeat:#{@job.jid}")
       # Clean dedup keys for all fixture devices
-      conn.del("events:dedup:#{@device.id}:view") if @device
-      conn.del("events:dedup:#{devices(:android_device).id}:view")
+      conn.del("events:dedup:#{@project.id}:#{@device.id}:view") if @device
+      conn.del("events:dedup:#{@project.id}:#{devices(:android_device).id}:view")
     end
   end
 
@@ -379,7 +463,7 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
 
   test "pipeline_view_dedup skips duplicate VIEWs from same device in batch" do
     # Clear any pre-existing dedup key from parallel tests
-    REDIS.del("events:dedup:#{@device.id}:view")
+    REDIS.del("events:dedup:#{@project.id}:#{@device.id}:view")
 
     parsed = [
       { type: Grovs::Events::VIEW, device_id: @device.id, project_id: @project.id },
@@ -400,7 +484,7 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
   test "pipeline_view_dedup skips all VIEWs when dedup key already exists" do
     # Pre-set dedup key with long TTL (simulating previous batch)
     REDIS.with do |conn|
-      conn.set("events:dedup:#{@device.id}:view", "1", ex: 60)
+      conn.set("events:dedup:#{@project.id}:#{@device.id}:view", "1", ex: 60)
     end
 
     parsed = [
@@ -430,18 +514,41 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
     assert_empty keys_we_set
   end
 
+  test "pipeline_view_dedup does not dedup CUSTOM events from same device" do
+    parsed = [
+      { type: Grovs::Events::CUSTOM, device_id: @device.id, project_id: @project.id },
+      { type: Grovs::Events::CUSTOM, device_id: @device.id, project_id: @project.id },
+      { type: Grovs::Events::CUSTOM, device_id: @device.id, project_id: @project.id }
+    ]
+    devices_hash = { @device.id => @device }
+
+    skip_indices, keys_we_set = @job.send(:pipeline_view_dedup, parsed, devices_hash)
+    assert_empty skip_indices, "CUSTOM events must never be deduped"
+    assert_empty keys_we_set
+  end
+
   # --- enqueue_if_backlog ---
 
-  test "enqueue_if_backlog enqueues when pending events exist" do
+  test "enqueue_if_backlog enqueues when backlog exceeds one batch" do
     enqueued = false
-    # Mock llen to return positive count (avoids shared Redis queue contention)
-    REDIS.stub(:llen, 5) do
+    REDIS.stub(:llen, BatchEventProcessorJob::BATCH_SIZE + 1) do
       BatchEventProcessorJob.stub(:perform_async, -> { enqueued = true }) do
         @job.send(:enqueue_if_backlog)
       end
     end
 
-    assert enqueued, "Should enqueue follow-up job when events are pending"
+    assert enqueued, "Should enqueue follow-up job when backlog exceeds one batch"
+  end
+
+  test "enqueue_if_backlog does not enqueue for a sub-batch remainder" do
+    enqueued = false
+    REDIS.stub(:llen, BatchEventProcessorJob::BATCH_SIZE) do
+      BatchEventProcessorJob.stub(:perform_async, -> { enqueued = true }) do
+        @job.send(:enqueue_if_backlog)
+      end
+    end
+
+    assert_not enqueued, "A remainder under one batch is covered by the next cron tick"
   end
 
   test "enqueue_if_backlog does not enqueue when queue is empty" do
@@ -474,6 +581,20 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
     assert_difference "Event.count", 1 do
       @job.send(:process_batch, [event_json])
     end
+  end
+
+  test "process_batch stamps device last_seen with the newest event time" do
+    older = 10.minutes.ago
+    newest = 2.minutes.ago
+    payloads = [older, newest].map do |at|
+      { type: Grovs::Events::OPEN, project_id: @project.id, device_id: @device.id,
+        data: nil, link_id: nil, engagement_time: nil, created_at: at.iso8601(3) }.to_json
+    end
+
+    assert_equal :success, @job.send(:process_batch, payloads)
+
+    durable = DeviceLastSeen.find_by!(project_id: @project.id, device_id: @device.id)
+    assert_in_delta newest.to_f, durable.last_seen_at.to_f, 0.01
   end
 
   # ===========================================================================
@@ -568,7 +689,7 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
     error_msg = "PG::QueryCanceled: ERROR: canceling statement due to statement timeout"
     @job.stub(:insert_event_rows, ->(_rows) { raise ActiveRecord::QueryCanceled, error_msg }) do
       result = @job.send(:process_batch, [event_json])
-      assert_equal false, result, "process_batch should return false on DB error"
+      assert_equal :failure, result, "process_batch should return :failure on DB error"
     end
 
     # Events should be back in the pending queue
@@ -579,8 +700,8 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
   end
 
   test "process_batch cleans up dedup keys on failure" do
-    # Clear any existing dedup key
-    REDIS.with { |conn| conn.del("events:dedup:#{@device.id}:view") }
+    dedup_key = "events:dedup:#{@project.id}:#{@device.id}:view"
+    REDIS.with { |conn| conn.del(dedup_key) }
 
     event_json = {
       type: Grovs::Events::VIEW, project_id: @project.id, device_id: @device.id,
@@ -595,8 +716,71 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
     end
 
     # The dedup key we set should have been cleaned up
-    assert_equal false, REDIS.with { |conn| conn.exists?("events:dedup:#{@device.id}:view") },
+    assert_equal false, REDIS.with { |conn| conn.exists?(dedup_key) },
       "Dedup key should be cleaned up on batch failure"
+  end
+
+  # --- ClickHouse-primary ack durability ---
+
+  def primary_event_json
+    { type: Grovs::Events::OPEN, project_id: @project.id, device_id: @device.id,
+      data: nil, link_id: nil, engagement_time: nil, created_at: Time.current.iso8601(3) }.to_json
+  end
+
+  test "process_batch acks after PG persists when ClickHouse is primary and CH succeeds" do
+    event_json = primary_event_json
+    REDIS.with { |conn| conn.lpush("events:processing:#{@job.jid}", event_json) }
+
+    Clickhouse.stub(:enabled?, true) do
+      Clickhouse.stub(:primary?, true) do
+        @job.stub(:dual_write_clickhouse, ->(*) { true }) do
+          assert_equal :success, @job.send(:process_batch, [event_json])
+        end
+      end
+    end
+
+    assert_equal 0, REDIS.with { |c| c.llen("events:processing:#{@job.jid}") },
+      "processing key must be acked once the PG transaction commits"
+  end
+
+  test "process_batch acks and does NOT repush when ClickHouse is primary and CH delivery fails" do
+    event_json = primary_event_json
+    REDIS.with do |conn| 
+      conn.del(BatchEventProcessorJob::REDIS_KEY)
+      conn.lpush("events:processing:#{@job.jid}", event_json)
+    end
+
+    Clickhouse.stub(:enabled?, true) do
+      Clickhouse.stub(:primary?, true) do
+        @job.stub(:dual_write_clickhouse, ->(*) { false }) do
+          assert_equal :success, @job.send(:process_batch, [event_json])
+        end
+      end
+    end
+
+    # A failed CH write is durably parked in the canonical DLQ by deliver_canonical, so the
+    # PG-committed batch must be acked, NOT repushed. Repushing would replay persist_batch and
+    # double-insert the PG events / double-count the additive stat upserts (PG has no dedup key).
+    pending = REDIS.with { |c| c.lrange(BatchEventProcessorJob::REDIS_KEY, 0, -1) }
+    assert_not_includes pending, event_json, "PG-committed batch must not be repushed on CH failure"
+    assert_equal 0, REDIS.with { |c| c.llen("events:processing:#{@job.jid}") },
+      "processing key must be acked once PG persists (CH durability is the DLQ's job)"
+  end
+
+  test "process_batch acks after PG when ClickHouse is not primary even if CH delivery fails" do
+    event_json = primary_event_json
+    REDIS.with { |conn| conn.lpush("events:processing:#{@job.jid}", event_json) }
+
+    Clickhouse.stub(:enabled?, true) do
+      Clickhouse.stub(:primary?, false) do
+        @job.stub(:dual_write_clickhouse, ->(*) { false }) do
+          assert_equal :success, @job.send(:process_batch, [event_json])
+        end
+      end
+    end
+
+    assert_equal 0, REDIS.with { |c| c.llen("events:processing:#{@job.jid}") },
+      "with PG as source of truth the ack is independent of CH delivery"
   end
 
   test "insert_event_rows recovers from FK violation" do
@@ -658,8 +842,8 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
     assert_equal 1, updates.size
     assert_equal({ opens: 1 }, updates.first[:visitor_updates][:stats][:metrics])
 
-    # The skipped VIEW's device should be in dedup_device_ids
-    assert_includes dedup_device_ids, @device.id
+    # The skipped VIEW's (project, device) pair should be in dedup_device_ids
+    assert_includes dedup_device_ids, [@project.id, @device.id]
   end
 
   test "touch_deduped_views updates created_at on recent VIEWs" do
@@ -671,11 +855,33 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
     )
     original_time = recent_view.created_at
 
-    @job.send(:touch_deduped_views, Set.new([@device.id]))
+    @job.send(:touch_deduped_views, Set.new([[@project.id, @device.id]]))
 
     recent_view.reload
     assert_operator recent_view.created_at, :>, original_time,
       "created_at should be updated to a more recent time"
+  end
+
+  test "touch_deduped_views only touches VIEWs in the deduped project" do
+    other_project = projects(:two)
+    same_project_view = Event.create!(
+      project_id: @project.id, device_id: @device.id,
+      event: Grovs::Events::VIEW, platform: @device.platform,
+      created_at: 3.seconds.ago, processed: true
+    )
+    other_project_view = Event.create!(
+      project_id: other_project.id, device_id: @device.id,
+      event: Grovs::Events::VIEW, platform: @device.platform,
+      created_at: 3.seconds.ago, processed: true
+    )
+    other_time = other_project_view.created_at
+
+    @job.send(:touch_deduped_views, Set.new([[@project.id, @device.id]]))
+
+    assert_operator same_project_view.reload.created_at, :>, 3.seconds.ago.advance(seconds: 1),
+      "deduped project's VIEW should roll forward"
+    assert_in_delta other_time.to_f, other_project_view.reload.created_at.to_f, 0.001,
+      "a dedup on one project must not rewrite the same device's VIEW timestamps on another project"
   end
 
   test "perform deletes heartbeat on completion" do
@@ -737,7 +943,7 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
 
     assert_no_difference "Event.count" do
       result = @job.send(:process_batch, ["not json {{{", "also bad |||", "{incomplete"])
-      assert_equal true, result, "Should return true for empty parsed batch"
+      assert_equal :success, result, "Should return :success for empty parsed batch"
     end
 
     # Processing key should be cleaned up
@@ -955,7 +1161,7 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
 
     assert_difference "Event.count", 1 do
       result = worker_b.send(:process_batch, raw_events)
-      assert_equal true, result, "process_batch should succeed"
+      assert_equal :success, result, "process_batch should succeed"
     end
 
     # Verify the event made it to DB with correct attributes
@@ -1028,6 +1234,500 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
       conn.del("events:processing:#{worker_b.jid}")
       conn.del("events:heartbeat:#{worker_b.jid}")
     end
+  end
+
+  # ===========================================================================
+  # ensure_hash — used by CH dual-write for JSON columns
+  # ===========================================================================
+
+  # ===========================================================================
+  # Event enrichment: event_name, session_id, tags flow through pipeline
+  # ===========================================================================
+
+  test "process_batch persists event_name, session_id, tags to PG" do
+    event_json = {
+      type: Grovs::Events::CUSTOM, project_id: @project.id, device_id: @device.id,
+      data: { "screen" => "cart" }, link_id: nil, engagement_time: nil,
+      created_at: Time.current.iso8601(3),
+      event_name: "add_to_cart", session_id: "sess-abc", tags: ["checkout", "promo"]
+    }.to_json
+
+    assert_difference "Event.count", 1 do
+      @job.send(:process_batch, [event_json])
+    end
+
+    event = Event.order(id: :desc).first
+    assert_equal Grovs::Events::CUSTOM, event.event
+    assert_equal "add_to_cart", event.event_name
+    assert_equal "sess-abc", event.session_id
+    assert_equal ["checkout", "promo"], event.tags
+    assert_equal({ "screen" => "cart" }, event.data)
+  end
+
+  test "process_batch persists SCREEN_VIEW event type with event_name" do
+    event_json = {
+      type: Grovs::Events::SCREEN_VIEW, project_id: @project.id, device_id: @device.id,
+      data: nil, link_id: nil, engagement_time: nil,
+      created_at: Time.current.iso8601(3),
+      event_name: "screen_view", session_id: "sess-sv", tags: []
+    }.to_json
+
+    assert_difference "Event.count", 1 do
+      @job.send(:process_batch, [event_json])
+    end
+
+    event = Event.order(id: :desc).first
+    assert_equal Grovs::Events::SCREEN_VIEW, event.event
+    assert_equal "screen_view", event.event_name
+    assert_equal "sess-sv", event.session_id
+  end
+
+  test "process_batch handles old-format payload without enrichment fields" do
+    # Simulates a Redis payload from before this deploy — no event_name/session_id/tags keys
+    event_json = {
+      type: Grovs::Events::OPEN, project_id: @project.id, device_id: @device.id,
+      data: nil, link_id: nil, engagement_time: nil,
+      created_at: Time.current.iso8601(3)
+    }.to_json
+
+    assert_difference "Event.count", 1 do
+      @job.send(:process_batch, [event_json])
+    end
+
+    event = Event.order(id: :desc).first
+    assert_equal Grovs::Events::OPEN, event.event
+    assert_equal "", event.event_name
+    assert_equal "", event.session_id
+    assert_equal [], event.tags
+  end
+
+  test "build_event_row includes enrichment fields from payload" do
+    payload = {
+      type: Grovs::Events::CUSTOM, project_id: @project.id, device_id: @device.id,
+      occurred_at: Time.current, data: nil, engagement_time: nil,
+      event_name: "purchase", session_id: "sess-999", tags: ["revenue"]
+    }
+
+    row = @job.send(:build_event_row, payload, @project, @device, nil)
+    assert_equal "purchase", row[:event_name]
+    assert_equal "sess-999", row[:session_id]
+    assert_equal ["revenue"], row[:tags]
+  end
+
+  test "build_event_row defaults enrichment fields when missing from payload" do
+    payload = {
+      type: Grovs::Events::VIEW, project_id: @project.id, device_id: @device.id,
+      occurred_at: Time.current, data: nil, engagement_time: nil
+    }
+
+    row = @job.send(:build_event_row, payload, @project, @device, nil)
+    assert_equal "", row[:event_name]
+    assert_equal "", row[:session_id]
+    assert_equal [], row[:tags]
+  end
+
+  # ===========================================================================
+  # PG stats gap: CUSTOM and SCREEN_VIEW are NOT in Grovs::Events::MAPPING,
+  # so they produce PG Event rows but NO LinkDailyStatistic or
+  # VisitorDailyStatistic rows. CH gets the full event with attribution data.
+  # This is intentional — custom events shouldn't inflate view/open/install
+  # counters — but means CH aggregates will include events that PG stats don't.
+  # ===========================================================================
+
+  test "CUSTOM events produce no PG stats (not in MAPPING)" do
+    assert_nil Grovs::Events::MAPPING[Grovs::Events::CUSTOM],
+      "CUSTOM should not be in MAPPING — no PG stat column for it"
+
+    event_date = "2026-08-10T12:00:00Z"
+    event_json = {
+      type: Grovs::Events::CUSTOM, project_id: @project.id, device_id: @device.id,
+      link_id: @link.id, data: nil, engagement_time: nil, created_at: event_date,
+      event_name: "add_to_cart", session_id: "sess-1", tags: []
+    }.to_json
+
+    link_stats_before = LinkDailyStatistic.count
+    visitor_stats_before = VisitorDailyStatistic.count
+
+    assert_difference "Event.count", 1 do
+      @job.send(:process_batch, [event_json])
+    end
+
+    assert_equal link_stats_before, LinkDailyStatistic.count,
+      "CUSTOM events must not create LinkDailyStatistic rows"
+    assert_equal visitor_stats_before, VisitorDailyStatistic.count,
+      "CUSTOM events must not create VisitorDailyStatistic rows"
+  end
+
+  test "SCREEN_VIEW events produce no PG stats (not in MAPPING)" do
+    assert_nil Grovs::Events::MAPPING[Grovs::Events::SCREEN_VIEW],
+      "SCREEN_VIEW should not be in MAPPING — no PG stat column for it"
+
+    event_date = "2026-08-11T12:00:00Z"
+    event_json = {
+      type: Grovs::Events::SCREEN_VIEW, project_id: @project.id, device_id: @device.id,
+      link_id: @link.id, data: nil, engagement_time: nil, created_at: event_date,
+      event_name: "screen_view", session_id: "sess-2", tags: []
+    }.to_json
+
+    link_stats_before = LinkDailyStatistic.count
+    visitor_stats_before = VisitorDailyStatistic.count
+
+    assert_difference "Event.count", 1 do
+      @job.send(:process_batch, [event_json])
+    end
+
+    assert_equal link_stats_before, LinkDailyStatistic.count,
+      "SCREEN_VIEW events must not create LinkDailyStatistic rows"
+    assert_equal visitor_stats_before, VisitorDailyStatistic.count,
+      "SCREEN_VIEW events must not create VisitorDailyStatistic rows"
+  end
+
+  # --- bulk_upsert_visitor_last_visits FK-violation fallback ---
+
+  test "bulk_upsert_visitor_last_visits falls back to per-row when a visitor was deleted mid-batch" do
+    VisitorLastVisit.where(project_id: @project.id).delete_all
+    ghost_id = 2_000_000_001 # no visitors row with this id -> FK violation in bulk upsert
+
+    parsed = [
+      { project_id: @project.id, device_id: @device.id, link_id: @link.id },
+      { project_id: @project.id, device_id: -1,          link_id: @link.id }
+    ]
+    visitors_index = {
+      [@project.id, @device.id] => @visitor,
+      [@project.id, -1]         => Visitor.new.tap { |v| v.id = ghost_id }
+    }
+
+    # The bulk upsert_all hits the ghost FK and aborts atomically; the rescue must
+    # retry per-row so the valid visitor's last-visit still lands and the ghost is skipped.
+    assert_nothing_raised do
+      @job.send(:bulk_upsert_visitor_last_visits, parsed, visitors_index)
+    end
+
+    vlv = VisitorLastVisit.find_by(project_id: @project.id, visitor_id: @visitor.id)
+    assert vlv, "valid visitor's last-visit must survive the per-row fallback"
+    assert_equal @link.id, vlv.link_id
+    assert_not VisitorLastVisit.exists?(visitor_id: ghost_id),
+      "FK-invalid (deleted) visitor must be skipped, not crash the batch"
+  end
+
+  # --- remap_merged_devices!: post-merge attribution correctness ---
+
+  test "remap_merged_devices! rewrites device_id from the merge breadcrumb" do
+    REDIS.set("#{BatchEventProcessorJob::MERGED_DEVICE_PREFIX}:#{@project.id}:#{@device.id}", 777)
+    parsed = [{ project_id: @project.id, device_id: @device.id, link_id: nil }]
+
+    @job.send(:remap_merged_devices!, parsed)
+
+    assert_equal 777, parsed[0][:device_id], "events for a merged device must remap to the target device"
+  end
+
+  test "remap_merged_devices! follows a chain of merges to the final device" do
+    REDIS.set("#{BatchEventProcessorJob::MERGED_DEVICE_PREFIX}:#{@project.id}:#{@device.id}", 777)
+    REDIS.set("#{BatchEventProcessorJob::MERGED_DEVICE_PREFIX}:#{@project.id}:777", 888)
+    parsed = [{ project_id: @project.id, device_id: @device.id, link_id: nil }]
+
+    @job.send(:remap_merged_devices!, parsed)
+
+    assert_equal 888, parsed[0][:device_id], "chained merges (A→B→C) must resolve to the final device"
+  end
+
+  test "remap_merged_devices! terminates on a breadcrumb cycle" do
+    REDIS.set("#{BatchEventProcessorJob::MERGED_DEVICE_PREFIX}:#{@project.id}:#{@device.id}", 777)
+    REDIS.set("#{BatchEventProcessorJob::MERGED_DEVICE_PREFIX}:#{@project.id}:777", @device.id)
+    parsed = [{ project_id: @project.id, device_id: @device.id, link_id: nil }]
+
+    assert_nothing_raised { @job.send(:remap_merged_devices!, parsed) }
+  end
+
+  test "remap_merged_devices! leaves device_id unchanged when no breadcrumb exists" do
+    parsed = [{ project_id: @project.id, device_id: @device.id }]
+    @job.send(:remap_merged_devices!, parsed)
+    assert_equal @device.id, parsed[0][:device_id]
+  end
+
+  test "remap_merged_devices! survives a Redis failure without raising or remapping" do
+    REDIS.stub(:mget, ->(*) { raise Redis::BaseError, "down" }) do
+      parsed = [{ project_id: @project.id, device_id: @device.id }]
+      assert_nothing_raised { @job.send(:remap_merged_devices!, parsed) }
+      assert_equal @device.id, parsed[0][:device_id]
+    end
+  end
+
+  # --- bulk_upsert_visitor_last_visits recency (batch path) ---
+
+  test "bulk_upsert_visitor_last_visits refreshes updated_at on a repeat batch (merge recency)" do
+    VisitorLastVisit.where(project_id: @project.id, visitor_id: @visitor.id).delete_all
+    l2 = links(:second_link)
+    vidx = { [@project.id, @device.id] => @visitor }
+
+    @job.send(:bulk_upsert_visitor_last_visits,
+              [{ project_id: @project.id, device_id: @device.id, link_id: @link.id }], vidx)
+    r1 = VisitorLastVisit.find_by(project_id: @project.id, visitor_id: @visitor.id)
+    ts1 = r1.updated_at
+    sleep 1.1
+    @job.send(:bulk_upsert_visitor_last_visits,
+              [{ project_id: @project.id, device_id: @device.id, link_id: l2.id }], vidx)
+    r2 = VisitorLastVisit.find_by(project_id: @project.id, visitor_id: @visitor.id)
+
+    assert_equal l2.id, r2.link_id
+    assert r2.updated_at > ts1, "batch path must refresh updated_at on conflict"
+  end
+
+  # --- integration: merge breadcrumb remaps a queued event through process_batch ---
+
+  test "a queued event for a merged-away device is remapped to the target via process_batch" do
+    source = Device.create!(vendor: "src-#{SecureRandom.hex(4)}", ip: "1.1.1.1",
+                            remote_ip: "1.1.1.1", platform: "ios", user_agent: "Test/1.0")
+    REDIS.set("#{BatchEventProcessorJob::MERGED_DEVICE_PREFIX}:#{@project.id}:#{source.id}", @device.id)
+    payload = { type: Grovs::Events::APP_OPEN, project_id: @project.id,
+                device_id: source.id, created_at: Time.current.iso8601(3) }
+
+    Clickhouse.stub(:enabled?, false) do
+      assert_difference -> { Event.where(device_id: @device.id, event: Grovs::Events::APP_OPEN).count }, 1 do
+        @job.send(:process_batch, [payload.to_json])
+      end
+    end
+
+    assert_not Event.exists?(device_id: source.id),
+      "event must land on the target device, not the merged-away source"
+  end
+
+  test "upsert_user_profiles caps visitor sdk_attributes to MAX_PROPERTY_KEYS_PER_EVENT" do
+    max = Analytics::Config::MAX_PROPERTY_KEYS_PER_EVENT
+    attrs = (1..200).index_by { |i| "k#{i.to_s.rjust(3, '0')}" }
+    @visitor.update_column(:sdk_attributes, attrs)
+
+    visitors_index = { [@project.id, @device.id] => @visitor }
+    devices = { @device.id => @device }
+
+    captured = nil
+    GeoipService.stub(:lookup, { country: "", city: "" }) do
+      ClickhouseWriteService.stub(:upsert_user_profiles, ->(rows) { captured = rows }) do
+        @job.send(:upsert_user_profiles, visitors_index, devices)
+      end
+    end
+
+    assert_equal 1, captured.size
+    row = captured.first
+    assert_equal max, row[:properties].size
+    assert_equal attrs.keys.sort.first(max), row[:properties].keys.sort
+  end
+
+  # A live row with no uuid outranks the backfill on last_seen and would erase it on merge.
+  test "upsert_user_profiles writes the visitor uuid so live writes cannot erase a backfilled one" do
+    visitors_index = { [@project.id, @device.id] => @visitor }
+    devices = { @device.id => @device }
+
+    captured = nil
+    GeoipService.stub(:lookup, { country: "", city: "" }) do
+      ClickhouseWriteService.stub(:upsert_user_profiles, ->(rows) { captured = rows }) do
+        @job.send(:upsert_user_profiles, visitors_index, devices)
+      end
+    end
+
+    assert_equal @visitor.uuid.to_s, captured.first[:uuid]
+  end
+
+  # --- missing-visitor resolution (merge race) ---
+
+  test "resolve_missing_visitors! resolves a merged-away device via its breadcrumb" do
+    survivor_dev = devices(:android_device)
+    survivor_vis = visitors(:android_visitor)
+    merged_dev = create_merged_away_device
+    REDIS.set(BatchEventProcessorJob.merged_device_key(@project.id, merged_dev.id), survivor_dev.id)
+
+    payload = { type: Grovs::Events::VIEW, project_id: @project.id, device_id: merged_dev.id,
+                occurred_at: Time.current }
+    parsed = [payload]
+    projects = { @project.id => @project }
+    devices_idx = { merged_dev.id => merged_dev }
+    visitors_index = {} # visitor already deleted by the merge when the batch loaded visitors
+
+    result = @job.send(:resolve_missing_visitors!, parsed, projects, devices_idx, visitors_index)
+
+    assert_equal :resolved, result
+    assert_equal survivor_dev.id, payload[:device_id]
+    assert devices_idx.key?(survivor_dev.id), "survivor device must be loaded into the index"
+    assert_equal survivor_vis.id, visitors_index[[@project.id, survivor_dev.id]]&.id
+  end
+
+  test "resolve_missing_visitors! re-runs the remap when a breadcrumb appears mid-pass" do
+    survivor_dev = devices(:android_device)
+    merged_dev = create_merged_away_device
+    payload = { type: Grovs::Events::VIEW, project_id: @project.id, device_id: merged_dev.id,
+                occurred_at: Time.current }
+    projects = { @project.id => @project }
+    devices_idx = { merged_dev.id => merged_dev }
+    visitors_index = {}
+
+    orig_remap = @job.method(:remap_merged_devices!)
+    calls = 0
+    result = @job.stub(:remap_merged_devices!, lambda { |payloads|
+      calls += 1
+      if calls == 1
+        # merge commits after this pass's remap already ran
+        REDIS.set(BatchEventProcessorJob.merged_device_key(@project.id, merged_dev.id), survivor_dev.id)
+        nil
+      else
+        orig_remap.call(payloads)
+      end
+    }) do
+      @job.send(:resolve_missing_visitors!, [payload], projects, devices_idx, visitors_index)
+    end
+
+    assert_equal :resolved, result
+    assert_equal survivor_dev.id, payload[:device_id]
+    assert_operator calls, :>=, 2, "a second remap pass must run after the breadcrumb appears"
+  end
+
+  test "process_batch defers the batch when a missing visitor's device is merge-locked" do
+    merged_dev = create_merged_away_device
+    lock_key = "#{MergeVisitorEventsJob::LOCK_PREFIX}:#{merged_dev.id}:#{@project.id}"
+    REDIS.set(lock_key, "tok", ex: 60)
+
+    event_json = {
+      type: Grovs::Events::VIEW, project_id: @project.id, device_id: merged_dev.id,
+      link_id: @link.id, data: nil, engagement_time: nil, created_at: "2026-06-25T12:00:00Z"
+    }.to_json
+    REDIS.with { |conn| conn.lpush("events:processing:#{@job.jid}", event_json) }
+
+    result = nil
+    assert_no_difference "Event.count" do
+      result = @job.send(:process_batch, [event_json])
+    end
+
+    assert_equal :merge_deferred, result
+    assert_equal 1, REDIS.with { |conn| conn.llen(BatchEventProcessorJob::REDIS_KEY) },
+      "tray must be repushed to pending for retry"
+  ensure
+    REDIS.del(lock_key) if lock_key
+  end
+
+  test "process_batch parks visitorless payloads with no merge trace and processes the rest" do
+    orphan_dev = create_merged_away_device
+    orphan_json = {
+      type: Grovs::Events::VIEW, project_id: @project.id, device_id: orphan_dev.id,
+      link_id: @link.id, data: nil, engagement_time: nil, created_at: "2026-06-26T12:00:00Z"
+    }.to_json
+    healthy_json = {
+      type: Grovs::Events::OPEN, project_id: @project.id, device_id: @device.id,
+      link_id: nil, data: nil, engagement_time: nil, created_at: "2026-06-26T12:00:00Z"
+    }.to_json
+
+    result = nil
+    assert_difference "Event.count", 1 do
+      result = @job.send(:process_batch, [orphan_json, healthy_json])
+    end
+
+    assert_equal :success, result
+    assert_equal Grovs::Events::OPEN, Event.order(:id).last.event, "only the healthy payload may insert"
+    assert_equal 1, REDIS.with { |conn| conn.llen(BatchEventProcessorJob::INTEGRITY_DLQ_KEY) }
+    parked = JSON.parse(REDIS.with { |conn| conn.lindex(BatchEventProcessorJob::INTEGRITY_DLQ_KEY, 0) },
+      symbolize_names: true)
+    assert_equal orphan_dev.id, parked[:device_id]
+  end
+
+  test "process_batch defers instead of corrupting when Redis fails during visitor resolution" do
+    orphan_dev = create_merged_away_device
+    event_json = {
+      type: Grovs::Events::VIEW, project_id: @project.id, device_id: orphan_dev.id,
+      link_id: @link.id, data: nil, engagement_time: nil, created_at: "2026-06-28T12:00:00Z"
+    }.to_json
+    REDIS.with { |conn| conn.lpush("events:processing:#{@job.jid}", event_json) }
+
+    result = nil
+    @job.stub(:missing_merge_state, ->(*) { raise Redis::BaseError, "mget boom" }) do
+      assert_no_difference "Event.count" do
+        result = @job.send(:process_batch, [event_json])
+      end
+    end
+
+    assert_equal :merge_deferred, result
+    assert_equal 1, REDIS.with { |conn| conn.llen(BatchEventProcessorJob::REDIS_KEY) },
+      "tray must be repushed for retry, not processed with a missing visitor"
+  end
+
+  test "park_integrity_payloads! evicts oldest entries beyond the DLQ cap" do
+    key = BatchEventProcessorJob::INTEGRITY_DLQ_KEY
+    max = BatchEventProcessorJob::INTEGRITY_DLQ_MAX
+    REDIS.with do |conn|
+      conn.del(key)
+      conn.pipelined { |p| max.times { p.lpush(key, "seed") } }
+    end
+
+    payload = { type: Grovs::Events::VIEW, project_id: @project.id,
+                device_id: @device.id, occurred_at: Time.current }
+    evictions = []
+    Grovs::Metrics.stub(:increment, lambda { |name, **kw|
+      evictions << kw if name == "events.integrity_dlq.evicted"
+    }) do
+      @job.send(:park_integrity_payloads!, [payload], [payload])
+    end
+
+    assert_equal max, REDIS.with { |conn| conn.llen(key) }, "DLQ must stay capped"
+    assert_equal 1, evictions.size, "eviction must be surfaced, not silent"
+    assert_equal 1, evictions.first[:by]
+  end
+
+  test "parking the same payload twice keeps a single DLQ entry" do
+    payload = { type: Grovs::Events::VIEW, project_id: @project.id,
+                device_id: @device.id, occurred_at: Time.current }
+
+    @job.send(:park_integrity_payloads!, [payload], [payload])
+    @job.send(:park_integrity_payloads!, [payload], [payload])
+
+    assert_equal 1, REDIS.with { |conn| conn.llen(BatchEventProcessorJob::INTEGRITY_DLQ_KEY) },
+      "tray-repush retries must not duplicate parked payloads"
+  end
+
+  test "drain_integrity_dlq! moves parked payloads back to pending" do
+    2.times do |i|
+      payload = { type: Grovs::Events::VIEW, project_id: @project.id,
+                  device_id: @device.id + i, occurred_at: Time.current }
+      @job.send(:park_integrity_payloads!, [payload], [payload])
+    end
+
+    moved = BatchEventProcessorJob.drain_integrity_dlq!
+
+    assert_equal 2, moved
+    assert_equal 0, REDIS.with { |conn| conn.llen(BatchEventProcessorJob::INTEGRITY_DLQ_KEY) }
+    assert_equal 2, REDIS.with { |conn| conn.llen(BatchEventProcessorJob::REDIS_KEY) }
+  end
+
+  test "process_batch returns :success on the happy path" do
+    event_json = {
+      type: Grovs::Events::OPEN, project_id: @project.id, device_id: @device.id,
+      link_id: nil, data: nil, engagement_time: nil, created_at: Time.current.iso8601(3)
+    }.to_json
+
+    assert_equal :success, @job.send(:process_batch, [event_json])
+  end
+
+  # Characterization: no FK on visitor_daily_statistics — adding one must be a conscious change.
+  test "stat upsert for a deleted visitor id commits silently (no FK backstop)" do
+    ghost_id = Visitor.maximum(:id).to_i + 100_000
+    update = {
+      visitor_updates: {
+        stats: {
+          project_id: @project.id, visitor_id: ghost_id, invited_by_id: nil,
+          platform: "ios", event_date: Date.new(2026, 6, 27), metrics: { views: 1 }
+        }
+      },
+      link_updates: nil
+    }
+
+    assert_nothing_raised { EventStatDispatchService.bulk_process_updates([update]) }
+    assert VisitorDailyStatistic.exists?(visitor_id: ghost_id, project_id: @project.id),
+      "orphan stat row committed — documents the residual race consequence"
+  end
+
+  # A device whose Visitor was deleted by a merge — the race under test.
+  def create_merged_away_device
+    Device.create!(
+      user_agent: "RaceWeb/#{SecureRandom.hex(4)}",
+      ip: "10.9.#{rand(256)}.#{rand(256)}", remote_ip: "10.9.#{rand(256)}.#{rand(256)}",
+      platform: "web"
+    )
   end
 end
 # rubocop:enable Metrics/ClassLength

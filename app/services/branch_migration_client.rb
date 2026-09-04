@@ -67,6 +67,7 @@ class BranchMigrationClient
     consumed = %w[
       $ios_url $android_url $desktop_url
       $og_title $og_description $og_image_url
+      $link_title $marketing_title
       ~campaign ~channel ~feature ~stage ~tags
       utm_campaign utm_source utm_medium
     ]
@@ -83,7 +84,7 @@ class BranchMigrationClient
       "tracking_source"   => data["~channel"]  || data["utm_source"],
       "tracking_medium"   => data["~feature"]  || data["utm_medium"],
       "tags"              => Array(data["~tags"]),
-      "name"              => data["~feature"] || data["$og_title"],
+      "name"              => data["$link_title"] || data["$marketing_title"] || data["$og_title"] || data["~feature"],
       "provider"          => Grovs::Migrations::PROVIDER_BRANCH,
       "custom_data"       => custom_data
     }

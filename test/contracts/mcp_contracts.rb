@@ -81,6 +81,8 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
       "default_fallback" => STRING_OR_NULL,
       "show_preview_ios" => BOOL_OR_NULL,
       "show_preview_android" => BOOL_OR_NULL,
+      "copy_to_clipboard_ios" => BOOL_OR_NULL,
+      "copy_to_clipboard_android" => BOOL_OR_NULL,
       "platforms" => {
         "type" => %w[object null],
         "additionalProperties" => MCP_REDIRECT_PLATFORM_CONFIG
@@ -138,6 +140,8 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
       "image_url" => STRING_OR_NULL,
       "show_preview_ios" => BOOL_OR_NULL,
       "show_preview_android" => BOOL_OR_NULL,
+      "copy_to_clipboard_ios" => BOOL_OR_NULL,
+      "copy_to_clipboard_android" => BOOL_OR_NULL,
       "ads_platform" => STRING_OR_NULL,
       "tracking_campaign" => STRING_OR_NULL,
       "tracking_medium" => STRING_OR_NULL,
@@ -173,6 +177,14 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
     properties: {
       "error" => STRING,
       "error_description" => STRING_OR_NULL
+    }
+  )
+
+  MCP_RETENTION_ERROR = mcp_object(
+    required: %w[error error_code],
+    properties: {
+      "error" => STRING,
+      "error_code" => STRING
     }
   )
 
@@ -281,11 +293,14 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
   )
 
   MCP_REDIRECT_CONFIG_RESPONSE_BODY = strict_object(
-    required: %w[default_fallback show_preview_ios show_preview_android ios android desktop],
+    required: %w[default_fallback show_preview_ios show_preview_android
+                 copy_to_clipboard_ios copy_to_clipboard_android ios android desktop],
     properties: {
       "default_fallback" => STRING_OR_NULL,
       "show_preview_ios" => BOOL_OR_NULL,
       "show_preview_android" => BOOL_OR_NULL,
+      "copy_to_clipboard_ios" => BOOL,
+      "copy_to_clipboard_android" => BOOL,
       "ios" => MCP_REDIRECT_TARGET_RESPONSE,
       "android" => MCP_REDIRECT_TARGET_RESPONSE,
       "desktop" => MCP_DESKTOP_REDIRECT_TARGET_RESPONSE
@@ -314,8 +329,18 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
     }
   )
 
+  MCP_ANALYTICS_RETENTION = strict_object(
+    required: %w[plan queryable_days cold_after_days can_query_cold],
+    properties: {
+      "plan" => STRING,
+      "queryable_days" => NUMBER,
+      "cold_after_days" => NUMBER,
+      "can_query_cold" => BOOL
+    }
+  )
+
   MCP_INSTANCE_RESPONSE_BODY = strict_object(
-    required: %w[id api_key uri_scheme updated_at get_started_dismissed quota_exceeded revenue_collection_enabled production test hash_id],
+    required: %w[id api_key uri_scheme updated_at get_started_dismissed quota_exceeded revenue_collection_enabled production test hash_id analytics_retention],
     properties: {
       "id" => ID,
       "api_key" => STRING_OR_NULL,
@@ -326,7 +351,8 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
       "revenue_collection_enabled" => BOOL,
       "production" => MCP_PROJECT_RESPONSE.merge("type" => %w[object null]),
       "test" => MCP_PROJECT_RESPONSE.merge("type" => %w[object null]),
-      "hash_id" => STRING
+      "hash_id" => STRING,
+      "analytics_retention" => MCP_ANALYTICS_RETENTION
     }
   )
 
@@ -529,6 +555,7 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
              200 => MCP_ANALYTICS_LINK_RESPONSE,
              400 => MCP_BAD_REQUEST,
              404 => MCP_ERROR,
+             422 => MCP_RETENTION_ERROR,
              **MCP_AUTH_FAILURES
            }
 
@@ -538,6 +565,7 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
              200 => MCP_ANALYTICS_METRICS_RESPONSE,
              400 => MCP_BAD_REQUEST,
              404 => MCP_ERROR,
+             422 => MCP_RETENTION_ERROR,
              **MCP_AUTH_FAILURES
            }
 
@@ -547,6 +575,7 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
              200 => MCP_TOP_LINKS_RESPONSE,
              400 => MCP_BAD_REQUEST,
              404 => MCP_ERROR,
+             422 => MCP_RETENTION_ERROR,
              **MCP_AUTH_FAILURES
            }
 
@@ -606,7 +635,8 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
                400 => MCP_BAD_REQUEST,
                401 => MCP_ERROR,
                403 => MCP_ERROR,
-               404 => MCP_ERROR
+               404 => MCP_ERROR,
+               422 => MCP_RETENTION_ERROR
              }
 
   register "Api::V1::Mcp::CampaignsController#archive",
@@ -646,20 +676,25 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
                }
   end
 
-  %w[
-    Api::V1::Mcp::LinksController#index
-    Api::V1::Mcp::LinksController#show
-  ].each do |action|
-    register action,
-             request: action.end_with?("#index") ? MCP_SEARCH_REQUEST : MCP_PROJECT_REQUEST,
-             responses: {
-                 200 => action.end_with?("#index") ? MCP_LINKS_SEARCH_RESPONSE : MCP_LINK_ENVELOPE,
-                 400 => MCP_BAD_REQUEST,
-                 401 => MCP_ERROR,
-                 403 => MCP_ERROR,
-                 404 => MCP_ERROR
-               }
-  end
+  register "Api::V1::Mcp::LinksController#index",
+           request: MCP_SEARCH_REQUEST,
+           responses: {
+               200 => MCP_LINKS_SEARCH_RESPONSE,
+               400 => MCP_BAD_REQUEST,
+               401 => MCP_ERROR,
+               403 => MCP_ERROR,
+               404 => MCP_ERROR,
+               422 => MCP_RETENTION_ERROR
+             }
+  register "Api::V1::Mcp::LinksController#show",
+           request: MCP_PROJECT_REQUEST,
+           responses: {
+               200 => MCP_LINK_ENVELOPE,
+               400 => MCP_BAD_REQUEST,
+               401 => MCP_ERROR,
+               403 => MCP_ERROR,
+               404 => MCP_ERROR
+             }
 
   register "Api::V1::Mcp::LinksController#archive",
            request: MCP_PROJECT_REQUEST,

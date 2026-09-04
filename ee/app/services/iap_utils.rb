@@ -40,7 +40,8 @@ module IapUtils
 
   def extract_google_original_txn_id(purchase_data, fallback_token)
     if purchase_data.respond_to?(:order_id) && purchase_data.order_id.present?
-      purchase_data.order_id.sub(/\.\d+$/, '')
+      # Renewal orders are "<base>..N" — strip the whole suffix, never leave a trailing dot.
+      purchase_data.order_id.sub(/\.{1,2}\d+\z/, '')
     else
       fallback_token
     end

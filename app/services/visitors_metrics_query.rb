@@ -38,10 +38,7 @@ class VisitorsMetricsQuery
   end
 
   def daily_metrics
-    daily_counts = ProjectDailyActiveUser
-      .where(project_id: @project_ids, event_date: @start_date..@end_date)
-      .group(:event_date)
-      .sum(:active_users)
+    daily_counts = clickhouse_daily_counts || pg_daily_counts
 
     all_dates = (@start_date..@end_date).to_a
     counts = all_dates.index_with do |date|
@@ -49,5 +46,21 @@ class VisitorsMetricsQuery
     end
 
     { metrics_values: counts.transform_keys(&:to_s) }
+  end
+
+  # nil → PG. CH counts visitors distinct across projects; PG sums per-project DAU.
+  def clickhouse_daily_counts
+    return nil unless Clickhouse.analytics_rollups_read_enabled?
+
+    ClickhouseReadService.active_visitors_series(
+      @project_ids, start_date: @start_date, end_date: @end_date, grouping: :day
+    )
+  end
+
+  def pg_daily_counts
+    ProjectDailyActiveUser
+      .where(project_id: @project_ids, event_date: @start_date..@end_date)
+      .group(:event_date)
+      .sum(:active_users)
   end
 end

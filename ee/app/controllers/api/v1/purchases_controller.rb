@@ -1,7 +1,10 @@
 class Api::V1::PurchasesController < Api::V1::ProjectsBaseController
   include DashboardAuthorization
+  include Api::V1::Concerns::AnalyticsRetentionGate
   before_action :doorkeeper_authorize!
   before_action :authorize_and_load_project
+  # purchases is excluded: PurchaseQueryService has no ClickHouse branch.
+  before_action :enforce_ch_retention_window!, only: [:revenue_metrics]
 
   def purchases
     asc = ActiveModel::Type::Boolean.new.cast(asc_param)

@@ -32,33 +32,9 @@ module LinkMetricsHelper
       return ""
     end
 
-    # Step 1: Fetch link metrics from daily stats in the time window
-    metrics = LinkDailyStatistic
-                .where(project_id: project_id, link_id: links.map(&:id), event_date: start_date..end_date)
-                .group(:link_id)
-                .pluck(
-                  :link_id,
-                  Arel.sql("SUM(views)"),
-                  Arel.sql("SUM(opens)"),
-                  Arel.sql("SUM(installs)"),
-                  Arel.sql("SUM(reinstalls)"),
-                  Arel.sql("SUM(reactivations)"),
-                  Arel.sql("SUM(time_spent)")
-                )
-                .to_h do |link_id, views, opens, installs, reinstalls, reactivations, time_spent|
-                  [
-                    link_id,
-                    {
-                      "view" => views.to_i,
-                      "open" => opens.to_i,
-                      "install" => installs.to_i,
-                      "reinstall" => reinstalls.to_i,
-                      "reactivation" => reactivations.to_i,
-                      "time_spent" => time_spent.to_i,
-                      "avg_engagement_time" => 0.0 # Could compute per-device if needed
-                    }
-                  ]
-                end
+    # Step 1: Fetch link metrics in the time window — CH rollup when enabled, PG otherwise
+    metrics = clickhouse_link_metrics(project_id, links, start_date, end_date) if Clickhouse.analytics_rollups_read_enabled?
+    metrics ||= pg_link_metrics(project_id, links, start_date, end_date)
 
     # Step 2: Prepare the CSV
     CSV.generate(headers: true) do |csv|
@@ -102,6 +78,58 @@ module LinkMetricsHelper
   end
 
   private
+
+  # nil = CH disabled/failed → caller falls back to PG; {} = CH succeeded, no data
+  def clickhouse_link_metrics(project_id, links, start_date, end_date)
+    rows = ClickhouseReadService.link_metrics_by_id(
+      project_id, link_ids: links.map(&:id), start_date: start_date, end_date: end_date
+    )
+    return nil if rows.nil?
+
+    rows.to_h do |row|
+      [
+        row["link_id"].to_i,
+        {
+          "view" => row["views"].to_i,
+          "open" => row["opens"].to_i,
+          "install" => row["installs"].to_i,
+          "reinstall" => row["reinstalls"].to_i,
+          "reactivation" => row["reactivations"].to_i,
+          "time_spent" => row["time_spent"].to_i,
+          "avg_engagement_time" => 0.0
+        }
+      ]
+    end
+  end
+
+  def pg_link_metrics(project_id, links, start_date, end_date)
+    LinkDailyStatistic
+      .where(project_id: project_id, link_id: links.map(&:id), event_date: start_date..end_date)
+      .group(:link_id)
+      .pluck(
+        :link_id,
+        Arel.sql("SUM(views)"),
+        Arel.sql("SUM(opens)"),
+        Arel.sql("SUM(installs)"),
+        Arel.sql("SUM(reinstalls)"),
+        Arel.sql("SUM(reactivations)"),
+        Arel.sql("SUM(time_spent)")
+      )
+      .to_h do |link_id, views, opens, installs, reinstalls, reactivations, time_spent|
+        [
+          link_id,
+          {
+            "view" => views.to_i,
+            "open" => opens.to_i,
+            "install" => installs.to_i,
+            "reinstall" => reinstalls.to_i,
+            "reactivation" => reactivations.to_i,
+            "time_spent" => time_spent.to_i,
+            "avg_engagement_time" => 0.0 # Could compute per-device if needed
+          }
+        ]
+      end
+  end
 
   # link.data is JSON.parse'd from a client param, so it can be any JSON value
   def link_data_string(data)

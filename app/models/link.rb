@@ -19,7 +19,11 @@ class Link < ApplicationRecord
   belongs_to :campaign, optional: true
 
   has_many :custom_redirects, dependent: :destroy
-  has_many :link_daily_statistics, dependent: :destroy
+  # delete_all, not destroy: the table is id: false, and destroying a PK-less row raises.
+  has_many :link_daily_statistics, dependent: :delete_all
+
+  after_commit :sync_link_dimension, on: %i[create update]
+  after_commit :tombstone_link_dimension, on: :destroy
 
   def image_resource
     if image_url
@@ -71,8 +75,8 @@ class Link < ApplicationRecord
     "https://#{full_path(domain)}"
   end
 
-  def action_for(device)
-    actions.where(device_id: device.id).where("created_at >= ?", Grovs::Links::VALIDITY_MINUTES.minutes.ago).order(created_at: :desc).first
+  def action_for(device, within: Grovs::Links::VALIDITY_MINUTES.minutes)
+    actions.where(device_id: device.id).where("created_at >= ?", within.ago).order(created_at: :desc).first
   end
 
   def hash_data
@@ -103,6 +107,22 @@ class Link < ApplicationRecord
     end
   end
 
+  def copy_to_clipboard_for?(platform)
+    value =
+      case platform
+      when Grovs::Platforms::IOS
+        show = show_preview_ios.nil? ? redirect_config.show_preview_ios : show_preview_ios
+        copy = copy_to_clipboard_ios.nil? ? redirect_config.copy_to_clipboard_ios : copy_to_clipboard_ios
+        show && copy
+      when Grovs::Platforms::ANDROID
+        show = show_preview_android.nil? ? redirect_config.show_preview_android : show_preview_android
+        copy = copy_to_clipboard_android.nil? ? redirect_config.copy_to_clipboard_android : copy_to_clipboard_android
+        show && copy
+      end
+
+    value || false
+  end
+
   def tracking_dictionary
     {
       source: tracking_source,
@@ -116,6 +136,7 @@ class Link < ApplicationRecord
     if domain_id && path
       keys << multi_condition_cache_key({path: path, domain_id: domain_id})
       keys << multi_condition_cache_key({domain: domain_id, path: path})
+      keys << multi_condition_cache_key({path: path, domain_id: domain_id, active: true})
     end
     # Clear old keys if path or domain_id changed
     if previous_changes.key?('path') || previous_changes.key?('domain_id')
@@ -124,8 +145,19 @@ class Link < ApplicationRecord
       if old_domain_id && old_path
         keys << multi_condition_cache_key({path: old_path, domain_id: old_domain_id})
         keys << multi_condition_cache_key({domain: old_domain_id, path: old_path})
+        keys << multi_condition_cache_key({path: old_path, domain_id: old_domain_id, active: true})
       end
     end
     keys
+  end
+
+  private
+
+  def sync_link_dimension
+    LinkDimensionSyncService.sync(self)
+  end
+
+  def tombstone_link_dimension
+    LinkDimensionSyncService.tombstone(self)
   end
 end
