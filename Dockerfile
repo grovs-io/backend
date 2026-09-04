@@ -1,6 +1,4 @@
-# Self-hosted image: one image for every role; docker-compose.yml picks the command.
-#   Community Edition:  docker build -t grovs-backend .
-#   Enterprise Edition: docker build --build-arg GROVS_EE=true -t grovs-backend-ee .
+# One image for every role; GROVS_EE=true builds the enterprise edition.
 ARG RUBY_VERSION=3.4.10
 ARG GROVS_EE=false
 

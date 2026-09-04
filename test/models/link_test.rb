@@ -206,7 +206,9 @@ class LinkTest < ActiveSupport::TestCase
   test "action_for returns the most recent action within the time window" do
     link = links(:basic_link)
     device = devices(:ios_device)
-    # recent_action was created 1 minute ago, old_action was 10 minutes ago (outside 5 min window)
+    # Fixture timestamps are frozen at load; a slow full run can push "1 minute ago" past the window.
+    actions(:recent_action).update_column(:created_at, 1.minute.ago)
+    actions(:old_action).update_column(:created_at, 10.minutes.ago)
     result = link.action_for(device)
     assert_not_nil result
     assert_equal actions(:recent_action).id, result.id

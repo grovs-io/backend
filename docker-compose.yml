@@ -1,7 +1,4 @@
-# Self-hosted stack: PostgreSQL, Redis, ClickHouse, the API and the five Sidekiq workers.
-# Pulls the published image (pin GROVS_IMAGE in .env); to run from source build
-# it first with `docker build -t grovs-backend .` and set GROVS_IMAGE=grovs-backend.
-# Configure hosts and secrets in .env (copy .env.example).
+# Self-hosted stack on the published image; pin GROVS_IMAGE in .env (see README).
 
 x-app: &app
   image: ${GROVS_IMAGE:-ghcr.io/grovs-io/backend:latest}
