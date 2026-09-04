@@ -24,7 +24,8 @@ COPY Gemfile Gemfile.lock ./
 RUN bundle install --jobs 4 --retry 3 \
     && rm -rf /usr/local/bundle/cache \
     && find /usr/local/bundle -name "*.c" -delete \
-    && find /usr/local/bundle -name "*.o" -delete
+    && find /usr/local/bundle -name "*.o" -delete \
+    && find /usr/local/bundle/gems -mindepth 2 -maxdepth 2 -type d \( -name spec -o -name test -o -name features \) -exec rm -rf {} +
 
 COPY . .
 
