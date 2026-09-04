@@ -18,6 +18,8 @@ gem 'pg', '~> 1.5'
 gem 'rack-cors', '~> 2.0'
 gem 'devise', '~> 5.0'
 gem 'doorkeeper', '~> 5.8'
+# Default gem in the Ruby image ships 0.7.1 (CVE-2026-80212); bundle the fixed one.
+gem 'resolv', '>= 0.7.2'
 gem 'devise_invitable', '~> 2.0.0'
 gem 'dotenv-rails', '~> 3.1'
 gem 'sendgrid-actionmailer', '~> 3.2'

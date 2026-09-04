@@ -66,6 +66,9 @@ LABEL org.opencontainers.image.source="https://github.com/grovs-io/backend" \
 
 COPY --from=builder --chown=grovs:grovs /usr/local/bundle /usr/local/bundle
 COPY --from=builder --chown=grovs:grovs /app /app
+# The image's default resolv gem is vulnerable (CVE-2026-80212); the bundle carries the fixed one.
+RUN cp -r /usr/local/bundle/gems/resolv-*/lib/. "$(ruby -e 'puts RbConfig::CONFIG["rubylibdir"]')/" \
+    && rm -f /usr/local/lib/ruby/gems/*/specifications/default/resolv-*.gemspec
 RUN mkdir -p storage tmp/pids tmp/cache log && chown -R grovs:grovs storage tmp log
 
 USER grovs:grovs
