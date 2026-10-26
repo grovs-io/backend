@@ -510,4 +510,58 @@ class GooglePurchaseValidatorTest < ActiveSupport::TestCase
       purchase_type: purchase_type
     )
   end
+
+  def validate_as_production_subscription(event)
+    verified = OpenStruct.new(
+      purchase_type: 1, price_amount_micros: 12_990_000, price_currency_code: "EUR",
+      start_time_millis: 1_735_689_600_000, expiry_time_millis: 1_738_368_000_000, order_id: "GPA.1-1.5"
+    )
+    fake_service = Minitest::Mock.new
+    fake_service.expect(:get_purchase_subscription, verified, [event.identifier, event.product_id, event.transaction_id])
+    GooglePurchaseValidator.stub(:build_google_service, fake_service) do
+      GooglePurchaseValidator.validate(event, @instance)
+    end
+    fake_service.verify
+  end
+
+  test "a failed project move does not leave the row marked validated" do
+    event = create_event(transaction_id: "txn_move_atomic", purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION)
+    event.update_columns(project_id: @test_project.id)
+    boom = ->(*) { raise ActiveRecord::StatementInvalid, "pg down" }
+    GooglePurchaseValidator.stub(:move_to_verified_project, boom) do
+      assert_raises(ActiveRecord::StatementInvalid) { validate_as_production_subscription(event) }
+    end
+    assert_not event.reload.webhook_validated?, "validation and the move commit together, or neither does"
+    assert_equal @test_project.id, event.project_id
+  end
+
+  test "moves an unprocessed purchase to the verified production project" do
+    event = create_event(transaction_id: "txn_move_unprocessed", purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION)
+    event.update_columns(project_id: @test_project.id)
+
+    validate_as_production_subscription(event)
+
+    assert_equal @project.id, event.reload.project_id
+  end
+
+  test "does not move a processed purchase" do
+    event = create_event(transaction_id: "txn_move_processed", purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION)
+    event.update_columns(project_id: @test_project.id, processed: true)
+
+    validate_as_production_subscription(event)
+
+    assert_equal @test_project.id, event.reload.project_id
+    assert event.webhook_validated?, "everything except the project still updates"
+  end
+
+  test "does not move a purchase claimed between load and validation" do
+    event = create_event(transaction_id: "txn_move_race", purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION)
+    event.update_columns(project_id: @test_project.id)
+    stale = PurchaseEvent.find(event.id)
+    PurchaseEvent.where(id: event.id).update_all(processed: true)
+
+    validate_as_production_subscription(stale)
+
+    assert_equal @test_project.id, event.reload.project_id
+  end
 end

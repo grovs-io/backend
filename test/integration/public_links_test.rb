@@ -203,6 +203,47 @@ class PublicLinksTest < ActionDispatch::IntegrationTest
     assert_equal Grovs::Platforms::IOS, received
   end
 
+  test "make_redirect wraps the Android button for an eligible in-app browser" do
+    fb_android = "Mozilla/5.0 (Linux; Android 14; Pixel 8; wv) AppleWebKit/537.36 (KHTML, like Gecko) " \
+      "Version/4.0 Chrome/127.0.0.0 Mobile Safari/537.36 [FB_IAB/FB4A;FBAV/477.0.0.49.82;]"
+    device = Device.create!(user_agent: fb_android, ip: "1.2.3.4", remote_ip: "5.6.7.8", platform: "ios")
+    received = nil
+
+    with_preview_stubs(device) do
+      InAppBrowserPage.stub(:eligible?, true) do
+        InAppBrowserPage.stub(:button_url, lambda { |**kw|
+          received = kw
+          kw[:redirect_url]
+        }) do
+          get "/?url=https://example.sqd.link/test-path", headers: preview_host_headers, env: { "HTTP_USER_AGENT" => fb_android }
+        end
+      end
+    end
+
+    assert_equal true, received[:in_app_browser]
+    assert_equal Grovs::Platforms::ANDROID, received[:platform], "must use the live UA, not the stale cookie platform"
+  end
+
+  test "make_redirect leaves the button alone when not eligible" do
+    fb_android = "Mozilla/5.0 (Linux; Android 14; Pixel 8; wv) AppleWebKit/537.36 (KHTML, like Gecko) " \
+      "Version/4.0 Chrome/127.0.0.0 Mobile Safari/537.36 [FB_IAB/FB4A;FBAV/477.0.0.49.82;]"
+    device = Device.create!(user_agent: fb_android, ip: "1.2.3.4", remote_ip: "5.6.7.8", platform: "android")
+    received = nil
+
+    with_preview_stubs(device) do
+      InAppBrowserPage.stub(:eligible?, false) do
+        InAppBrowserPage.stub(:button_url, lambda { |**kw|
+          received = kw
+          kw[:redirect_url]
+        }) do
+          get "/?url=https://example.sqd.link/test-path", headers: preview_host_headers, env: { "HTTP_USER_AGENT" => fb_android }
+        end
+      end
+    end
+
+    assert_equal false, received[:in_app_browser]
+  end
+
   test "make_redirect with nil URL renders not_found" do
     LinksService.stub(:link_for_redirect_url, nil) do
       get "/some-path", headers: preview_host_headers
@@ -236,5 +277,15 @@ class PublicLinksTest < ActionDispatch::IntegrationTest
 
   def preview_host_headers
     { "Host" => "preview.sqd.link" }
+  end
+
+  def with_preview_stubs(device, &block)
+    LinksService.stub(:link_for_redirect_url, @link) do
+      DeviceService.stub(:device_for_website_visit, device) do
+        WebConfigurationService.stub(:name_and_image_for_project_and_platform, { name: "Test", image: nil }) do
+          LinksService.stub(:build_redirect_url_for_preview, "https://example.sqd.link/test-path?go_to_fallback=true", &block)
+        end
+      end
+    end
   end
 end

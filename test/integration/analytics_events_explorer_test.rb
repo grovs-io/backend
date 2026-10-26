@@ -4,7 +4,7 @@ require 'test_helper'
 require_relative 'auth_test_helper'
 require_relative 'analytics_schema_helper'
 
-class AnalyticsEventsExplorerTest < ActionDispatch::IntegrationTest
+class AnalyticsEventsExplorerTest < ActionDispatch::IntegrationTest # rubocop:disable Metrics/ClassLength -- explorer endpoint catalog
   include AuthTestHelper
   include AnalyticsSchemaHelper
   include ClickhouseTestHelper
@@ -346,6 +346,16 @@ class AnalyticsEventsExplorerTest < ActionDispatch::IntegrationTest
     assert_equal canary, json, 'Controller should pass service result through without modification'
   end
 
+  test 'field_values: accepts advertised purchase.<key> fields and rejects unknown purchase keys' do
+    with_ch_stub(::Analytics::EventsQueryService, :field_values, { values: [] }) do
+      base = "#{API_PREFIX}/projects/#{@project.id}/analytics/events/field-values"
+      get base, params: { field: 'purchase.product_id' }, headers: @headers
+      assert_response :ok
+      get base, params: { field: 'purchase.nope' }, headers: @headers
+      assert_response :bad_request
+    end
+  end
+
   test 'volume: returns 422 when date range exceeds the aggregate cap (90 days)' do
     # Recent range (within retention) but over the 90-day aggregate cap.
     Clickhouse.stub(:read_enabled?, true) do
@@ -494,10 +504,19 @@ class AnalyticsEventsExplorerTest < ActionDispatch::IntegrationTest
     assert_response :bad_request
   end
 
-  test 'field_values: plain non-allowlisted field still rejected' do
-    Clickhouse.stub(:read_enabled?, true) do
+  test 'field_values: plain non-allowlisted field is accepted as an event property key' do
+    with_ch_stub(::Analytics::EventsQueryService, :field_values, { values: [] }) do
       get "#{API_PREFIX}/projects/#{@project.id}/analytics/events/field-values",
           params: { field: 'plan' },
+          headers: @headers
+    end
+    assert_response :ok
+  end
+
+  test 'field_values: still rejects a field that is not a valid property key' do
+    Clickhouse.stub(:read_enabled?, true) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/events/field-values",
+          params: { field: 'bad`key' },
           headers: @headers
     end
     assert_response :bad_request
@@ -738,6 +757,34 @@ class AnalyticsEventsExplorerTest < ActionDispatch::IntegrationTest
     assert_not_empty json['data']
     assert_equal 'http_count_degrade', json['data'].first['event_id']
     assert_nil json['total_count'], 'degraded count must serialize as JSON null'
+  end
+
+  test 'field_values: source returns the five taxonomy buckets without touching ClickHouse' do
+    Clickhouse.stub(:read_enabled?, true) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/events/field-values",
+          params: { field: 'source' }, headers: @headers
+    end
+    assert_response :ok
+    assert_equal %w[campaigns referrals api_links links organic], JSON.parse(response.body)['values']
+  end
+
+  test 'field_values: serves distinct values for an event property key' do
+    skip_unless_clickhouse!
+    insert_ch_events([
+      { event_id: 'evt_category_shoes', project_id: @project.id, event_type: 'VIEW',
+        properties: { 'category' => 'shoes' }, created_at: (Date.current - 1).to_s },
+      { event_id: 'evt_category_bags', project_id: @project.id, event_type: 'VIEW',
+        properties: { 'category' => 'bags' }, created_at: (Date.current - 1).to_s }
+    ])
+
+    Clickhouse.stub(:read_enabled?, true) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/events/field-values",
+          params: { field: 'category', start_date: 10.days.ago.to_date.to_s, end_date: Date.current.to_s },
+          headers: @headers
+    end
+
+    assert_response :ok
+    assert_equal %w[bags shoes], JSON.parse(response.body)['values']
   end
 
   private

@@ -75,12 +75,6 @@ class Api::V1::MigrationSourcesController < Api::V1::ProjectsBaseController
            status: :service_unavailable
   end
 
-  def require_admin_for_project
-    role = InstanceRole.find_by(instance_id: @project.instance_id, user_id: current_user.id)
-    return if role && role.role == Grovs::Roles::ADMIN
-    render json: { error: "Forbidden" }, status: :forbidden
-  end
-
   CREDENTIALS_ALLOWED_KEYS = {
     Grovs::Migrations::PROVIDER_BRANCH    => %w[branch_key],
     Grovs::Migrations::PROVIDER_APPSFLYER => %w[onelink_id api_token]

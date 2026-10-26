@@ -287,21 +287,16 @@ class ClickhouseRollupRebuildServiceTest < ActiveSupport::TestCase
     assert_not_includes sql, "SELECT DISTINCT events.project_id AS pid"
   end
 
-  test "visitor merge acquisition repair query is scoped to project partition and raw visitor ids" do
-    sql = ClickhouseRollupRebuildService.send(
-      :acquisition_insert_query,
-      202606,
-      project_id: 7,
-      raw_visitor_ids: [10, 20]
-    ).to_sql
+  test "visitor merge folds only the requested project's summaries and aliases" do
+    sql = ClickhouseRollupRebuildService.send(:acquisition_fold_query, 7, [10, 20]).to_sql
 
-    assert_includes sql, "events.project_id = {project_id:UInt64}"
-    assert_includes sql, "toYYYYMM(toDate(created_at)) = {partition:UInt32}"
-    assert_includes sql, "events.visitor_id IN (10,20)"
-    assert_not_includes sql, "SELECT DISTINCT events.project_id AS pid"
+    assert_includes sql, "a.project_id = {project:UInt64}"
+    assert_includes sql, "a.visitor_id IN {ids:Array(UInt64)}"
+    assert_includes sql, "from_visitor_id IN {ids:Array(UInt64)}"
+    assert_not_includes sql, "FROM events"
   end
 
-  test "repair_acquisition_for_visitor_merge discovers partitions and rebuilds only those visitor ids" do
+  test "repair_acquisition_for_visitor_merge discovers multiple partitions but folds the visitor ids only once" do
     rebuilt = []
     Clickhouse.stub(:enabled?, true) do
       ClickhouseRollupRebuildService.stub(:acquisition_repair_visitor_ids, lambda { |pid, from, to|
@@ -313,8 +308,8 @@ class ClickhouseRollupRebuildServiceTest < ActiveSupport::TestCase
           assert_equal [10, 20], ids
           %w[202601 202606]
         }) do
-          ClickhouseRollupRebuildService.stub(:rebuild_acquisition, lambda { |partition, project_id:, raw_visitor_ids:|
-            rebuilt << [partition, project_id, raw_visitor_ids]
+          ClickhouseRollupRebuildService.stub(:repair_acquisition_slice, lambda { |partitions, project_id, raw_visitor_ids|
+            rebuilt << [partitions, project_id, raw_visitor_ids]
             true
           }) do
             assert_equal %w[202601 202606],
@@ -324,10 +319,7 @@ class ClickhouseRollupRebuildServiceTest < ActiveSupport::TestCase
       end
     end
 
-    assert_equal [
-      ["202601", 7, [10, 20]],
-      ["202606", 7, [10, 20]]
-    ], rebuilt
+    assert_equal [[%w[202601 202606], 7, [10, 20]]], rebuilt
   end
 
   test "visitor-scoped repair inserts without a lock — even while the partition rebuild lock is held" do
@@ -375,7 +367,7 @@ class ClickhouseRollupRebuildServiceTest < ActiveSupport::TestCase
     Clickhouse.stub(:enabled?, true) do
       ClickhouseRollupRebuildService.stub(:acquisition_repair_visitor_ids, ->(*) { [10, 20] }) do
         ClickhouseRollupRebuildService.stub(:visitor_partitions, ->(*) { %w[202606] }) do
-          ClickhouseRollupRebuildService.stub(:rebuild_acquisition, ->(*, **) { true }) do
+          ClickhouseRollupRebuildService.stub(:repair_acquisition_slice, ->(*) { true }) do
             assert_equal %w[202606],
                          ClickhouseRollupRebuildService.repair_acquisition_for_visitor_merge(7, 10, 20)
           end

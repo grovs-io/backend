@@ -14,6 +14,20 @@ module Api
         before_action :enforce_retention_window!
 
         rescue_from ::Analytics::QueryTooHeavy, with: :render_query_too_heavy
+        rescue_from ::Analytics::HeavyShapeInCold, with: :render_heavy_shape_in_cold
+        rescue_from ::Analytics::OverviewFilters::Unsupported do |e|
+          render json: { error: e.message, error_code: 'unsupported_filter' }, status: :bad_request
+        end
+        rescue_from ::SegmentFilter::NotFound do
+          render json: { error: 'Unknown segment' }, status: :not_found
+        end
+        rescue_from ::SegmentFilter::Busy do
+          render json: { error: 'Too many segment queries are running; retry shortly.', error_code: 'segment_busy' },
+                 status: :too_many_requests
+        end
+        rescue_from ::SegmentFilter::Invalid do |e|
+          render json: { error: e.message, error_code: 'invalid_segment' }, status: :unprocessable_entity
+        end
 
         FIELD_ALIAS_MAP = { 'campaign' => 'campaign_id', 'link' => 'link_id', 'visitor' => 'visitor_id' }.freeze
 
@@ -21,15 +35,31 @@ module Api
           event_type event_name screen_name platform app_version country city
           device_model os os_version tracking_source tracking_medium
           tracking_campaign ads_platform sdk_identifier session_id
-          campaign campaign_id link link_id visitor visitor_id
+          campaign campaign_id link link_id visitor visitor_id source language
         ].freeze
+
+        HEAVY_FILTER_OPERATORS = %w[contains is_not not_contains].freeze
 
         private
 
+        def segment_clause(column = 'visitor_id', effective: false)
+          @segment_clauses ||= {}
+          @segment_clauses[[column, effective]] ||= ::SegmentFilter.clause(project: @project, segment_id: params[:segment_id],
+                                                                            column: column, effective: effective)
+        end
+
         def render_query_too_heavy
           render json: {
-            error: 'Range too large — narrow the date range or remove a filter.',
+            error: 'This query took too long or used too much memory — narrow the date range or remove a filter.',
             error_code: 'query_too_heavy'
+          }, status: :unprocessable_entity
+        end
+
+        def render_heavy_shape_in_cold
+          render json: {
+            error: '“contains” / “is not” filters and free-text search only run on data from the last ' \
+                   "#{retention_policy.hot_days} days for your plan. Narrow the range or remove them.",
+            error_code: 'heavy_filter_in_cold'
           }, status: :unprocessable_entity
         end
 
@@ -40,12 +70,31 @@ module Api
           raise ::Analytics::RetentionWindowExceeded
         end
 
-        def range_enters_cold?
-          parsed_start_date < retention_policy.cold_cutoff_date
+        def reject_heavy_shape_in_cold!(heavy:, from: parsed_start_date)
+          raise ::Analytics::HeavyShapeInCold, 'heavy raw query into cold storage' if heavy && from < retention_policy.cold_cutoff_date
         end
 
-        def reject_heavy_shape_in_cold!(heavy:)
-          raise ::Analytics::QueryTooHeavy, 'heavy raw query into cold storage' if heavy && range_enters_cold?
+        def heavy_shape_requested?
+          return true if params[:segment_id].present?
+          return true if params[:search].present?
+
+          ::Analytics::QueryHelpers.parse_filters(params[:filters]).any? do |f|
+            HEAVY_FILTER_OPERATORS.include?(f['operator'].to_s)
+          end
+        end
+
+        # True when the request carries any chip other than a single `platform is X`.
+        def non_platform_filters?
+          ::Analytics::OverviewFilters.resolve(params[:filters], platform: platform_filter).raw?
+        end
+
+        def exceeded_date_range?(max_days)
+          days = (parsed_end_date - parsed_start_date).to_i
+          return false if days <= max_days
+
+          render json: { error: "Date range cannot exceed #{max_days} days for this query", error_code: 'query_too_heavy' },
+                 status: :unprocessable_entity
+          true
         end
 
         def parsed_start_date
@@ -58,6 +107,11 @@ module Api
 
         def platform_filter
           params[:platform].presence
+        end
+
+        # Previous-period reads start earlier, so cold guards for compare/trends judge this date.
+        def previous_period_start
+          parsed_start_date - (parsed_end_date - parsed_start_date).to_i - 1
         end
 
         def require_clickhouse!

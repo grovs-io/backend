@@ -25,6 +25,7 @@ module AnalyticsSchemaHelper
   #   :boolean          true | false
   #   :boolean?         true | false | nil
   #   :array            Array (inner items validated separately)
+  #   :array?           Array or nil
   #   :hash             non-nil Hash
   #   :hash?            Hash or nil
   #   :integer_values   Hash where all values are Integer (dynamic keys)
@@ -135,13 +136,15 @@ module AnalyticsSchemaHelper
         "first_time_purchases" => :integer,
         "arpu" => :float,
         "arppu" => :float
-      }
+      },
+      "unsupported_metrics" => [:string]
     },
 
     # GET /overview/key-metrics/series
     overview_key_metric_series: {
       "metric" => :string,
-      "points" => :array
+      "points" => :array,
+      "unsupported" => :boolean?
     },
 
     # Each item inside overview_key_metric_series["points"]
@@ -201,6 +204,24 @@ module AnalyticsSchemaHelper
       "release_date" => :string?,
       "platforms" => :hash,
       "total" => :integer
+    },
+
+    # GET /query
+    metric_query: {
+      "metric" => :string,
+      "group_by" => :string?,
+      "rows" => :array,
+      "other" => :hash?,
+      "total" => { "value" => :integer, "previous" => :integer? },
+      "previous_range" => :hash?
+    },
+
+    metric_query_row: {
+      "key" => :string,
+      "label" => :string,
+      "value" => :integer,
+      "previous" => :integer?,
+      "points" => :array?
     },
 
     # ── Sessions ───────────────────────────────────────────────────────
@@ -264,6 +285,9 @@ module AnalyticsSchemaHelper
       "day_1" => :float?,
       "day_7" => :float?,
       "day_30" => :float?,
+      "day_1_users" => :integer,
+      "day_7_users" => :integer,
+      "day_30_users" => :integer,
       "sparkline" => :array,
       "median_churn_day" => :integer?
     },
@@ -295,7 +319,7 @@ module AnalyticsSchemaHelper
     # ── Events Explorer ──────────────────────────────────────────────
     events_index: {
       required: [],
-      optional: %w[start_date end_date cursor limit sort_by sort_order search filters include_count],
+      optional: %w[start_date end_date cursor limit sort_by sort_order search filters include_count segment_id],
       enums: {
         "sort_by" => %w[created_at event_type event_name platform],
         "sort_order" => %w[asc desc]
@@ -312,7 +336,7 @@ module AnalyticsSchemaHelper
 
     events_volume: {
       required: [],
-      optional: %w[start_date end_date bucket search filters timezone],
+      optional: %w[start_date end_date bucket search filters timezone segment_id],
       enums: {
         "bucket" => %w[hour day week month]
       },
@@ -339,16 +363,17 @@ module AnalyticsSchemaHelper
     # ── Overview ─────────────────────────────────────────────────────
     overview_key_metrics: {
       required: [],
-      optional: %w[start_date end_date platform],
+      optional: %w[start_date end_date platform filters],
       enums: { "platform" => %w[ios android desktop web] }
     },
 
     overview_key_metric_series: {
       required: %w[metric],
-      optional: %w[start_date end_date platform],
+      optional: %w[start_date end_date platform filters granularity],
       enums: {
-        "metric" => %w[views link_views opens installs link_driven_installs organic_installs reinstalls app_opens referred_users],
-        "platform" => %w[ios android desktop web]
+        "metric" => %w[views link_views opens installs link_driven_installs organic_installs reinstalls app_opens referred_users revenue],
+        "platform" => %w[ios android desktop web],
+        "granularity" => %w[day week month]
       }
     },
 
@@ -368,8 +393,11 @@ module AnalyticsSchemaHelper
 
     overview_user_trends: {
       required: [],
-      optional: %w[start_date end_date platform],
-      enums: { "platform" => %w[ios android desktop web] }
+      optional: %w[start_date end_date platform filters granularity],
+      enums: {
+        "platform" => %w[ios android desktop web],
+        "granularity" => %w[day week month]
+      }
     },
 
     overview_sources_breakdown: {
@@ -378,10 +406,20 @@ module AnalyticsSchemaHelper
       enums: { "platform" => %w[ios android desktop web] }
     },
 
+    metric_query: {
+      required: %w[metric],
+      optional: %w[group_by granularity limit compare filters start_date end_date platform],
+      enums: {
+        "metric" => %w[views link_views opens installs link_driven_installs reinstalls app_opens referred_users unique_visitors unique_devices],
+        "granularity" => %w[day week month],
+        "platform" => %w[ios android desktop web]
+      }
+    },
+
     # ── Sessions ─────────────────────────────────────────────────────
     sessions_index: {
       required: [],
-      optional: %w[start_date end_date cursor limit filters source],
+      optional: %w[start_date end_date cursor limit filters source segment_id],
       enums: {
         "source" => %w[campaigns referrals api_links links organic]
       },
@@ -397,7 +435,7 @@ module AnalyticsSchemaHelper
     # ── Retention ────────────────────────────────────────────────────
     retention_summary: {
       required: [],
-      optional: %w[granularity platform start_date end_date filters],
+      optional: %w[granularity platform start_date end_date filters segment_id],
       enums: {
         "granularity" => %w[weekly monthly],
         "platform" => %w[ios android desktop web]
@@ -478,6 +516,8 @@ module AnalyticsSchemaHelper
       assert [true, false, nil].include?(value), "#{path}: expected boolean or nil, got #{value.inspect}"
     when :array
       assert_kind_of Array, value, "#{path}: expected Array, got #{value.class}"
+    when :array?
+      assert(value.nil? || value.is_a?(Array), "#{path}: expected Array or nil, got #{value.class}")
     when :hash
       assert_not_nil value, "#{path}: expected Hash, got nil"
       assert_kind_of Hash, value, "#{path}: expected Hash, got #{value.class}"

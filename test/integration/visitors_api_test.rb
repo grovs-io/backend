@@ -25,6 +25,18 @@ class VisitorsApiTest < ActionDispatch::IntegrationTest
     assert_no_match(/"visitor"/, response.body, "401 must not leak visitor data")
   end
 
+  test "visitor details says whether the device can get a push, without the token" do
+    @visitor.device.update_columns(push_token: "secret-token")
+    get "#{API_PREFIX}/projects/#{@project.id}/visitors/#{@visitor.id}", headers: @headers
+    assert_response :success
+    assert_equal({ "platform" => "ios", "registered" => true }, JSON.parse(response.body)["push"])
+    assert_no_match(/secret-token/, response.body)
+
+    @visitor.device.update_columns(push_token: nil)
+    get "#{API_PREFIX}/projects/#{@project.id}/visitors/#{@visitor.id}", headers: @headers
+    assert_equal false, JSON.parse(response.body).dig("push", "registered")
+  end
+
   # --- Search Visitors ---
 
   test "search visitors returns fixture visitors with correct aggregated metrics" do

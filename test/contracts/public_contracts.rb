@@ -101,10 +101,6 @@ module ApiContracts
            request: PUBLIC_QUERY_REQUEST,
            responses: { 200 => REDIRECT_OR_HTML, 302 => REDIRECT_OR_HTML }
 
-  register "Public::MarketingMessagesController#open_marketing_message",
-           request: NO_PARAMS,
-           responses: { 200 => REDIRECT_OR_HTML }
-
   register "Public::VerificationController#generate_ios_file",
            request: NO_PARAMS,
            responses: { 200 => NON_JSON_RESPONSE, 404 => NON_JSON_RESPONSE }

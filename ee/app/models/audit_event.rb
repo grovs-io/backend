@@ -17,12 +17,23 @@ class AuditEvent < ApplicationRecord
     custom_domain.created custom_domain.deleted custom_domain.torn_down custom_domain.verified
     migration_source.created migration_source.updated migration_source.deleted
     link.created link.updated link.deleted
+    smart_banner.created smart_banner.updated smart_banner.deleted smart_banner.reordered
     export.link_data export.usage_data links.firebase_imported
     enterprise_subscription.created enterprise_subscription.updated subscription.changed
     retention.deletion_ran quota.disabled quota.restored
     sso_connection.created sso_connection.updated sso_connection.deleted sso_connection.domain_verified
     sso_connection.enforce_enabled sso_connection.enforce_disabled sso_connection.scim_token_rotated sso_connection.scim_disabled
     scim.user.created scim.user.updated scim.user.deactivated scim.user.reactivated scim.user.deleted
+    event_destination.created event_destination.updated event_destination.deleted
+    event_destination.paused event_destination.resumed event_destination.rewound event_destination.tested
+    event_stream_token.created event_stream_token.revoked export.event_data
+    dashboard.created dashboard.updated dashboard.deleted
+    segment.created segment.updated segment.archived segment.exported segment.identifier_list_replaced segment.identifier_list_downloaded
+    push_campaign.created push_campaign.updated push_campaign.scheduled push_campaign.sent push_campaign.failed push_campaign.cancelled
+    push_campaign.winner_sent
+    in_app_campaign.created in_app_campaign.updated in_app_campaign.launched in_app_campaign.paused in_app_campaign.resumed
+    in_app_campaign.ended in_app_campaign.deleted in_app_campaign.tested in_app_campaign.audience_updated in_app_settings.updated
+    journey.created journey.updated journey.deleted journey.launched journey.paused journey.resumed journey.ended
   ].freeze
   VERIFY_BATCH = 1000
 

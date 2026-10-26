@@ -24,11 +24,13 @@ module Analytics
     # Returns { data: [...], next_cursor: String|nil }
     # `source` (optional) is a derived category — one of QueryHelpers::SOURCE_CATEGORIES —
     # filtered via source_where_clause, NOT through build_filter_clauses.
-    def self.list(project_id, start_date:, end_date:, cursor: nil, limit: DEFAULT_LIMIT, filters: [], source: nil)
+    def self.list(project_id, start_date:, end_date:, cursor: nil, limit: DEFAULT_LIMIT, filters: [], source: nil,
+                  visitor_clause: nil)
       pid = Integer(project_id)
       limit = [[Integer(limit), 1].max, MAX_LIMIT].min
 
       where = base_where(pid, start_date, end_date)
+      where << visitor_clause if visitor_clause
       where.concat(build_filter_clauses(parse_filters(filters), allowed_fields: FILTER_FIELDS))
       if source.present? && QueryHelpers::SOURCE_CATEGORIES.include?(source.to_s)
         clause = source_where_clause(source.to_s)

@@ -2,6 +2,8 @@ class RedirectConfig < ApplicationRecord
   belongs_to :project
 
   validates :default_fallback, http_url: true, allow_blank: true
+  validates :copy_to_clipboard_android, :copy_to_clipboard_ios, :in_app_browser_page_android, :in_app_browser_page_ios,
+            inclusion: { in: [true, false], message: "must be true or false" }
 
   has_many :redirects, dependent: :delete_all
 

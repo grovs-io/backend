@@ -30,6 +30,11 @@ module ClickhouseDeleteService
     visitor_identity_map
     visitor_identities
     link_dimensions
+    egress_projects
+    events_outbox
+    purchase_events_outbox
+    segment_results
+    segment_identifier_entries
   ].freeze
 
   # Tables with NO date-based retention — only wiped on full-project delete:
@@ -44,8 +49,10 @@ module ClickhouseDeleteService
   # very old events erodes the whole-history visitor_acquisition rebuild source (a later
   # merge-triggered rebuild can drift install/first-touch beyond the window) — acceptable because
   # retention windows are long and first-touch older than the window is out of scope anyway.
+  # Egress outbox tables have a 7-day TTL and no event_date; whole-project delete still wipes them.
   RETENTION_EXEMPT = %w[user_profiles visitor_acquisition visitor_first_seen_daily visitor_identity_map
-                        visitor_identities link_dimensions].freeze
+                        visitor_identities link_dimensions egress_projects events_outbox purchase_events_outbox
+                        segment_results segment_identifier_entries].freeze
 
   # Retention cutoff column per table (purchase_events on purchase_date; else the daily event_date).
   RETENTION_DATE_COLUMNS = (PROJECT_TABLES - RETENTION_EXEMPT).index_with do |table|

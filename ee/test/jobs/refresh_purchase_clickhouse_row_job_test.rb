@@ -1,27 +1,43 @@
+# frozen_string_literal: true
+
 require "test_helper"
 
 class RefreshPurchaseClickhouseRowJobTest < ActiveSupport::TestCase
   fixtures :instances, :projects, :devices, :visitors, :purchase_events
 
-  test "re-delivers the row one millisecond past created_at, not at Time.current" do
-    event = purchase_events(:unprocessed_buy)
-    captured = nil
-
-    ProcessPurchaseEventJob.stub(:dual_write_clickhouse, ->(_e, version_ts:) { captured = version_ts }) do
+  test "delegates to the processing job, which is the sync entry point" do
+    event = purchase_events(:buy_event)
+    job = Minitest::Mock.new
+    job.expect(:perform, nil, [event.id])
+    ProcessPurchaseEventJob.stub(:new, job) do
       RefreshPurchaseClickhouseRowJob.new.perform(event.id)
     end
+    job.verify
+  end
 
-    assert_equal event.created_at + 0.001.seconds, captured
-    assert_equal event.created_at.strftime("%Y%m"), captured.strftime("%Y%m"), "must stay in the same CH partition"
+  test "leaves an unprocessed purchase to its own first processing" do
+    event = purchase_events(:unprocessed_buy)
+    called = false
+    fake = lambda do
+      called = true
+      Minitest::Mock.new
+    end
+    ProcessPurchaseEventJob.stub(:new, fake) do
+      RefreshPurchaseClickhouseRowJob.new.perform(event.id)
+    end
+    assert_not called
+    assert_not event.reload.processed?
   end
 
   test "does nothing when the purchase is gone" do
     called = false
-
-    ProcessPurchaseEventJob.stub(:dual_write_clickhouse, ->(*_a, **_kw) { called = true }) do
+    fake = lambda do
+      called = true
+      Minitest::Mock.new
+    end
+    ProcessPurchaseEventJob.stub(:new, fake) do
       RefreshPurchaseClickhouseRowJob.new.perform(-1)
     end
-
     assert_not called
   end
 end

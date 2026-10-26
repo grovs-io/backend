@@ -46,7 +46,10 @@ class Api::V1::Sdk::EventsController < Api::V1::Sdk::BaseController
 
     EventIngestionService.enqueue_events(payloads) if payloads.any?
 
-    render json: { accepted: accepted, rejected: errors.size, errors: errors }
+    body = { accepted: accepted, rejected: errors.size, errors: errors }
+    stamps = InAppGateway.stamps(project: @project, visitor: @visitor)
+    body[:in_app] = stamps if stamps
+    render json: body
   end
 
   def add_event
@@ -72,7 +75,7 @@ class Api::V1::Sdk::EventsController < Api::V1::Sdk::BaseController
     event_name = enrichment_params[:event_name]
     return render json: { error: "event_name is required" }, status: :bad_request if event_name.blank?
 
-    if Grovs::Events::RESERVED_EVENT_NAMES.include?(event_name)
+    if Grovs::Events::RESERVED_EVENT_NAMES.include?(event_name) || InAppGateway.event?(event_name)
       return render json: { error: "event_name is reserved" }, status: :bad_request
     end
 
@@ -243,6 +246,7 @@ class Api::V1::Sdk::EventsController < Api::V1::Sdk::BaseController
     event_type = event_name == Grovs::Events::SCREEN_VIEW ? Grovs::Events::SCREEN_VIEW : Grovs::Events::CUSTOM
 
     properties = extract_properties(raw_event[:properties])
+    in_app = InAppGateway.event?(event_name)
     parsed_created_at = parse_created_at(raw_event[:created_at])
     created_at_time = parsed_created_at || Time.current
     timestamp = created_at_time.iso8601(3)
@@ -266,6 +270,11 @@ class Api::V1::Sdk::EventsController < Api::V1::Sdk::BaseController
                                               event_name, session_id, raw_event[:engagement_time], properties,
                                               sdk_event_id: raw_event[:event_id])
     )
+    # The device's own id first: it is the same on every retry, whatever time the retry carries.
+    view_id = ClickhouseWriteService.normalize_sdk_event_id(raw_event[:event_id]) || payload[:event_id]
+    if in_app && !InAppGateway.accept(project: @project, visitor: @visitor, name: event_name, properties: properties, event_id: view_id)
+      return { error: "event_name '#{event_name}' is reserved" }
+    end
 
     { payload: payload }
   end

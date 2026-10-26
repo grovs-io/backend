@@ -1,0 +1,6 @@
+# Event-stream egress without push, for deployments that run config/sidekiq_push.yml as well.
+:concurrency: <%= ENV.fetch("SIDEKIQ_EGRESS_CONCURRENCY", 10).to_i %>
+:queues:
+  - [egress, 10]
+  - [journeys, 3]
+  - [egress_exports, 1]

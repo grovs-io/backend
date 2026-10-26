@@ -16,7 +16,8 @@ module Api
             cursor: params[:cursor],
             limit: safe_integer(:limit, default: 50, max: 200),
             filters: params[:filters],
-            source: params[:source]
+            source: params[:source],
+            visitor_clause: segment_clause
           )
           render json: result, status: :ok
         end

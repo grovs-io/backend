@@ -169,4 +169,48 @@ CUSTOM_DOMAINS_PROVIDER MAILER_DELIVERY_METHOD].freeze
       assert_not Grovs.smtp_enabled?
     end
   end
+
+  IN_APP_PREVIEW_KEYS = %w[IN_APP_PREVIEW_ORIGINS REACT_HOST_PROTOCOL REACT_HOST REACT_BETA_HOST_PROTOCOL REACT_BETA_HOST].freeze
+
+  def with_preview_env(overrides, &block)
+    saved = IN_APP_PREVIEW_KEYS.index_with { |k| ENV[k] }
+    overrides.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+    yield
+  ensure
+    saved.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
+  end
+
+  test "in_app_preview_origins defaults to the react host and the beta host, each with its protocol" do
+    with_preview_env("IN_APP_PREVIEW_ORIGINS" => nil, "REACT_HOST_PROTOCOL" => "http://", "REACT_HOST" => "localhost:3001",
+                      "REACT_BETA_HOST_PROTOCOL" => "https://", "REACT_BETA_HOST" => "beta.example.com") do
+      assert_equal ["http://localhost:3001", "https://beta.example.com"], Grovs.in_app_preview_origins
+    end
+  end
+
+  test "in_app_preview_origins strips a trailing slash and defaults a blank protocol to https" do
+    with_preview_env("IN_APP_PREVIEW_ORIGINS" => nil, "REACT_HOST_PROTOCOL" => nil, "REACT_HOST" => "app.grovs.io/",
+                      "REACT_BETA_HOST_PROTOCOL" => nil, "REACT_BETA_HOST" => nil) do
+      assert_equal ["https://app.grovs.io"], Grovs.in_app_preview_origins
+    end
+  end
+
+  test "IN_APP_PREVIEW_ORIGINS fully replaces the default list, comma-separated and trimmed" do
+    with_preview_env("IN_APP_PREVIEW_ORIGINS" => " https://dash.example.com , https://dash2.example.com ",
+                      "REACT_HOST" => "localhost:3001", "REACT_BETA_HOST" => "beta.example.com") do
+      assert_equal ["https://dash.example.com", "https://dash2.example.com"], Grovs.in_app_preview_origins
+    end
+  end
+
+  test "IN_APP_PREVIEW_ORIGINS strips a trailing slash from each entry" do
+    with_preview_env("IN_APP_PREVIEW_ORIGINS" => "https://dash.example.com/, https://dash2.example.com//") do
+      assert_equal ["https://dash.example.com", "https://dash2.example.com"], Grovs.in_app_preview_origins
+    end
+  end
+
+  test "in_app_preview_origins is empty when nothing is configured" do
+    with_preview_env("IN_APP_PREVIEW_ORIGINS" => nil, "REACT_HOST_PROTOCOL" => nil, "REACT_HOST" => nil,
+                      "REACT_BETA_HOST_PROTOCOL" => nil, "REACT_BETA_HOST" => nil) do
+      assert_equal [], Grovs.in_app_preview_origins
+    end
+  end
 end

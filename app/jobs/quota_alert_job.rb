@@ -17,6 +17,10 @@ class QuotaAlertJob
     subscription = instance.subscription
     enterprise_subscription = instance.valid_enterprise_subscription
 
+    if subscription&.active && Billing::Plans.flat?(subscription.product_type)
+      return alert_band(instance, project_helper, Billing::Plans.mau_cap(subscription.product_type))
+    end
+
     if !subscription && !enterprise_subscription
       current_maus = project_helper.current_mau(instance)
       free_mau_count = Grovs.free_mau_count
@@ -51,6 +55,25 @@ class QuotaAlertJob
   def recently_sent?(instance, field)
     timestamp = instance.send(field)
     timestamp.present? && timestamp > 3.days.ago
+  end
+
+  def alert_band(instance, project_helper, cap)
+    current = project_helper.current_mau(instance)
+    pct = (current.to_f / cap * 100).round
+
+    if current > cap
+      send_band(instance, :band_exceeded, :last_quota_exceeded_sent_at, pct, current, cap)
+    elsif pct >= 85
+      send_band(instance, :band_progress, :last_quota_warning_sent_at, pct, current, cap)
+    end
+  end
+
+  def send_band(instance, kind, field, pct, current, cap)
+    return if recently_sent?(instance, field)
+
+    recipients = (instance.users.pluck(:email) + [ENV["BILLING_ALERT_EMAIL"]]).compact_blank.uniq
+    recipients.each { |email| QuotaMailer.public_send(kind, email, pct, current, cap, instance.id).deliver_now }
+    instance.update!(field => Time.current)
   end
 end
 

@@ -320,6 +320,17 @@ class ReattributePurchaseJobTest < ActiveSupport::TestCase
     assert_equal visitors(:ios_visitor).id, event.visitor_id
   end
 
+  test "a purchase that gets its visitor here is handed to journeys once, with that visitor" do
+    event = create_purchase_event(device: @ios_device, store_source: Grovs::Webhooks::APPLE, usd_price_cents: 999,
+                                  event_type: Grovs::Purchases::EVENT_BUY)
+    handed = []
+    Journeys.stub(:purchased, ->(e) { handed << [e.id, e.visitor_id] }) do
+      @job.perform(event.id)
+      @job.perform(event.id)
+    end
+    assert_equal [[event.id, visitors(:ios_visitor).id]], handed
+  end
+
   def create_purchase_event(device:, store_source:, usd_price_cents:, event_type:, link: nil,
                             product_id: "com.test.reattr", purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION,
                             original_transaction_id: nil)
@@ -338,5 +349,89 @@ class ReattributePurchaseJobTest < ActiveSupport::TestCase
       webhook_validated: true, store: true, processed: true,
       purchase_type: purchase_type
     )
+  end
+
+  test "enqueues a CH sync after reattribution" do
+    event = purchase_events(:no_device_buy)
+    event.update_columns(device_id: @ios_device.id, visitor_id: nil)
+    enqueued = []
+    ProcessPurchaseEventJob.stub(:perform_async, ->(id) { enqueued << id }) do
+      @job.perform(event.id)
+    end
+    assert_equal [event.id], enqueued
+    assert_not_nil event.reload.visitor_id
+  end
+
+  test "late attribution after an un-accounted price change credits the visitor exactly once" do
+    event = create_purchase_event(device: nil, store_source: Grovs::Webhooks::APPLE, usd_price_cents: 100,
+                                  event_type: Grovs::Purchases::EVENT_BUY)
+    event.update_columns(processed: false, accounted_usd_price_cents: nil, visitor_id: nil)
+    visitor = @ios_device.visitor_for_project_id(@project.id)
+    project_before = DailyProjectMetric.where(project_id: @project.id).sum(:revenue)
+    visitor_before = VisitorDailyStatistic.where(project_id: @project.id, visitor_id: visitor.id).sum(:revenue)
+    ProcessPurchaseEventJob.new.perform(event.id)
+    assert_equal 100, event.reload.accounted_usd_price_cents
+    event.update_columns(usd_price_cents: 200, price_cents: 200, device_id: @ios_device.id)
+
+    inline = ->(id, *args) { ProcessPurchaseEventJob.new.perform(id, *args) }
+    ProcessPurchaseEventJob.stub(:perform_async, inline) { @job.perform(event.id) }
+
+    assert_equal 200, event.reload.accounted_usd_price_cents
+    assert_equal 200, event.usd_price_cents, "the in-memory accounted-price override is never persisted"
+    assert_equal 200, DailyProjectMetric.where(project_id: @project.id).sum(:revenue) - project_before
+    assert_equal 200, VisitorDailyStatistic.where(project_id: @project.id, visitor_id: visitor.id).sum(:revenue) - visitor_before,
+                 "visitor gets the accounted amount once, not current price plus the correction"
+  end
+
+  test "a correction that runs before late attribution does not pre-credit the visitor" do
+    event = create_purchase_event(device: nil, store_source: Grovs::Webhooks::APPLE, usd_price_cents: 100,
+                                  event_type: Grovs::Purchases::EVENT_BUY)
+    event.update_columns(processed: false, accounted_usd_price_cents: nil, visitor_id: nil)
+    visitor = @ios_device.visitor_for_project_id(@project.id)
+    project_before = DailyProjectMetric.where(project_id: @project.id).sum(:revenue)
+    visitor_before = VisitorDailyStatistic.where(project_id: @project.id, visitor_id: visitor.id).sum(:revenue)
+    device_rev_before = InAppProductDailyStatistic.where(project_id: @project.id).sum(:device_revenue)
+    ProcessPurchaseEventJob.new.perform(event.id)
+    event.update_columns(usd_price_cents: 200, price_cents: 200, device_id: @ios_device.id)
+
+    ProcessPurchaseEventJob.new.perform(event.id) # drift correction runs first, device already attached
+    assert_equal 200, event.reload.accounted_usd_price_cents
+    assert_equal 0, VisitorDailyStatistic.where(project_id: @project.id, visitor_id: visitor.id).sum(:revenue) - visitor_before,
+                 "no visitor credit before attribution completes"
+
+    inline = ->(id, *args) { ProcessPurchaseEventJob.new.perform(id, *args) }
+    ProcessPurchaseEventJob.stub(:perform_async, inline) { @job.perform(event.id) }
+
+    assert_equal 200, DailyProjectMetric.where(project_id: @project.id).sum(:revenue) - project_before
+    assert_equal 200, VisitorDailyStatistic.where(project_id: @project.id, visitor_id: visitor.id).sum(:revenue) - visitor_before
+    # Device revenue follows device_id at both writers: this ordering credits the delta twice.
+    assert_equal 300, InAppProductDailyStatistic.where(project_id: @project.id).sum(:device_revenue) - device_rev_before
+  end
+
+  test "a correction committed after the lock read is credited by reattribution, not lost" do
+    event = create_purchase_event(device: nil, store_source: Grovs::Webhooks::APPLE, usd_price_cents: 100,
+                                  event_type: Grovs::Purchases::EVENT_BUY)
+    event.update_columns(processed: false, accounted_usd_price_cents: nil, visitor_id: nil)
+    visitor = @ios_device.visitor_for_project_id(@project.id)
+    visitor_before = VisitorDailyStatistic.where(project_id: @project.id, visitor_id: visitor.id).sum(:revenue)
+    ProcessPurchaseEventJob.new.perform(event.id)
+    event.update_columns(usd_price_cents: 200, price_cents: 200, device_id: @ios_device.id)
+    # A correction commits after the job loaded the row but before it locks: the lock sees 200.
+    ProcessPurchaseEventJob.new.perform(event.id)
+
+    inline = ->(id, *args) { ProcessPurchaseEventJob.new.perform(id, *args) }
+    ProcessPurchaseEventJob.stub(:perform_async, inline) { @job.perform(event.id) }
+
+    assert_equal 200, VisitorDailyStatistic.where(project_id: @project.id, visitor_id: visitor.id).sum(:revenue) - visitor_before
+  end
+
+  test "a retry after a committed run still enqueues the sync" do
+    event = purchase_events(:buy_event)
+    event.update_columns(visitor_id: visitors(:ios_visitor).id)
+    enqueued = []
+    ProcessPurchaseEventJob.stub(:perform_async, ->(id) { enqueued << id }) do
+      @job.perform(event.id)
+    end
+    assert_equal [event.id], enqueued
   end
 end

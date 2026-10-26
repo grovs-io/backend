@@ -766,4 +766,10 @@ class Analytics::QueryHelpersTest < ActiveSupport::TestCase
       assert_raises(ClickHouse::Client::DatabaseError) { Analytics::EventsQueryService.send(:with_guard, 'SELECT foo') }
     end
   end
+
+  test 'resolve_id_field refuses FINAL on the union source' do
+    assert_raises(ArgumentError) do
+      Harness.resolve_id_field(1, 'link_id', ch_table: Analytics::EventsSource::SOURCE_KEY, ch_final: true)
+    end
+  end
 end

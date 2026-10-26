@@ -597,6 +597,20 @@ class BatchEventProcessorJobTest < ActiveSupport::TestCase
     assert_in_delta newest.to_f, durable.last_seen_at.to_f, 0.01
   end
 
+  test "a held or delivered message written by the server is not activity: no last_seen stamp" do
+    at = 2.minutes.ago
+    payloads = %w[push_held push_delivered in_app_held].map do |name|
+      { type: Grovs::Events::CUSTOM, project_id: @project.id, device_id: @device.id, event_name: name,
+        data: { campaign_id: "x" }, link_id: nil, engagement_time: nil, created_at: at.iso8601(3) }.to_json
+    end
+    assert_equal :success, @job.send(:process_batch, payloads)
+    assert_nil DeviceLastSeen.find_by(project_id: @project.id, device_id: @device.id)
+    fresh = BatchEventProcessorJob.new
+    assert_empty fresh.send(:active_pairs, [{ event: Grovs::Events::CUSTOM, event_name: "push_held", project_id: 1, device_id: 2 }])
+    fresh = BatchEventProcessorJob.new
+    assert_equal [[1, 2]], fresh.send(:active_pairs, [{ event: Grovs::Events::CUSTOM, event_name: "checkout", project_id: 1, device_id: 2 }]).to_a
+  end
+
   # ===========================================================================
   # New tests: process_batch integration, error recovery, end-to-end
   # ===========================================================================

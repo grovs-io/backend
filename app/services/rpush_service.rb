@@ -6,10 +6,7 @@ class RpushService
       return
     end
 
-    app = Rpush::Fcm::App.find_by(name:push_config.name)
-    if app
-      app.destroy!
-    end
+    remove_app(Rpush::Fcm::App.find_by(name: push_config.name))
 
 
     fcm_app = self.create_android_app(push_config, push_config.name)
@@ -22,21 +19,46 @@ class RpushService
       return
     end
 
-    app = Rpush::Apnsp8::App.find_by(name:"#{push_config.name}-development")
-    if app
-      app.destroy!
-    end
-
-    app = Rpush::Apnsp8::App.find_by(name:"#{push_config.name}-production")
-    if app
-      app.destroy!
-    end
+    remove_app(Rpush::Apnsp8::App.find_by(name: "#{push_config.name}-development"))
+    remove_app(Rpush::Apnsp8::App.find_by(name: "#{push_config.name}-production"))
 
     development = self.create_apple_apns2_app(push_config, "#{push_config.name}-development", "development")
     production = self.create_apple_apns2_app(push_config, "#{push_config.name}-production", "production")
 
     development.save!
     production.save!
+  end
+
+  PURGE_BATCH = 10_000
+
+  # Sent history is left to RpushAppHistoryPurgeJob; rows mid-send finish; racing inserts are orphans.
+  def self.remove_app(app)
+    return if app.nil?
+
+    app.delete
+    purge_unsent(unsent_rows.where(app_id: app.id, processing: false))
+    ActiveRecord.after_all_transactions_commit { RpushAppHistoryPurgeJob.perform_async(app.id) }
+  end
+
+  # rpush raises on a row whose app is gone, stranding its fetch; a live batch settles within 60s.
+  def self.purge_orphans
+    orphans = unsent_rows.where.not(app_id: Rpush::Client::ActiveRecord::App.select(:id))
+    purge_unsent(orphans.where("NOT processing OR updated_at < ?", 2.minutes.ago))
+  end
+
+  def self.unsent_rows = Rpush::Client::ActiveRecord::Notification.where(delivered: false, failed: false)
+
+  def self.purge_unsent(scope)
+    purged = 0
+    loop do
+      sql = "DELETE FROM rpush_notifications WHERE id IN (#{scope.limit(PURGE_BATCH).select(:id).to_sql}) RETURNING id"
+      ids = Rpush::Client::ActiveRecord::Notification.transaction do
+        Rpush::Client::ActiveRecord::Notification.connection.exec_query(sql).rows.flatten.tap { |deleted| PushOutcomes.abandoned(deleted) }
+      end
+      return purged if ids.empty?
+
+      purged += ids.size
+    end
   end
 
   def self.app_for_platform(platform, project)
@@ -72,65 +94,12 @@ class RpushService
     end
   end
 
-  def self.send_push_for_notification_and_visitor(notification, visitor)
-    platform = visitor.device&.platform
-    push_token = visitor.device&.push_token
-    if !platform || !push_token
-      Rails.logger.warn("Doesn't have platform or token")
-      return
-    end
-
-    if platform == Grovs::Platforms::IOS
-      self.send_ios_push(notification, push_token)
-    end
-
-    if platform == Grovs::Platforms::ANDROID
-      self.send_android_push(notification, push_token)
-    end
-
-  end
-
-  private
-
-  def self.send_ios_push(notification, push_token)
-    app = self.app_for_platform(Grovs::Platforms::IOS, notification.project)
-    unless app
-      Rails.logger.error("can not find app for project #{notification.project.inspect}")
-      return
-    end
-
-    n = Rpush::Apnsp8::Notification.new
-    n.app = app
-    n.device_token = push_token
-    n.alert = { title: notification.title, subtitle: notification.subtitle }
-    n.save!
-
-    Rails.logger.debug("Notification created")
-  end
-
-  def self.send_android_push(notification, push_token)
-    app = self.app_for_platform(Grovs::Platforms::ANDROID, notification.project)
-    unless app
-      return
-    end
-
-    n = Rpush::Fcm::Notification.new
-    n.app = app
-    n.device_token = push_token
-    n.notification = {
-          body: notification.subtitle,
-          title: notification.title
-        }
-    n.data = {linksquared: "true"}
-    n.save!
-  end
-
   def self.create_android_app(push_config, name)
     fcm_app = Rpush::Fcm::App.new
     fcm_app.name = name
     fcm_app.firebase_project_id = push_config.firebase_project_id
     fcm_app.json_key = push_config.certificate.download
-    fcm_app.connections = 30
+    fcm_app.connections = Integer(ENV.fetch("RPUSH_FCM_CONNECTIONS", 30))
     fcm_app.save!
 
     fcm_app
@@ -144,7 +113,7 @@ class RpushService
     app.apn_key_id = push_config.certificate_password
     app.team_id = push_config.ios_configuration.app_prefix
     app.bundle_id = push_config.ios_configuration.bundle_id
-    app.connections = 1
+    app.connections = Integer(ENV.fetch("RPUSH_APNS_CONNECTIONS", 2))
     app.save!
 
     app

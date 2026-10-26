@@ -1,29 +1,9 @@
 class Api::V1::Mcp::BaseController < ApplicationController
   include McpAuthentication
+  include McpQuotaWarning
   include Api::V1::Concerns::CampaignIdParam
 
-  QUOTA_WARNING = begin
-    msg = "Your Grovs usage has exceeded the free tier limit. Your deep links are not working."
-    host = ENV["REACT_HOST"]
-    if host.present?
-      protocol = ENV.fetch("REACT_HOST_PROTOCOL", "https://")
-      msg += " Subscribe at #{protocol}#{host} to restore service."
-    end
-    msg.freeze
-  end
-
   private
-
-  # Injects _warning into JSON responses when quota is exceeded.
-  # Overrides render rather than using after_action to avoid re-parsing
-  # the response body and mutating response.body (which conflicts with
-  # streaming, compression middleware, and ETag generation).
-  def render(options = nil, *args, &block)
-    if options.is_a?(Hash) && options[:json].is_a?(Hash) && @instance&.quota_exceeded
-      options[:json] = options[:json].merge(_warning: QUOTA_WARNING)
-    end
-    super
-  end
 
   def load_mcp_project
     project_id = params.require(:project_id)

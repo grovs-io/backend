@@ -39,15 +39,18 @@ class Instance < ApplicationRecord
   # Query, not the has_one: a renewal leaves an inactive row beside the active one; has_one picks either.
   # end_date checked at read time — no job flips active when the term lapses.
   def valid_enterprise_subscription
-    EnterpriseSubscription.where(instance_id: id, active: true)
-                          .where("end_date >= ?", Time.current).first
+    EnterpriseSubscription.current.where(instance_id: id).first
   end
 
   # Explicit subscription checks so this does not depend on #subscription's paused behaviour.
+  def paid_plan_active?
+    stripe_subscriptions.exists?(active: true) || valid_enterprise_subscription.present?
+  end
+
   def custom_domains_entitled?
     return true if Grovs.self_hosted?
 
-    stripe_subscriptions.exists?(active: true) || valid_enterprise_subscription.present?
+    paid_plan_active?
   end
 
   def audit_log_enabled?
@@ -57,6 +60,19 @@ class Instance < ApplicationRecord
   end
 
   def enterprise_sso_enabled? = audit_log_enabled?
+
+  def event_stream_enabled?
+    return true if Grovs.self_hosted?
+
+    paid_plan_active?
+  end
+  # Plan gate for push campaigns; every EE edition for now.
+  def push_campaigns_enabled? = Grovs.ee?
+  # Plan gate for in-app messages; the same basis as push campaigns.
+  def in_app_enabled? = push_campaigns_enabled?
+  def journeys_enabled? = in_app_enabled?
+  # Server-to-server push sends gate on any active paid plan, same as the event stream.
+  def push_api_enabled? = event_stream_enabled?
 
   def application_for_platform(platform)
     application = Application.redis_find_by_multiple_conditions({ instance_id: id, platform: platform })
@@ -80,6 +96,14 @@ class Instance < ApplicationRecord
     # in-memory — avoids per-instance N+1 when serializing instance lists.
     stripe_subscriptions.detect(&:active) ||
       stripe_subscriptions.detect { |s| !s.active && s.status == "paused" }
+  end
+
+  # Latest non-terminal, non-paused, non-pending row (NULL status excluded, like the checkout guard).
+  def unresolved_subscription
+    stripe_subscriptions.where(active: false)
+                        .where.not(status: %w[paused pending canceled incomplete_expired])
+                        .order(updated_at: :desc)
+                        .first
   end
 
   def link_for_path(path)

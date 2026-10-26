@@ -20,6 +20,13 @@ class Api::V1::ProjectsBaseController < ApplicationController
     project
   end
 
+  # The route id is a project id, so the role is checked against that project's instance.
+  def require_admin_for_project
+    return if InstanceRole.exists?(instance_id: @project.instance_id, user_id: current_user.id, role: Grovs::Roles::ADMIN)
+
+    render json: { error: "Forbidden" }, status: :forbidden
+  end
+
   def current_instance(require_admin: false)
     instance = Instance.redis_find_by(:id, id_param)
     if instance.nil?

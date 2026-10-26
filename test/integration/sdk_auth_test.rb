@@ -6,7 +6,8 @@ class SdkAuthTest < ActionDispatch::IntegrationTest
   include AuthTestHelper
 
   fixtures :instances, :projects, :applications, :ios_configurations,
-           :android_configurations, :devices, :visitors, :domains, :redirect_configs
+           :android_configurations, :web_configurations, :web_configuration_linked_domains,
+           :devices, :visitors, :domains, :redirect_configs
 
   setup do
     @project = projects(:one)
@@ -157,6 +158,68 @@ class SdkAuthTest < ActionDispatch::IntegrationTest
     visitor = Visitor.find_by_hashid(json["linksquared"])
     assert_not_nil visitor, "returned hashid must resolve to an actual visitor"
     assert_equal @project.id, visitor.project_id
+  end
+
+  test "SDK authenticate on web stamps web_sdk_last_seen_at" do
+    headers = sdk_auth_headers_for(@project, platform: "web", identifier: "app.example.com")
+
+    post "#{SDK_PREFIX}/authenticate",
+      params: { vendor_id: "web-vendor-#{SecureRandom.hex(4)}", user_agent: "TestApp/2.0", app_version: "2.0" },
+      headers: headers
+
+    assert_response :ok
+    assert_in_delta Time.current, Project.where(id: @project.id).pick(:web_sdk_last_seen_at), 5.seconds
+  end
+
+  test "SDK authenticate on ios and android does not stamp web_sdk_last_seen_at" do
+    [["ios", nil], ["android", nil]].each do |platform, _|
+      headers = sdk_auth_headers_for(@project, platform: platform)
+      post "#{SDK_PREFIX}/authenticate",
+        params: { vendor_id: "#{platform}-vendor-#{SecureRandom.hex(4)}", user_agent: "TestApp/2.0", app_version: "2.0" },
+        headers: headers
+      assert_response :ok
+    end
+
+    assert_nil Project.where(id: @project.id).pick(:web_sdk_last_seen_at)
+  end
+
+  test "SDK authenticate on web does not re-stamp within the hour" do
+    headers = sdk_auth_headers_for(@project, platform: "web", identifier: "app.example.com")
+    params = { vendor_id: "web-vendor-#{SecureRandom.hex(4)}", user_agent: "TestApp/2.0", app_version: "2.0" }
+    post "#{SDK_PREFIX}/authenticate", params: params, headers: headers
+    first_stamp = Project.where(id: @project.id).pick(:web_sdk_last_seen_at)
+
+    travel 30.minutes do
+      post "#{SDK_PREFIX}/authenticate", params: params, headers: headers
+    end
+
+    assert_equal first_stamp, Project.where(id: @project.id).pick(:web_sdk_last_seen_at)
+  end
+
+  test "SDK authenticate on web re-stamps after an hour" do
+    headers = sdk_auth_headers_for(@project, platform: "web", identifier: "app.example.com")
+    params = { vendor_id: "web-vendor-#{SecureRandom.hex(4)}", user_agent: "TestApp/2.0", app_version: "2.0" }
+    post "#{SDK_PREFIX}/authenticate", params: params, headers: headers
+    first_stamp = Project.where(id: @project.id).pick(:web_sdk_last_seen_at)
+
+    travel 61.minutes do
+      REDIS.del("smart_banners:web_sdk_seen:#{@project.id}")
+      post "#{SDK_PREFIX}/authenticate", params: params, headers: headers
+    end
+
+    assert_operator Project.where(id: @project.id).pick(:web_sdk_last_seen_at), :>, first_stamp
+  end
+
+  test "SDK authenticate on web skips the DB write while the project's Redis marker is held" do
+    REDIS.set("smart_banners:web_sdk_seen:#{@project.id}", "1", ex: 3600)
+    headers = sdk_auth_headers_for(@project, platform: "web", identifier: "app.example.com")
+
+    post "#{SDK_PREFIX}/authenticate",
+      params: { vendor_id: "web-vendor-#{SecureRandom.hex(4)}", user_agent: "TestApp/2.0", app_version: "2.0" },
+      headers: headers
+
+    assert_response :ok
+    assert_nil Project.where(id: @project.id).pick(:web_sdk_last_seen_at)
   end
 
   # The mobile SDKs send the model under `device`; older/server callers use `model`.

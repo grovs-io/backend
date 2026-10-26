@@ -24,6 +24,29 @@ class ProjectSerializerTest < ActiveSupport::TestCase
     assert_equal "example.sqd.link", result["domain"]
   end
 
+  test "domain is the active custom host so it matches where links resolve" do
+    project = projects(:one)
+    project.domain_for_project.update_columns(active_custom_host: "links.acme.com")
+    Grovs.stub(:custom_domains_enabled?, true) do
+      assert_equal "links.acme.com", ProjectSerializer.serialize(project.reload)["domain"]
+    end
+  end
+
+  test "an active custom host is ignored when custom domains are disabled" do
+    project = projects(:one)
+    project.domain_for_project.update_columns(active_custom_host: "links.acme.com")
+    Grovs.stub(:custom_domains_enabled?, false) do
+      assert_equal "example.sqd.link", ProjectSerializer.serialize(project.reload)["domain"]
+    end
+  end
+
+  test "domain falls back to the built-in host when no custom domain is active" do
+    project = projects(:one)
+    Grovs.stub(:custom_domains_enabled?, true) do
+      assert_equal "example.sqd.link", ProjectSerializer.serialize(project)["domain"]
+    end
+  end
+
   test "serializes computed hash_id field as hashid" do
     project = projects(:one)
     result = ProjectSerializer.serialize(project)

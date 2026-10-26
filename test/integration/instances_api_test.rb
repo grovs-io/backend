@@ -28,6 +28,17 @@ class InstancesApiTest < ActionDispatch::IntegrationTest
     assert_not_includes instance_ids, @instance_two.id, "must not return instances user doesn't belong to"
   end
 
+  test "list carries each project's app icon" do
+    image = StoreImage.create!(identifier: "com.test.iosapp", platform: Grovs::Platforms::IOS)
+    image.image.attach(io: StringIO.new("\x89PNG\r\n\x1A\n".b), filename: "i.png", content_type: "image/png")
+    RefreshStoreMetadataJob.stub(:perform_async, nil) do
+      get "#{API_PREFIX}/instances", headers: doorkeeper_headers_for(@admin_user)
+    end
+    assert_response :ok
+    row = JSON.parse(response.body)["instances"].find { |i| i["id"] == @instance.id }
+    assert_equal image.image_access_url, row["icon_url"]
+  end
+
   test "list omits an instance that has lost its test project" do
     @instance.test.destroy!
     headers = doorkeeper_headers_for(@admin_user)

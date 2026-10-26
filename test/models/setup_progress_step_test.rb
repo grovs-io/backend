@@ -32,6 +32,24 @@ class SetupProgressStepTest < ActiveSupport::TestCase
     assert step.valid?
   end
 
+  test "valid with the onboarding category and its link_domain step" do
+    step = SetupProgressStep.new(
+      instance: instances(:one),
+      category: "onboarding",
+      step_identifier: "link_domain"
+    )
+    assert step.valid?
+  end
+
+  test "valid with the onboarding category and its app_connected step" do
+    step = SetupProgressStep.new(
+      instance: instances(:one),
+      category: "onboarding",
+      step_identifier: "app_connected"
+    )
+    assert step.valid?
+  end
+
   test "invalid with unrecognized category" do
     step = SetupProgressStep.new(
       instance: instances(:one),

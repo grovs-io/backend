@@ -24,7 +24,6 @@ class RpushServiceTest < ActiveSupport::TestCase
     Rpush::Fcm::Notification.delete_all
   end
 
-  # === app_for_platform ===
 
   test "app_for_platform returns nil when project is nil" do
     result = RpushService.app_for_platform(Grovs::Platforms::IOS, nil)
@@ -128,107 +127,6 @@ class RpushServiceTest < ActiveSupport::TestCase
     assert_equal "test_android_push", result.name
   end
 
-  # === send_push_for_notification_and_visitor ===
-
-  test "send_push does nothing when device has no platform" do
-    notification = Notification.create!(title: "Test", subtitle: "Sub", project: @project)
-    visitor = visitors(:ios_visitor)
-    device = visitor.device
-    device.update_columns(platform: nil)
-
-    assert_nothing_raised do
-      RpushService.send_push_for_notification_and_visitor(notification, visitor)
-    end
-  end
-
-  test "send_push does nothing when device has no push_token" do
-    notification = Notification.create!(title: "Test", subtitle: "Sub", project: @project)
-    visitor = visitors(:ios_visitor)
-    # ios_device fixture has no push_token by default
-    assert_nil visitor.device.push_token
-
-    assert_nothing_raised do
-      RpushService.send_push_for_notification_and_visitor(notification, visitor)
-    end
-  end
-
-  test "send_push routes to ios and creates Rpush::Apnsp8::Notification with correct payload" do
-    notification = Notification.create!(title: "Hello", subtitle: "World", project: @project)
-    visitor = visitors(:ios_visitor)
-    device = visitor.device
-    device.update_columns(push_token: "ios_token_abc123")
-
-    fake_rpush_app = Rpush::Apnsp8::App.new
-    fake_rpush_app.name = "ios-push-test"
-    fake_rpush_app.apn_key = "fake-key"
-    fake_rpush_app.environment = "production"
-    fake_rpush_app.apn_key_id = "key123"
-    fake_rpush_app.team_id = "ABC123"
-    fake_rpush_app.bundle_id = "com.test.iosapp"
-    fake_rpush_app.connections = 1
-    fake_rpush_app.save!
-
-    RpushService.stub(:app_for_platform, fake_rpush_app) do
-      assert_difference "Rpush::Apnsp8::Notification.count", 1 do
-        RpushService.send_push_for_notification_and_visitor(notification, visitor)
-      end
-
-      rpush_notification = Rpush::Apnsp8::Notification.last
-      assert_equal "ios_token_abc123", rpush_notification.device_token
-      assert_equal fake_rpush_app.id, rpush_notification.app_id
-
-      # Verify the alert payload contains the notification title and subtitle
-      assert_equal({ "title" => "Hello", "subtitle" => "World" }, rpush_notification.alert)
-    end
-  end
-
-  test "send_push routes to android and creates Rpush::Fcm::Notification with correct payload" do
-    notification = Notification.create!(title: "Hello", subtitle: "World", project: @project)
-    visitor = visitors(:android_visitor)
-    device = visitor.device
-    device.update_columns(push_token: "android_token_xyz789")
-
-    fake_rpush_app = Rpush::Fcm::App.new
-    fake_rpush_app.name = "android-push-test"
-    fake_rpush_app.firebase_project_id = "my-firebase-project"
-    fake_rpush_app.json_key = "fake-service-account-json"
-    fake_rpush_app.connections = 30
-    fake_rpush_app.save!
-
-    RpushService.stub(:app_for_platform, fake_rpush_app) do
-      assert_difference "Rpush::Fcm::Notification.count", 1 do
-        RpushService.send_push_for_notification_and_visitor(notification, visitor)
-      end
-
-      rpush_notification = Rpush::Fcm::Notification.last
-      assert_equal "android_token_xyz789", rpush_notification.device_token
-      assert_equal fake_rpush_app.id, rpush_notification.app_id
-
-      # Verify the FCM notification payload (stored with string keys after save)
-      assert_equal "Hello", rpush_notification.notification["title"]
-      assert_equal "World", rpush_notification.notification["body"]
-      # Verify the data payload includes the linksquared flag
-      assert_equal "true", rpush_notification.data["linksquared"]
-    end
-  end
-
-  test "send_push does nothing when no rpush app found for platform" do
-    notification = Notification.create!(title: "Hello", subtitle: "World", project: @project)
-    visitor = visitors(:ios_visitor)
-    device = visitor.device
-    device.update_columns(push_token: "some_token")
-
-    RpushService.stub(:app_for_platform, nil) do
-      assert_no_difference "Rpush::Apnsp8::Notification.count" do
-        assert_nothing_raised do
-          RpushService.send_push_for_notification_and_visitor(notification, visitor)
-        end
-      end
-    end
-  end
-
-  # === update_android_rpush_app ===
-
   test "update_android_rpush_app returns early when push config not found" do
     assert_no_difference "Rpush::Fcm::App.count" do
       RpushService.update_android_rpush_app(-1)
@@ -306,7 +204,6 @@ class RpushServiceTest < ActiveSupport::TestCase
     assert_not_equal old_app_id, new_app.id, "Old app should be destroyed and replaced"
   end
 
-  # === update_ios_rpush_app ===
 
   test "update_ios_rpush_app returns early when push config not found" do
     assert_no_difference "Rpush::Apnsp8::App.count" do
@@ -392,5 +289,43 @@ class RpushServiceTest < ActiveSupport::TestCase
     new_prod = Rpush::Apnsp8::App.find_by(name: "ios_replace_test-production")
     assert_not_equal old_dev_id, new_dev.id, "Dev app should be destroyed and replaced"
     assert_not_equal old_prod_id, new_prod.id, "Prod app should be destroyed and replaced"
+  end
+
+  test "APNs apps get their connection count from RPUSH_APNS_CONNECTIONS, default 2" do
+    @ios_config.ios_push_configuration&.destroy!
+    push_config = IosPushConfiguration.new(ios_configuration: @ios_config, name: "conn_push", certificate_password: "key123")
+    push_config.certificate.attach(io: StringIO.new(VALID_P8_KEY), filename: "AuthKey.p8", content_type: "application/octet-stream")
+    RpushService.stub(:update_ios_rpush_app, nil) { push_config.save! }
+    app = RpushService.create_apple_apns2_app(push_config, "conn-test", "development")
+    assert_equal 2, app.connections
+    ENV["RPUSH_APNS_CONNECTIONS"] = "3"
+    app = RpushService.create_apple_apns2_app(push_config, "conn-test-3", "development")
+    assert_equal 3, app.connections
+  ensure
+    ENV.delete("RPUSH_APNS_CONNECTIONS")
+  end
+
+  test "FCM apps get their connection count from RPUSH_FCM_CONNECTIONS, default 30" do
+    push_config = android_push_configurations(:one)
+    push_config.certificate.attach(io: StringIO.new({ type: "service_account" }.to_json), filename: "sa.json")
+    assert_equal 30, RpushService.create_android_app(push_config, "fcm-conn-default").connections
+    ENV["RPUSH_FCM_CONNECTIONS"] = "60"
+    assert_equal 60, RpushService.create_android_app(push_config, "fcm-conn-60").connections
+  ensure
+    ENV.delete("RPUSH_FCM_CONNECTIONS")
+  end
+
+  test "removing an app drops its unsent pushes and leaves sent history to the purge job" do
+    old = Rpush::Fcm::App.create!(name: "fcm-rotate", firebase_project_id: "p", json_key: "{}", connections: 1)
+    sent = Rpush::Fcm::Notification.create!(app: old, device_token: "t1", notification: { title: "x" }, delivered: true)
+    unsent = Rpush::Fcm::Notification.create!(app: old, device_token: "t2", notification: { title: "x" })
+
+    RpushService.remove_app(old)
+
+    assert_nil Rpush::Client::ActiveRecord::App.find_by(id: old.id)
+    assert Rpush::Client::ActiveRecord::Notification.exists?(sent.id)
+    assert_nil Rpush::Client::ActiveRecord::Notification.find_by(id: unsent.id)
+  ensure
+    Rpush::Fcm::Notification.where(app_id: old&.id).delete_all
   end
 end

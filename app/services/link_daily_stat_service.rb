@@ -26,7 +26,8 @@ class LinkDailyStatService
           attrs[col] ||= 0
         end
 
-        LinkDailyStatistic.create!(attrs)
+        # Savepoint: inside a caller's transaction a duplicate key would otherwise abort it before the retry.
+        LinkDailyStatistic.transaction(requires_new: true) { LinkDailyStatistic.create!(attrs) }
       end
     rescue ActiveRecord::RecordNotUnique
       retry

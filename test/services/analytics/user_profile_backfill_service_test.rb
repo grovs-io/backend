@@ -126,7 +126,7 @@ class Analytics::UserProfileBackfillServiceTest < ActiveSupport::TestCase
     insert_ch_visitor_daily([{
       project_id: @project.id,
       visitor_id: 6001,
-      event_date: (@now - 8.days).to_date.to_s, # returned on day 2 -> retained at day 1
+      event_date: (@now - 9.days).to_date.to_s, # active on exactly day 1 -> retained at day 1
       event_type: 'OPEN',
       platform: 'ios',
       cnt: 1,

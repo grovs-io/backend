@@ -126,6 +126,31 @@ class PlatformConfigurationServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "uploading a push key invalidates the cached application configuration" do
+    memory_cache = ActiveSupport::Cache::MemoryStore.new
+    Rails.stub(:cache, memory_cache) do
+      RpushService.stub(:update_ios_rpush_app, true) do
+        app = PlatformConfigurationService.set_configuration(
+          instance: @instance, platform: Grovs::Platforms::IOS, enabled: true,
+          config_params: { bundle_id: "com.test.app", app_prefix: "ABC123" }
+        )
+        # The ios_push_configurations fixture reaches this instance when another class loaded it first.
+        app.ios_configuration&.ios_push_configuration&.destroy
+        assert_nil ApplicationSerializer.serialize(Application.find(app.id))["configuration"]["push_configuration"]
+
+        PlatformConfigurationService.set_ios_push_configuration(
+          instance: @instance,
+          certificate_params: { push_certificate_password: "KEYID12345",
+                                push_certificate: make_upload(VALID_P8_KEY, "application/octet-stream", "AuthKey.p8") }
+        )
+
+        serialized = ApplicationSerializer.serialize(Application.find(app.id))
+        assert serialized["configuration"]["push_configuration"], "stale cached configuration must be invalidated"
+        assert_equal "AuthKey.p8", serialized["configuration"]["push_configuration"]["certificate"]
+      end
+    end
+  end
+
   test "set_ios_push_configuration destroys old push config before creating new" do
     RpushService.stub(:update_ios_rpush_app, true) do
       PlatformConfigurationService.set_configuration(

@@ -93,6 +93,15 @@ class CustomDomainLifecycleJobTest < ActiveSupport::TestCase
     assert_equal "active", ch.reload.status
   end
 
+  test "an enterprise contract past its end date no longer entitles the instance, so its hostname enters grace" do
+    EnterpriseSubscription.create!(instance: instances(:two), start_date: 1.year.ago, end_date: 1.day.ago, total_maus: 10, active: true)
+    ch = unentitled_hostname
+
+    CustomDomainLifecycleJob.new.perform
+
+    assert ch.reload.grace_until.present?, "a lapsed contract must lose the custom domain like a lapsed Stripe plan"
+  end
+
   test "entitled instance clears grace, no teardown" do
     ch = CustomHostname.create!(project: projects(:one), domain: domains(:one),
                                 hostname: "links.ok.com", cf_custom_hostname_id: "cf_ok",

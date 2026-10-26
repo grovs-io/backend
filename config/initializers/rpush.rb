@@ -1,146 +1,264 @@
 Rpush.configure do |config|
-
-  # Supported clients are :active_record and :redis
   config.client = :active_record
 
-  # Options passed to Redis.new
-  # config.redis_options = {}
-
-  # Frequency in seconds to check for new notifications.
-  config.push_poll = 2
-
-  # The maximum number of notifications to load from the store every `push_poll` seconds.
-  # If some notifications are still enqueued internally, Rpush will load the batch_size less
-  # the number enqueued. An exception to this is if the service is able to receive multiple
-  # notification payloads over the connection with a single write, such as APNs.
-  config.batch_size = 100
-
-  # Path to write PID file. Relative to current directory unless absolute.
-  config.pid_file = 'tmp/rpush.pid'
-
-  # Path to log file. Relative to current directory unless absolute.
-  config.log_file = 'log/rpush.log'
-
+  # batch_size / push_poll caps one daemon: 4,000/s at 0.25 s (see docs/push-load-testing.md).
+  config.push_poll = Float(ENV.fetch("RPUSH_PUSH_POLL", 0.25))
+  config.batch_size = 1000
+  config.pid_file = ENV.fetch("RPUSH_PID_FILE", "tmp/rpush.pid") # bin/rpush-cluster gives each daemon its own
+  config.log_file = "log/rpush.log"
   config.log_level = defined?(Rails) && Rails.logger ? Rails.logger.level : ::Logger::Severity::INFO
-
-  # Define a custom logger.
-  # config.logger = MyLogger.new
-
-  # By default in foreground mode logs are directed both to the logger and to stdout.
-  # If the logger goes to stdout, you can disable foreground logging to avoid duplication.
-  # config.foreground_logging = false
-
 end
 
-Rpush.reflect do |on|
+require "rpush/daemon"
 
-  # Called with a Rpush::Apns::Feedback instance when feedback is received
-  # from the APNs that a notification has failed to be delivered.
-  # Further notifications should not be sent to the device.
-  # on.apns_feedback do |feedback|
-  # end
+# One bookkeeping call per rpush batch: per-notification reflections ran a transaction per push.
+module RpushBatchOutcomes
+  def self.install!
+    Rpush::Daemon::Batch.prepend(self) unless Rpush::Daemon::Batch.ancestors.include?(self)
+  end
 
-  # Called when a notification is queued internally for delivery.
-  # The internal queue for each app runner can be inspected:
-  #
-  # Rpush::Daemon::AppRunner.status
-  #
-  # on.notification_enqueued do |notification|
-  # end
+  private
 
-  # Called when a notification is successfully delivered.
-  # on.notification_delivered do |notification|
-  # end
+  def complete_delivered
+    Rpush::Daemon.store.mark_batch_delivered(@delivered)
+    borrow { PushOutcomes.delivered_batch(@delivered) }
+  end
 
-  # Called when notification delivery failed.
-  # Call 'error_code' and 'error_description' on the notification for the cause.
-  # on.notification_failed do |notification|
-  # end
+  def complete_failed
+    failed_groups.each do |(code, description), notifications|
+      Rpush::Daemon.store.mark_batch_failed(notifications, code, description)
+      borrow { PushOutcomes.failed_batch(notifications, code, description) }
+    end
+  end
 
-  # Called when the notification delivery failed and only the notification ID
-  # is present in memory.
-  # on.notification_id_failed do |app, notification_id, error_code, error_description|
-  # end
+  # FCM descriptions embed the notification id, which would make every failure its own group.
+  def failed_groups
+    @failed.each_with_object(Hash.new { |h, k| h[k] = [] }) do |((code, description), notifications), groups|
+      groups[[code, description.to_s.sub(/\AUnable to deliver notification \d+, /, "")]].concat(notifications)
+    end
+  end
 
-  # Called when a notification will be retried at a later date.
-  # Call 'deliver_after' on the notification for the next delivery date
-  # and 'retries' for the number of times this notification has been retried.
-  # on.notification_will_retry do |notification|
-  # end
+  # A lease on a dispatcher thread is permanent; a busy pool is retried, the rest left to reconcile.
+  def borrow(&)
+    attempts = 0
+    begin
+      ActiveRecord::Base.connection_pool.with_connection(prevent_permanent_checkout: true, &)
+    rescue ActiveRecord::ConnectionTimeoutError
+      raise if (attempts += 1) >= 3
 
-  # Called when a notification will be retried and only the notification ID
-  # is present in memory.
-  # on.notification_id_will_retry do |app, notification_id, retry_after|
-  # end
+      sleep 0.5
+      retry
+    end
+  end
+end
 
-  # Called for each recipient which successfully receives a notification. This
-  # can occur more than once for the same notification when there are multiple
-  # recipients.
-  # on.fcm_delivered_to_recipient do |notification|
-  # end
+# rpush 9.2 calls ActiveRecord::Base.clear_all_connections! (gone in Rails 8) and dies.
+module RpushDatabaseRetry
+  POOL_BUSY_PAUSE = 0.5
 
-  # Called for each recipient which fails to receive a notification. This
-  # can occur more than once for the same notification when there are multiple
-  # recipients. (do not handle invalid device tokens here)
-  # on.fcm_failed_to_recipient do |notification, error|
-  # end
+  def self.install!
+    require "rpush/daemon/store/active_record"
+    store = Rpush::Daemon::Store::ActiveRecord
+    store.prepend(self) unless store.ancestors.include?(self)
+  end
 
-  # Called when the FCM returns a failure that indicates an invalid device token.
-  # You will need to delete the device token from your records.
-  # on.fcm_invalid_device_token do |app, error, device_token|
-  # end
+  def with_database_reconnect_and_retry(&)
+    ::ActiveRecord::Base.connection_pool.with_connection(&)
+  rescue ::ActiveRecord::ConnectionTimeoutError => e
+    Rpush.logger.warn("Database pool busy, retrying (#{e.message})")
+    sleep POOL_BUSY_PAUSE
+    retry
+  rescue ::ActiveRecord::ConnectionNotEstablished, ::ActiveRecord::ConnectionFailed => e
+    Rpush.logger.error(e)
+    sleep_to_avoid_thrashing
+    database_connection_lost
+    retry
+  rescue *Rpush::Daemon::Store::ActiveRecord::Reconnectable::ADAPTER_ERRORS => e
+    Rpush.logger.error(e)
+    sleep_to_avoid_thrashing
+    retry
+  end
 
-  # Called for each recipient which successfully receives a notification. This
-  # can occur more than once for the same notification when there are multiple
-  # recipients.
-  # on.fcm_delivered_to_recipient do |notification, device_token|
-  # end
+  def reconnect_database
+    ::ActiveRecord::Base.connection_handler.clear_all_connections!
+    ::ActiveRecord::Base.establish_connection
+  end
+end
 
-  # Called for each recipient which fails to receive a notification. This
-  # can occur more than once for the same notification when there are multiple
-  # recipients. (do not handle invalid device tokens here)
-  # on.fcm_failed_to_recipient do |notification, error, device_token|
-  # end
+# rpush never releases a dead daemon's claims; at-least-once, a push accepted pre-crash goes again.
+module RpushStaleProcessing
+  AFTER = 1.hour
+  BOOT_GRACE = 5.minutes
 
-  # Called when the FCM returns a canonical device token.
-  # You will need to replace old_id with canonical_id in your records.
-  # on.fcm_canonical_id do |old_id, canonical_id|
-  # end
+  def self.release!(now: Time.current, after: AFTER)
+    release(unsent.where(updated_at: ...(now - after)), now)
+  end
 
-  # Called when the FCM returns a failure that indicates an invalid device token.
-  # You will need to delete the device_token from your records.
-  # on.fcm_invalid_device_token do |app, error, device_token|
-  # end
+  def self.release(scope, now = Time.current)
+    PushOutcomes.withdraw_cancelled(scope.pluck(:id))
+    scope.update_all(processing: false, updated_at: now)
+  end
 
-  # Called when an SSL certificate will expire within 1 month.
-  # Implement on.error to catch errors raised when the certificate expires.
-  # on.ssl_certificate_will_expire do |app, expiration_time|
-  # end
+  def self.unsent = Rpush::Client::ActiveRecord::Notification.where(processing: true, delivered: false, failed: false)
+end
 
-  # Called when an SSL certificate has been revoked.
-  # on.ssl_certificate_revoked do |app, error|
-  # end
+# A stopping daemon hands back what it fetched but never started; Docker kills it before it drains.
+module RpushReleaseOnStop
+  def self.install!
+    Rpush::Daemon::AppRunner.prepend(self) unless Rpush::Daemon::AppRunner.ancestors.include?(self)
+  end
 
-  # Called when the ADM returns a canonical registration ID.
-  # You will need to replace old_id with canonical_id in your records.
-  # on.adm_canonical_id do |old_id, canonical_id|
-  # end
+  def stop
+    release_queued
+    super
+  end
 
-  # Called when Failed to deliver to ADM. Check the 'reason' string for further
-  # explanations.
-  #
-  # If the reason is the string 'Unregistered', you should remove
-  # this registration id from your records.
-  # on.adm_failed_to_recipient do |notification, registration_id, reason|
-  # end
+  private
 
-  # Called when Failed to deliver to WNS. Check the 'reason' string for further
-  # explanations.
-  # You should remove this uri from your records
-  # on.wns_invalid_channel do |notification, uri, reason|
-  # end
+  def release_queued
+    payloads = []
+    while (payload = queue.pop(timeout: 0))
+      payloads << payload
+    end
+    stops, payloads = payloads.partition { |p| p.is_a?(Array) }
+    stops.each { |p| queue.push(p) }
+    return if payloads.empty?
 
-  # Called when an exception is raised.
-  # on.error do |error|
-  # end
+    release(payloads.flat_map { |p| p.notification ? [p.notification.id] : p.batch.notifications.map(&:id) })
+    payloads.each { |p| p.batch.notification_processed if p.notification }
+  end
+
+  def release(ids)
+    ActiveRecord::Base.connection_pool.with_connection { RpushStaleProcessing.release(RpushStaleProcessing.unsent.where(id: ids)) }
+    Rpush.logger.info("[#{app.name}] Released #{ids.size} unsent notifications on stop")
+  rescue StandardError => e
+    Rpush.logger.error("[#{app.name}] Release on stop failed, the boot release frees them: #{e.class}: #{e.message}")
+  end
+end
+
+# The daemon syncs apps only at start or on HUP; push configs are re-created on upload, so poll.
+module RpushAppSync
+  class << self
+    attr_reader :thread
+
+    def start(interval: 60)
+      @thread = Thread.new do
+        release_on_boot
+        loop do
+          sleep interval
+          tick
+        end
+      end
+    end
+
+    def tick
+      sync_fcm_connections
+      Rpush::Daemon::Synchronizer.sync
+      purged = RpushService.purge_orphans
+      Rails.logger.warn("rpush.orphans.purged count=#{purged}") if purged.positive?
+      released = RpushStaleProcessing.release!
+      Rails.logger.warn("rpush.stale_processing.released count=#{released}") if released.positive?
+    rescue StandardError => e
+      Rails.logger.error("rpush.app_sync.failed #{e.class}: #{e.message}")
+    end
+
+    # Kamal stops the old daemon only once this one is healthy, so its live claims must age out.
+    def release_on_boot
+      released = RpushStaleProcessing.release!(after: RpushStaleProcessing::BOOT_GRACE)
+      Rails.logger.warn("rpush.stale_processing.released_on_boot count=#{released}") if released.positive?
+    rescue StandardError => e
+      Rails.logger.error("rpush.release_on_boot.failed #{e.class}: #{e.message}")
+    end
+
+    # Applies RPUSH_FCM_CONNECTIONS to older apps; the sync then resizes their dispatchers.
+    def sync_fcm_connections
+      wanted = ENV["RPUSH_FCM_CONNECTIONS"].presence&.to_i
+      Rpush::Fcm::App.where.not(connections: wanted).update_all(connections: wanted) if wanted&.positive?
+    end
+
+    def stop
+      @thread&.kill
+      @thread = nil
+    end
+  end
+end
+
+# rpush looks up an unknown app outside its rescue, stranding the fetch; purge_orphans clears it.
+module RpushOrphanGuard
+  def self.install!
+    runner = Rpush::Daemon::AppRunner.singleton_class
+    runner.prepend(self) unless runner.ancestors.include?(self)
+  end
+
+  def start_app_with_id(app_id)
+    super
+  rescue ActiveRecord::RecordNotFound
+    Rpush.logger.warn("Skipping notifications of deleted app #{app_id}")
+  end
+end
+
+# http-2 1.x refuses the 101st outgoing stream; rpush opens up to APNs' 1000, so big batches loop.
+module RpushStreamCap
+  def self.install!
+    Rpush::Daemon::Apnsp8::Delivery.prepend(self) unless Rpush::Daemon::Apnsp8::Delivery.ancestors.include?(self)
+  end
+
+  private
+
+  def remote_max_concurrent_streams
+    [super, Rpush::Daemon::Apnsp8::Delivery::DEFAULT_MAX_CONCURRENT_STREAMS].min
+  end
+end
+
+# rpush 9.2 fails an FCM 429 for good; Google asks senders to back off and retry, so do, boundedly.
+module RpushFcmThrottleRetry
+  MAX_RETRIES = 8
+
+  def self.install!
+    Rpush::Daemon::Fcm::Delivery.prepend(self) unless Rpush::Daemon::Fcm::Delivery.ancestors.include?(self)
+  end
+
+  protected
+
+  def handle_response(response)
+    return super unless response.code.to_i == 429 && @notification.retries.to_i < MAX_RETRIES
+
+    retry_delivery(@notification, response)
+    log_warn("FCM throttled notification #{@notification.id}; retry #{@notification.retries.to_i + 1}")
+  end
+end
+
+# bin/rpush-cluster runs several daemons on one table: claim past each other's locked rows.
+module RpushSkipLocked
+  def self.install!
+    require "rpush/daemon/store/active_record"
+    store = Rpush::Daemon::Store::ActiveRecord
+    store.prepend(self) unless store.ancestors.include?(self)
+  end
+
+  def deliverable_notifications(limit)
+    with_database_reconnect_and_retry do
+      Rpush::Client::ActiveRecord::Notification.transaction do
+        ids = ready_for_delivery.limit(limit).lock("FOR UPDATE SKIP LOCKED").ids
+        next [] if ids.empty?
+
+        claimed = Rpush::Client::ActiveRecord::Notification.where(id: ids)
+        claimed.update_all(processing: true, updated_at: Time.now)
+        claimed.to_a
+      end
+    end
+  end
+end
+
+RpushBatchOutcomes.install!
+RpushSkipLocked.install!
+RpushStreamCap.install!
+RpushFcmThrottleRetry.install!
+RpushDatabaseRetry.install!
+RpushOrphanGuard.install!
+RpushReleaseOnStop.install!
+Rails.application.config.after_initialize do
+  next unless ENV["GROVS_ROLE"] == "rpush"
+
+  RpushAppSync.start
 end

@@ -200,6 +200,7 @@ class AnalyticsSchemaContractTest < ActionDispatch::IntegrationTest
     overview_version_distribution: [Api::V1::Analytics::OverviewController, :version_distribution],
     overview_user_trends:       [Api::V1::Analytics::OverviewController, :user_trends],
     overview_sources_breakdown: [Api::V1::Analytics::OverviewController, :sources_breakdown],
+    metric_query:               [Api::V1::Analytics::QueryController, :show],
     sessions_index:             [Api::V1::Analytics::SessionsController, :index],
     sessions_show:              [Api::V1::Analytics::SessionsController, :show],
     retention_summary:          [Api::V1::Analytics::RetentionController, :summary]
@@ -306,6 +307,9 @@ class AnalyticsSchemaContractTest < ActionDispatch::IntegrationTest
       day_1: 80.0,
       day_7: 75.0,
       day_30: nil,
+      day_1_users: 10,
+      day_7_users: 8,
+      day_30_users: 0,
       sparkline: [{ 'date' => '2026-04-30', 'rate' => 80.0 }],
       median_churn_day: 5
     }
@@ -483,8 +487,10 @@ class AnalyticsSchemaContractTest < ActionDispatch::IntegrationTest
   test 'user_trends stubbed response validates trend_point items' do
     stub_result = {
       points: [
-        { 'date' => '2026-05-01', 'new_users' => 42, 'previous_new_users' => 30, 'users' => 42, 'previous_users' => 30, 'revenue_usd_cents' => 4299, 'previous_revenue_usd_cents' => 3100 },
-        { 'date' => '2026-05-02', 'new_users' => 55, 'previous_new_users' => 40, 'users' => 55, 'previous_users' => 40, 'revenue_usd_cents' => 0, 'previous_revenue_usd_cents' => 0 }
+        { 'date' => '2026-05-01', 'new_users' => 42, 'previous_new_users' => 30, 'users' => 42, 'previous_users' => 30, 'revenue_usd_cents' => 4299, 
+'previous_revenue_usd_cents' => 3100 },
+        { 'date' => '2026-05-02', 'new_users' => 55, 'previous_new_users' => 40, 'users' => 55, 'previous_users' => 40, 'revenue_usd_cents' => 0, 
+'previous_revenue_usd_cents' => 0 }
       ]
     }
 
@@ -691,10 +697,11 @@ class AnalyticsSchemaContractTest < ActionDispatch::IntegrationTest
     assert_analytics_schema(:error_response)
   end
 
-  test 'field param with non-allowlisted value returns 400' do
+  # A plain field is a valid property key; only a malformed one 400s.
+  test 'field param with malformed value returns 400' do
     Clickhouse.stub(:read_enabled?, true) do
       get "#{API_PREFIX}/projects/#{@project.id}/analytics/events/field-values",
-          params: { field: 'password_hash' },
+          params: { field: 'bad`key' },
           headers: @headers
     end
 

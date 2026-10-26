@@ -87,6 +87,22 @@ class SdkLinksTest < ActionDispatch::IntegrationTest
     assert_equal @project.domain.id, created.domain_id, "link must belong to project domain"
   end
 
+  # The contract declares tags as an array, but the controller parses a JSON string (pre-existing).
+  test "create link via SDK strips reserved smart banner tags" do
+    previous = ENV.fetch("SKIP_API_CONTRACTS", nil)
+    begin
+      ENV["SKIP_API_CONTRACTS"] = "true"
+      post "#{SDK_PREFIX}/create_link",
+        params: { title: "Tagged", tags: '["smart_banner", "smart_banner:3", "promo"]', user_agent: "TestApp/1.0" },
+        headers: @headers
+    ensure
+      ENV["SKIP_API_CONTRACTS"] = previous
+    end
+    assert_response :ok
+
+    assert_equal ["promo"], Link.order(created_at: :desc).first.tags
+  end
+
   # --- Data for Device ---
 
   test "data for device returns response with data and link keys" do
@@ -119,6 +135,41 @@ class SdkLinksTest < ActionDispatch::IntegrationTest
       params: { user_agent: "TestApp/1.0", url: @link.access_path, session_id: "sess-integration" },
       headers: @headers
     assert_response :ok
+  end
+
+  test "a push tap resolves the link's data without counting a link open or matching devices" do
+    logged = []
+    merged = false
+    EventIngestionService.stub(:log_async, ->(*args, **) { logged << args.first }) do
+      DeviceService.stub(:match_device_by_fingerprint_request, ->(*) { merged = true }) do
+        post "#{SDK_PREFIX}/data_for_device_and_url",
+          params: { user_agent: "TestApp/1.0", url: @link.access_path, source: "push" },
+          headers: @headers
+      end
+    end
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert_equal @link.access_path, json["link"]
+    assert_equal @link.data, json["data"]
+    assert_not_includes logged, Grovs::Events::OPEN
+    assert_not merged
+
+    EventIngestionService.stub(:log_async, ->(*args, **) { logged << args.first }) do
+      post "#{SDK_PREFIX}/data_for_device_and_url", params: { user_agent: "TestApp/1.0", url: @link.access_path }, headers: @headers
+    end
+    assert_includes logged, Grovs::Events::OPEN, "a real link open still counts"
+  end
+
+  test "a push tap on an unknown link returns nothing without matching devices" do
+    matched = false
+    DeviceService.stub(:match_device_by_fingerprint_request, ->(*) { matched = true and nil }) do
+      post "#{SDK_PREFIX}/data_for_device_and_url",
+        params: { user_agent: "TestApp/1.0", url: "#{@link.access_path}-gone", source: "push" },
+        headers: @headers
+    end
+    assert_response :ok
+    assert_nil JSON.parse(response.body)["link"]
+    assert_not matched
   end
 
   test "data for device and url resolves a provider-hosted extra-host URL to the migrated link" do

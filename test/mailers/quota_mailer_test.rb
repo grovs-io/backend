@@ -1,7 +1,7 @@
 require "test_helper"
 
 class QuotaMailerTest < ActionMailer::TestCase
-  fixtures :users, :instances
+  fixtures :users, :instances, :projects
 
   setup do
     @user = users(:admin_user)
@@ -110,5 +110,58 @@ class QuotaMailerTest < ActionMailer::TestCase
 
     assert_equal ["admin@example.com"], admin_email.to
     assert_equal ["member@example.com"], member_email.to
+  end
+
+  test "band_exceeded goes to a plain address and says nothing is paused" do
+    mail = QuotaMailer.band_exceeded("owner@grovs-test.invalid", 120, 300_000, 250_000, 42)
+    assert_equal ["owner@grovs-test.invalid"], mail.to
+    assert_equal "You've passed your plan's MAU band (project 42) - Grovs", mail.subject
+    assert_includes mail.body.encoded, "Nothing is paused"
+  end
+
+  test "band_progress goes to a plain address" do
+    mail = QuotaMailer.band_progress("a@b.invalid", 90, 225_000, 250_000, 42)
+    assert_equal ["a@b.invalid"], mail.to
+    assert_equal "You're nearing your plan's MAU band (project 42) - Grovs", mail.subject
+  end
+
+  test "band_exceeded sets reply_to from BILLING_ALERT_EMAIL" do
+    original = ENV["BILLING_ALERT_EMAIL"]
+    ENV["BILLING_ALERT_EMAIL"] = "billing@grovs-test.invalid"
+
+    mail = QuotaMailer.band_exceeded("owner@grovs-test.invalid", 120, 300_000, 250_000, 42)
+    assert_equal ["billing@grovs-test.invalid"], mail.reply_to
+  ensure
+    ENV["BILLING_ALERT_EMAIL"] = original
+  end
+
+  test "band_progress has no reply_to when BILLING_ALERT_EMAIL is unset" do
+    original = ENV["BILLING_ALERT_EMAIL"]
+    ENV.delete("BILLING_ALERT_EMAIL")
+
+    mail = QuotaMailer.band_progress("a@b.invalid", 90, 225_000, 250_000, 42)
+    assert_nil mail.reply_to
+  ensure
+    ENV["BILLING_ALERT_EMAIL"] = original
+  end
+
+  test "band subject uses the instance's production project name when present" do
+    mail = QuotaMailer.band_exceeded("owner@grovs-test.invalid", 120, 300_000, 250_000, @instance.id)
+    assert_equal "You've passed your plan's MAU band (#{@instance.production.name}) - Grovs", mail.subject
+  end
+
+  test "band subject falls back to project id when the instance does not exist" do
+    mail = QuotaMailer.band_progress("a@b.invalid", 90, 225_000, 250_000, 999_999)
+    assert_equal "You're nearing your plan's MAU band (project 999999) - Grovs", mail.subject
+  end
+
+  test "band templates use the same number format throughout" do
+    mail = QuotaMailer.band_exceeded("owner@grovs-test.invalid", 120, 300_000, 250_000, 42)
+    body = mail.body.encoded
+
+    assert_includes body, "300,000"
+    assert_includes body, "250,000"
+    assert_not_includes body, "300.000"
+    assert_not_includes body, "250.000"
   end
 end

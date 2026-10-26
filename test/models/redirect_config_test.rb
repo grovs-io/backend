@@ -3,6 +3,13 @@ require "test_helper"
 class RedirectConfigTest < ActiveSupport::TestCase
   fixtures :redirect_configs, :projects, :redirects, :applications, :instances, :domains, :links, :custom_redirects
 
+  test "a null flag is invalid with a plain message instead of hitting the NOT NULL column" do
+    config = redirect_configs(:one)
+    config.in_app_browser_page_ios = nil
+    assert_not config.valid?
+    assert_includes config.errors.full_messages, "In app browser page ios must be true or false"
+  end
+
   test "destroying redirect config preserves purchase ledger link attribution" do
     link = links(:basic_link)
     pe = PurchaseEvent.create!(

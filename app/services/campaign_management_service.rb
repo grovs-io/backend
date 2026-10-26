@@ -34,7 +34,12 @@ class CampaignManagementService
       archived.update_all(active: false, updated_at: Time.current)
     end
 
-    LinkDimensionSyncService.sync_many(Link.includes(:domain).where(id: ids)) if ids.present?
+    if ids.present?
+      links = Link.includes(:domain).where(id: ids).to_a
+      # update_all skipped after_commit too, so the cached lookups still say active.
+      links.each { |link| link.send(:clear_cache) }
+      LinkDimensionSyncService.sync_many(links)
+    end
 
     campaign.reload
   end

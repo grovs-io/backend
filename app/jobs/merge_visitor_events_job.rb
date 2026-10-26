@@ -85,6 +85,9 @@ class MergeVisitorEventsJob
         renew_device_locks(from_device_id, to_device_id, project_id)
       end
 
+      InAppGateway.merge(from: from_visitor, to: to_visitor)
+      JourneyGateway.merge(from: from_visitor, to: to_visitor)
+
       repoint_device_scoped_purchase_state(project, from_device, to_device)
 
       # Transfer last-visit attribution (keep the most recent one)
@@ -103,8 +106,6 @@ class MergeVisitorEventsJob
         end
         from_vlv.delete
       end
-
-      NotificationMessage.where(visitor_id: from_visitor.id).delete_all
 
       repoint_referrals(from_visitor, to_visitor)
 

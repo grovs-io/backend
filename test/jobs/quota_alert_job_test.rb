@@ -286,9 +286,14 @@ class QuotaAlertJobTest < ActiveSupport::TestCase
     prev = Rails.application.config.clickhouse_primary
     Rails.application.config.clickhouse_primary = true
 
+    mark_sent = lambda do |*_|
+      sent = true
+      OpenStruct.new(deliver_now: true)
+    end
+
     ClickhouseReadService.stub(:billing_active_visitors_exact, ->(*_a, **_k) { nil }) do
-      QuotaMailer.stub(:quota_exceeded, ->(*_) { sent = true; OpenStruct.new(deliver_now: true) }) do
-        QuotaMailer.stub(:quota_progress, ->(*_) { sent = true; OpenStruct.new(deliver_now: true) }) do
+      QuotaMailer.stub(:quota_exceeded, mark_sent) do
+        QuotaMailer.stub(:quota_progress, mark_sent) do
           @job.perform(@instance.id) # must not raise
         end
       end
@@ -300,6 +305,73 @@ class QuotaAlertJobTest < ActiveSupport::TestCase
     assert_nil @instance.last_quota_warning_sent_at
   ensure
     Rails.application.config.clickhouse_primary = prev
+  end
+
+  def subscribe_flat!(product_type: "growth_250k", active: true, status: "active")
+    intent = StripePaymentIntent.create!(instance: @instance, user: users(:admin_user), intent_id: "cs_#{SecureRandom.hex(4)}", product_type: product_type)
+    StripeSubscription.create!(instance: @instance, stripe_payment_intent: intent, subscription_id: "sub_#{SecureRandom.hex(4)}",
+                               customer_id: "cus_b", active: active, status: status, product_type: product_type)
+  end
+
+  def capture_band_mail(kind, &block)
+    sent = []
+    stub_mail = lambda do |*args|
+      sent << args
+      OpenStruct.new(deliver_now: true)
+    end
+    QuotaMailer.stub(kind, stub_mail, &block)
+    sent
+  end
+
+  test "flat plan over its band emails users and the owner, without blocking" do
+    subscribe_flat!
+    Billing::Plans.stub(:mau_cap, 100) do
+      create_visitors_with_stats(@instance.production, 150)
+      sent = capture_band_mail(:band_exceeded) { @job.perform(@instance.id) }
+      recipients = sent.map(&:first)
+      assert_includes recipients, ENV["BILLING_ALERT_EMAIL"]
+      @instance.users.each { |u| assert_includes recipients, u.email }
+      assert_equal [150, 150, 100], sent.first[1..3]
+    end
+    @instance.reload
+    assert @instance.last_quota_exceeded_sent_at.present?
+    assert_not @instance.quota_exceeded
+  end
+
+  test "flat plan at 85% of its band sends band_progress" do
+    subscribe_flat!
+    Billing::Plans.stub(:mau_cap, 100) do
+      create_visitors_with_stats(@instance.production, 85)
+      sent = capture_band_mail(:band_progress) { @job.perform(@instance.id) }
+      assert_not sent.empty?
+    end
+  end
+
+  test "flat band emails are throttled for 3 days" do
+    subscribe_flat!
+    @instance.update!(last_quota_exceeded_sent_at: 1.day.ago)
+    Billing::Plans.stub(:mau_cap, 100) do
+      create_visitors_with_stats(@instance.production, 150)
+      sent = capture_band_mail(:band_exceeded) { @job.perform(@instance.id) }
+      assert_empty sent
+    end
+  end
+
+  test "no band email for legacy scale_up, paused flat, or enterprise" do
+    create_visitors_with_stats(@instance.production, 150)
+    subscribe_flat!(product_type: "scale_up")
+    assert_empty capture_band_mail(:band_exceeded) { @job.perform(@instance.id) }
+
+    @instance.stripe_subscriptions.destroy_all
+    subscribe_flat!(active: false, status: "paused")
+    Billing::Plans.stub(:mau_cap, 100) do
+      assert_empty capture_band_mail(:band_exceeded) { @job.perform(@instance.id) }
+    end
+
+    @instance.stripe_subscriptions.destroy_all
+    EnterpriseSubscription.create!(instance: @instance, active: true, total_maus: 100,
+                                    start_date: 1.month.ago, end_date: 1.month.from_now)
+    assert_empty capture_band_mail(:band_exceeded) { @job.perform(@instance.id) }
   end
 
   private

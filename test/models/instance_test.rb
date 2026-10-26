@@ -80,6 +80,60 @@ customer_id: "cus_test_paused2")
     assert_nil instance.subscription
   end
 
+  # === unresolved_subscription ===
+
+  test "unresolved_subscription returns the latest non-terminal inactive row" do
+    instance = Instance.create!(uri_scheme: "unres1#{SecureRandom.hex(4)}", api_key: "key-unres1")
+    spi = StripePaymentIntent.create!(user: @user, instance: instance, intent_id: "pi_u1")
+    StripeSubscription.create!(instance: instance, stripe_payment_intent: spi, active: false, status: "past_due",
+                                subscription_id: "sub_older", customer_id: "cus_older", updated_at: 2.days.ago)
+    newer = StripeSubscription.create!(instance: instance, stripe_payment_intent: spi, active: false, status: "incomplete",
+                                        subscription_id: "sub_newer", customer_id: "cus_newer", updated_at: 1.day.ago)
+
+    assert_equal newer.subscription_id, instance.unresolved_subscription.subscription_id
+  end
+
+  test "unresolved_subscription ignores paused and terminal rows" do
+    instance = Instance.create!(uri_scheme: "unres2#{SecureRandom.hex(4)}", api_key: "key-unres2")
+    spi = StripePaymentIntent.create!(user: @user, instance: instance, intent_id: "pi_u2")
+    StripeSubscription.create!(instance: instance, stripe_payment_intent: spi, active: false, status: "paused",
+                                subscription_id: "sub_paused", customer_id: "cus_paused")
+    StripeSubscription.create!(instance: instance, stripe_payment_intent: spi, active: false, status: "canceled",
+                                subscription_id: "sub_canceled", customer_id: "cus_canceled")
+    StripeSubscription.create!(instance: instance, stripe_payment_intent: spi, active: false, status: "incomplete_expired",
+                                subscription_id: "sub_expired", customer_id: "cus_expired")
+
+    assert_nil instance.unresolved_subscription
+  end
+
+  test "unresolved_subscription ignores a pending row" do
+    instance = Instance.create!(uri_scheme: "unrespending#{SecureRandom.hex(4)}", api_key: "key-unrespending")
+    spi = StripePaymentIntent.create!(user: @user, instance: instance, intent_id: "pi_upending")
+    StripeSubscription.create!(instance: instance, stripe_payment_intent: spi, active: false, status: "pending",
+                                subscription_id: "sub_pending", customer_id: "cus_pending")
+
+    assert_nil instance.unresolved_subscription
+  end
+
+  test "unresolved_subscription ignores an active row" do
+    instance = Instance.create!(uri_scheme: "unres3#{SecureRandom.hex(4)}", api_key: "key-unres3")
+    spi = StripePaymentIntent.create!(user: @user, instance: instance, intent_id: "pi_u3")
+    StripeSubscription.create!(instance: instance, stripe_payment_intent: spi, active: true, status: "active",
+                                subscription_id: "sub_active", customer_id: "cus_active")
+
+    assert_nil instance.unresolved_subscription
+  end
+
+  test "unresolved_subscription does not count a NULL-status row, like the checkout guard" do
+    instance = Instance.create!(uri_scheme: "unres4#{SecureRandom.hex(4)}", api_key: "key-unres4")
+    spi = StripePaymentIntent.create!(user: @user, instance: instance, intent_id: "pi_u4")
+    sub = StripeSubscription.create!(instance: instance, stripe_payment_intent: spi, active: false, status: "active",
+                                      subscription_id: "sub_nullstatus", customer_id: "cus_nullstatus")
+    sub.update_column(:status, nil)
+
+    assert_nil instance.unresolved_subscription
+  end
+
   # === valid_enterprise_subscription ===
 
   test "valid_enterprise_subscription returns active enterprise subscription" do
@@ -321,5 +375,43 @@ customer_id: "cus_test_paused2")
       instance.destroy!
     end
     assert_not Instance.exists?(instance.id)
+  end
+
+  def subscribe!(instance, active:, status:, product_type:)
+    intent = StripePaymentIntent.create!(instance: instance, user: @user, intent_id: "cs_#{SecureRandom.hex(4)}", product_type: product_type)
+    StripeSubscription.create!(instance: instance, stripe_payment_intent: intent, subscription_id: "sub_#{SecureRandom.hex(4)}",
+                               customer_id: "cus_x", active: active, status: status, product_type: product_type)
+  end
+
+  test "event stream and push API are on for an active flat plan, off for free" do
+    free = unsubscribed_instance
+    assert_not free.event_stream_enabled?
+    assert_not free.push_api_enabled?
+
+    paid = unsubscribed_instance
+    subscribe!(paid, active: true, status: "active", product_type: "growth_250k")
+    assert paid.event_stream_enabled?
+    assert paid.push_api_enabled?
+    assert_not paid.audit_log_enabled?, "audit log stays Enterprise-only"
+  end
+
+  test "event stream is on for an active legacy scale_up plan" do
+    legacy = unsubscribed_instance
+    subscribe!(legacy, active: true, status: "active", product_type: "scale_up")
+    assert legacy.event_stream_enabled?
+  end
+
+  test "event stream is off for a paused plan" do
+    paused = unsubscribed_instance
+    subscribe!(paused, active: false, status: "paused", product_type: "growth_250k")
+    assert_not paused.event_stream_enabled?
+    assert_not paused.custom_domains_entitled?
+  end
+
+  test "event stream is on for a valid enterprise subscription" do
+    ent = unsubscribed_instance
+    EnterpriseSubscription.create!(instance_id: ent.id, start_date: 1.day.ago, end_date: 1.year.from_now, total_maus: 1, active: true)
+    assert ent.event_stream_enabled?
+    assert ent.audit_log_enabled?
   end
 end

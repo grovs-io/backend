@@ -60,19 +60,21 @@ class FingerprintingService
       # Handle single match case
       if matching_devices.count == 1
         device_to_return = matching_devices[0]
-        # Use background job for removal to keep response time fast
-        remove_device_from_cache_by_id(device_to_return.id, project.id)
-
-        device_to_return
+        device_to_return if remove_device_from_cache_by_id(device_to_return.id, project.id)
       end
     end
     
     # High-performance cache removal with minimal operations
     def remove_device_from_cache_by_id(device_id, project_id)
-      # Get all fingerprint keys this device is stored in (need result, stays sequential)
       index_key = reverse_index_key(device_id, project_id)
-      fingerprint_keys = redis.smembers(index_key) || []
-      return if fingerprint_keys.empty?
+      # Deleting the index is the claim: of racing installs, only the one whose DEL removed it gets the click.
+      fingerprint_keys, claimed = redis.with do |conn|
+        conn.multi do |t|
+          t.smembers(index_key)
+          t.del(index_key)
+        end
+      end
+      return false if claimed.to_i.zero?
 
       device_pattern = "#{device_id}:#{project_id}:"
 
@@ -83,7 +85,7 @@ class FingerprintingService
         end
       end
 
-      # Phase 2: Pipeline all ZREM calls + DEL of the reverse index
+      # Phase 2: Pipeline all ZREM calls
       redis.with do |conn|
         conn.pipelined do |p|
           fingerprint_keys.each_with_index do |key, i|
@@ -91,9 +93,9 @@ class FingerprintingService
             matching = members.select { |m| m.start_with?(device_pattern) }
             p.zrem(key, matching) if matching.any?
           end
-          p.del(index_key)
         end
       end
+      true
     end
     
     private

@@ -23,6 +23,8 @@ class Analytics::OverviewStatsServiceTest < ActiveSupport::TestCase
     Rails.application.config.clickhouse_analytics_rollups_read_enabled = @original_rollups_read_enabled if defined?(@original_rollups_read_enabled)
   end
 
+  teardown { Rails.cache.clear }
+
   # --- versions ---
 
   test 'versions groups by platform with user counts' do
@@ -541,5 +543,48 @@ class Analytics::OverviewStatsServiceTest < ActiveSupport::TestCase
       []
     }, &block)
     assert called, "expected #{method} to serve the rollup path under primary"
+  end
+
+  def trends_at(days_ago)
+    ((Date.current - days_ago).to_time(:utc) + 12.hours).strftime('%Y-%m-%d %H:%M:%S.%3N')
+  end
+
+  test 'user_trends: country filter counts only matching new users and zeroes revenue' do
+    insert_ch_events([
+      { event_id: 't_ro', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 45_001, platform: 'ios', country: 'RO', created_at: trends_at(1) },
+      { event_id: 't_de', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 45_002, platform: 'ios', country: 'DE', created_at: trends_at(1) }
+    ])
+
+    points = Analytics::OverviewStatsService.user_trends(
+      @project.id, start_date: Date.current - 2, end_date: Date.current,
+      filters: '[{"field":"country","operator":"is","value":"RO"}]'
+    )[:points]
+
+    yesterday = points.find { |p| p[:date] == (Date.current - 1).to_s }
+    assert_equal 1, yesterday[:new_users]
+    assert_equal 0, yesterday[:revenue_usd_cents]
+    assert_equal 3, points.size
+  end
+
+  test 'user_trends: week granularity sums daily points per window' do
+    insert_ch_events([
+      { event_id: 't_w1', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 45_010, platform: 'ios', created_at: trends_at(8) },
+      { event_id: 't_w2', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 45_011, platform: 'ios', created_at: trends_at(1) }
+    ])
+
+    points = Analytics::OverviewStatsService.user_trends(
+      @project.id, start_date: Date.current - 13, end_date: Date.current, granularity: 'week'
+    )[:points]
+
+    assert_equal 2, points.size
+    assert_equal (Date.current - 13).to_s, points[0][:date]
+    assert_equal 1, points[0][:new_users]
+    assert_equal 1, points[1][:new_users]
+    assert_equal %i[date new_users previous_new_users users previous_users revenue_usd_cents previous_revenue_usd_cents].sort,
+                 points[0].keys.sort
   end
 end

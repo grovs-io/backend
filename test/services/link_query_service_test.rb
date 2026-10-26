@@ -97,6 +97,23 @@ class LinkQueryServiceTest < ActiveSupport::TestCase
     assert_includes paths, "aaa-banana-path"
   end
 
+  test "search treats % and _ in term as literal characters" do
+    literal = Link.create!(domain: @domain, redirect_config: @redirect_config,
+                            path: "search-lit_eral-path", name: "50% deal", generated_from_platform: "ios",
+                            active: true, sdk_generated: false)
+    lookalike = Link.create!(domain: @domain, redirect_config: @redirect_config,
+                              path: "search-litXeral-path", name: "50xdeal", generated_from_platform: "ios",
+                              active: true, sdk_generated: false)
+
+    percent_ids = @service.search(active: true, sdk: false, term: "50%").map(&:id)
+    assert_includes percent_ids, literal.id
+    assert_not_includes percent_ids, lookalike.id
+
+    underscore_ids = @service.search(active: true, sdk: false, term: "lit_eral").map(&:id)
+    assert_includes underscore_ids, literal.id
+    assert_not_includes underscore_ids, lookalike.id
+  end
+
   # --- search: sorting ---
 
   test "search sorts by path ascending" do
@@ -203,6 +220,23 @@ class LinkQueryServiceTest < ActiveSupport::TestCase
     assert_not_includes paths, "zzz-apple-path"
   end
 
+  test "filter treats % and _ in term as literal characters" do
+    literal = Link.create!(domain: @domain, redirect_config: @redirect_config,
+                            path: "filter-lit_eral-path", name: "50% deal", generated_from_platform: "ios",
+                            active: true, sdk_generated: false)
+    lookalike = Link.create!(domain: @domain, redirect_config: @redirect_config,
+                              path: "filter-litXeral-path", name: "50xdeal", generated_from_platform: "ios",
+                              active: true, sdk_generated: false)
+
+    percent_ids = @service.filter(active: true, sdk: false, term: "50%").map(&:id)
+    assert_includes percent_ids, literal.id
+    assert_not_includes percent_ids, lookalike.id
+
+    underscore_ids = @service.filter(active: true, sdk: false, term: "lit_eral").map(&:id)
+    assert_includes underscore_ids, literal.id
+    assert_not_includes underscore_ids, lookalike.id
+  end
+
   test "filter with campaign_id returns only links for that campaign" do
     campaign = campaigns(:one)
     @link_banana.update!(campaign: campaign)
@@ -254,5 +288,63 @@ class LinkQueryServiceTest < ActiveSupport::TestCase
     # Should return results using Kaminari's default per_page (typically 25)
     assert result.any?, "Expected results with default pagination"
     assert result.respond_to?(:total_pages), "Expected a paginated result"
+  end
+
+  test "lookup ignores created_at, returning links regardless of age" do
+    @link_apple.update!(created_at: 1.year.ago)
+    result = @service.lookup
+    assert_includes result.map(&:id), @link_apple.id
+  end
+
+  test "lookup excludes inactive and sdk_generated links" do
+    result = @service.lookup
+    ids = result.map(&:id)
+    assert_not_includes ids, @link_sdk.id
+    assert_not_includes ids, links(:inactive_link).id
+  end
+
+  test "lookup orders by created_at desc, not by updated_at" do
+    # apple is older but freshly touched, so an updated_at ordering would wrongly sort it first.
+    @link_apple.touch
+    result = @service.lookup
+    ids = result.map(&:id)
+    assert_operator ids.index(@link_banana.id), :<, ids.index(@link_apple.id)
+  end
+
+  test "lookup term matches name/title/subtitle/path and is case insensitive" do
+    result = @service.lookup(term: "BANANA")
+    assert_equal [@link_banana.id], result.map(&:id)
+  end
+
+  test "lookup term treats % and _ literally" do
+    literal = Link.create!(domain: @domain, redirect_config: @redirect_config,
+                            path: "lit_eral-path", name: "50% deal", generated_from_platform: "ios",
+                            active: true, sdk_generated: false)
+    lookalike = Link.create!(domain: @domain, redirect_config: @redirect_config,
+                              path: "litXeral-path", name: "50xdeal", generated_from_platform: "ios",
+                              active: true, sdk_generated: false)
+
+    result = @service.lookup(term: "lit_eral")
+    ids = result.map(&:id)
+    assert_includes ids, literal.id
+    assert_not_includes ids, lookalike.id
+  end
+
+  test "lookup term accepts a non-string value without raising" do
+    result = nil
+    assert_nothing_raised { result = @service.lookup(term: 123) }
+    assert_kind_of ActiveRecord::Relation, result
+  end
+
+  test "lookup limit defaults to 20" do
+    assert_equal 20, @service.lookup.limit_value
+  end
+
+  test "lookup limit clamps above 50 down to 50" do
+    assert_equal 50, @service.lookup(limit: 100).limit_value
+  end
+
+  test "lookup limit clamps below 1 up to 1" do
+    assert_equal 1, @service.lookup(limit: 0).limit_value
   end
 end

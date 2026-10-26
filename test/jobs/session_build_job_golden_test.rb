@@ -290,6 +290,7 @@ class SessionBuildJobGoldenTest < ActiveSupport::TestCase
   # ---------------------------------------------------------------------------
   # 8. has_conversion flag correctness
   # ---------------------------------------------------------------------------
+
   test 'has_conversion_flag_based_on_purchase_events_not_event_type' do
     # Visitor 1: regular session, no purchase — has_conversion = 0
     insert_ch_events([
@@ -453,6 +454,98 @@ class SessionBuildJobGoldenTest < ActiveSupport::TestCase
                           .map { |r| r['session_id'] }.uniq
     assert_equal 2, v20_sessions.size,
                  "1801s gap should be DIFFERENT sessions (got #{v20_sessions.inspect})"
+  end
+
+  test 'purchase matching uses recorded time, not the version stamp, and takes the newest version' do
+    insert_ch_events([
+      raw_event(visitor_id: 7, event_id: 'rec_e1', event_type: 'OPEN',
+                screen_name: 'HomeScreen', created_at: ch_fmt(@now - 10.minutes)),
+      raw_event(visitor_id: 7, event_id: 'rec_e2', event_type: 'OPEN',
+                screen_name: 'CheckoutScreen', created_at: ch_fmt(@now - 8.minutes))
+    ])
+    base = {
+      project_id: @project.id, visitor_id: 7, event_type: Grovs::Purchases::EVENT_BUY,
+      purchase_type: 'one_time', product_id: 'com.test.product', currency: 'USD', quantity: 1,
+      transaction_id: 'TXN-recorded-1', original_transaction_id: 'OTXN-recorded-1',
+      store_source: 'apple', device_id: 0, link_id: 0,
+      purchase_date: ch_fmt(@now - 9.minutes), recorded_at: ch_fmt(@now - 9.minutes)
+    }
+    Clickhouse.with do |conn|
+      conn.insert('purchase_events', [
+        base.merge(usd_price_cents: 999,  created_at: ch_fmt(@now - 9.minutes)),
+        base.merge(usd_price_cents: 1299, created_at: ch_fmt(@now))
+      ])
+    end
+
+    @job.perform
+
+    summary = session_summary_final.find { |s| s['visitor_id'] == 7 }
+    assert_equal 1, summary['has_conversion'].to_i
+    assert_equal 1299, summary['revenue_usd_cents'].to_i, 'newest version wins, matched by recorded time'
+  end
+
+  test 'a metadata refresh of a webhook purchase leaves session conversion and revenue unchanged' do
+    insert_ch_events([
+      raw_event(visitor_id: 8, event_id: 'wh_e1', event_type: 'OPEN', screen_name: 'HomeScreen',
+                created_at: ch_fmt(@now - 10.minutes)),
+      raw_event(visitor_id: 8, event_id: 'wh_e2', event_type: 'OPEN', screen_name: 'CheckoutScreen',
+                created_at: ch_fmt(@now - 8.minutes))
+    ])
+    base = {
+      project_id: @project.id, visitor_id: 8, event_type: Grovs::Purchases::EVENT_BUY, session_id: '',
+      purchase_type: 'subscription', product_id: 'com.test.sub', usd_price_cents: 1499, currency: 'USD',
+      quantity: 1, transaction_id: 'TXN-webhook-1', original_transaction_id: 'OTXN-webhook-1',
+      store_source: 'apple', device_id: 0, link_id: 0,
+      purchase_date: ch_fmt(@now - 9.minutes), recorded_at: ch_fmt(@now - 9.minutes)
+    }
+    Clickhouse.with { |c| c.insert('purchase_events', [base.merge(created_at: ch_fmt(@now - 9.minutes))]) }
+    @job.perform
+    first = session_summary_final.find { |r| r['visitor_id'] == 8 }
+    assert_equal [1, 1499], [first['has_conversion'].to_i, first['revenue_usd_cents'].to_i]
+
+    # Metadata-only re-emit: same price, newer version stamp; then a new event forces a rebuild.
+    Clickhouse.with { |c| c.insert('purchase_events', [base.merge(product_id: 'com.test.sub.renamed', created_at: ch_fmt(@now))]) }
+    insert_ch_events([raw_event(visitor_id: 8, event_id: 'wh_e3', event_type: 'OPEN', screen_name: 'HomeScreen',
+                                created_at: ch_fmt(@now - 7.minutes))])
+    @job.perform
+
+    again = session_summary_final.find { |r| r['visitor_id'] == 8 }
+    assert_equal [1, 1499], [again['has_conversion'].to_i, again['revenue_usd_cents'].to_i]
+  end
+
+  test 'a historical purchase re-emitted today still matches its old session by recorded time' do
+    insert_ch_events([
+      raw_event(visitor_id: 11, event_id: 'old_e1', event_type: 'OPEN', screen_name: 'HomeScreen',
+                created_at: ch_fmt(@now - 2.days - 10.minutes)),
+      raw_event(visitor_id: 11, event_id: 'old_e2', event_type: 'OPEN', screen_name: 'CheckoutScreen',
+                created_at: ch_fmt(@now - 2.days - 8.minutes))
+    ])
+    Clickhouse.with do |c|
+      c.insert('purchase_events', [{
+        project_id: @project.id, visitor_id: 11, event_type: Grovs::Purchases::EVENT_BUY, session_id: '',
+        purchase_type: 'one_time', product_id: 'com.test.old', usd_price_cents: 2500, currency: 'USD', quantity: 1,
+        transaction_id: 'TXN-old-1', original_transaction_id: 'OTXN-old-1', store_source: 'apple', device_id: 0, link_id: 0,
+        purchase_date: ch_fmt(@now - 2.days - 9.minutes), recorded_at: ch_fmt(@now - 2.days - 9.minutes),
+        created_at: ch_fmt(@now) # version stamp: re-emitted today
+      }])
+    end
+
+    @job.perform
+
+    summary = session_summary_final.find { |r| r['visitor_id'] == 11 }
+    assert_equal [1, 2500], [summary['has_conversion'].to_i, summary['revenue_usd_cents'].to_i]
+  end
+
+  test 'purchase join prunes purchase_events by partition' do
+    skip 'EXPLAIN output varies by CH version; opt in with CH_PERF_TESTS=1' unless ENV['CH_PERF_TESTS']
+    Clickhouse.with do |conn|
+      conn.insert('purchase_events', [{ project_id: @project.id, visitor_id: 9, event_type: 'buy',
+                                        transaction_id: 'TXN-prune', purchase_date: ch_fmt(@now),
+                                        recorded_at: ch_fmt(@now), created_at: ch_fmt(@now) }])
+    end
+    sql = @job.send(:purchase_join_sql, @project.id, {})
+    plan = Clickhouse.with { |c| c.select_all("EXPLAIN indexes = 1 SELECT count() FROM (#{sql})").to_a }
+    assert plan.flat_map(&:values).join("\n").include?('toYYYYMM(created_at)'), 'partition condition must survive the alias'
   end
 
   private

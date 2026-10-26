@@ -82,7 +82,7 @@ class AnalyticsOverviewTest < ActionDispatch::IntegrationTest
       total_users: 4, new_users: 2, returning_users: 2, returning_rate: 0.5,
       revenue: 5000, units_sold: 4, cancellations: 1, first_time_purchases: 3,
       arpu: 1250.0, arppu: 2500.0
-    } }
+    }, unsupported_metrics: [] }
 
     with_ch_stub(::Analytics::OverviewStatsService, :key_metrics, result) do
       get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/key-metrics", headers: @headers
@@ -90,6 +90,68 @@ class AnalyticsOverviewTest < ActionDispatch::IntegrationTest
 
     assert_response :ok
     assert_analytics_schema(:overview_key_metrics)
+  end
+
+  test 'key_metrics: forwards filters to service' do
+    captured = nil
+    fake = lambda { |*args, **kw| 
+      captured = [args, kw]
+      { metrics: {}, unsupported_metrics: [] }
+    }
+    filters = '[{"field":"country","operator":"is","value":"RO"}]'
+
+    with_ch_stub(::Analytics::OverviewStatsService, :key_metrics, fake) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/key-metrics",
+          params: { start_date: '2026-04-01', end_date: '2026-05-01', filters: filters }, headers: @headers
+    end
+
+    assert_response :ok
+    assert_equal filters, captured[1][:filters]
+  end
+
+  test 'key_metrics: non-platform filters over 90 days return 422 query_too_heavy' do
+    Clickhouse.stub(:read_enabled?, true) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/key-metrics",
+          params: { start_date: (Date.current - 120).to_s, end_date: Date.current.to_s,
+                    filters: '[{"field":"country","operator":"is","value":"RO"}]' },
+          headers: @headers
+    end
+    assert_response :unprocessable_entity
+    assert_equal 'query_too_heavy', JSON.parse(response.body)['error_code']
+  end
+
+  test 'key_metrics: unsupported chip returns 400 unsupported_filter' do
+    Clickhouse.stub(:read_enabled?, true) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/key-metrics",
+          params: { filters: '[{"field":"link_id","operator":"contains","value":"x"}]' },
+          headers: @headers
+    end
+    assert_response :bad_request
+    json = JSON.parse(response.body)
+    assert_equal 'unsupported_filter', json['error_code']
+    assert_equal 'Unsupported filter: link_id contains', json['error']
+    assert_analytics_schema(:error_with_code, json)
+  end
+
+  test 'key_metrics: an integer chip without a value returns 400 unsupported_filter' do
+    Clickhouse.stub(:read_enabled?, true) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/key-metrics",
+          params: { filters: '[{"field":"link_id","operator":"is","value":null}]' },
+          headers: @headers
+    end
+    assert_response :bad_request
+    assert_equal 'unsupported_filter', JSON.parse(response.body)['error_code']
+  end
+
+  test 'key_metrics: platform-only chip over 90 days is still served' do
+    fake = ->(*) { { metrics: {}, unsupported_metrics: [] } }
+    with_ch_stub(::Analytics::OverviewStatsService, :key_metrics, fake) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/key-metrics",
+          params: { start_date: (Date.current - 120).to_s, end_date: Date.current.to_s,
+                    filters: '[{"field":"platform","operator":"is","value":"ios"}]' },
+          headers: @headers
+    end
+    assert_response :ok
   end
 
   # ── GET /overview/key-metrics/series ─────────────────────────────────
@@ -112,6 +174,23 @@ class AnalyticsOverviewTest < ActionDispatch::IntegrationTest
     assert_equal 'link_views', captured_args[1][:metric]
     assert_equal Date.parse('2026-04-01'), captured_args[1][:start_date]
     assert_equal 'ios', captured_args[1][:platform]
+  end
+
+  test 'key_metric_series: accepts the revenue metric' do
+    captured = nil
+    fake = lambda { |*_args, **kwargs|
+      captured = kwargs[:metric]
+      { metric: 'revenue', points: [{ date: '2026-04-01', value: 1200 }] }
+    }
+
+    with_ch_stub(::Analytics::OverviewStatsService, :key_metric_series, fake) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/key-metrics/series",
+          params: { metric: 'revenue', start_date: '2026-04-01', end_date: '2026-04-01' }, headers: @headers
+    end
+
+    assert_response :ok
+    assert_equal 'revenue', captured
+    assert_equal 1200, JSON.parse(response.body)['points'][0]['value']
   end
 
   test 'key_metric_series: invalid metric returns 400' do
@@ -144,6 +223,58 @@ class AnalyticsOverviewTest < ActionDispatch::IntegrationTest
     assert_response :ok
     json = assert_analytics_schema(:overview_key_metric_series)
     assert_each_analytics_item(:series_point, json['points'])
+  end
+
+  test 'key_metric_series: serializes the unsupported flag' do
+    result = { metric: 'revenue', points: [], unsupported: true }
+
+    with_ch_stub(::Analytics::OverviewStatsService, :key_metric_series, result) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/key-metrics/series",
+          params: { metric: 'revenue' },
+          headers: @headers
+    end
+
+    assert_response :ok
+    assert_equal true, assert_analytics_schema(:overview_key_metric_series)['unsupported']
+  end
+
+  test 'key_metric_series: forwards filters and granularity to service' do
+    captured = nil
+    fake = lambda { |*args, **kw| 
+      captured = [args, kw]
+      { metric: 'installs', points: [] }
+    }
+
+    with_ch_stub(::Analytics::OverviewStatsService, :key_metric_series, fake) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/key-metrics/series",
+          params: { metric: 'installs', granularity: 'week',
+                    filters: '[{"field":"os","operator":"is","value":"iOS 18"}]' },
+          headers: @headers
+    end
+
+    assert_response :ok
+    assert_equal 'week', captured[1][:granularity]
+    assert_equal '[{"field":"os","operator":"is","value":"iOS 18"}]', captured[1][:filters]
+  end
+
+  test 'key_metric_series: unsupported chip returns 400 unsupported_filter' do
+    Clickhouse.stub(:read_enabled?, true) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/key-metrics/series",
+          params: { metric: 'installs', filters: '[{"field":"link_id","operator":"contains","value":"x"}]' },
+          headers: @headers
+    end
+    assert_response :bad_request
+    json = JSON.parse(response.body)
+    assert_equal 'unsupported_filter', json['error_code']
+    assert_analytics_schema(:error_with_code, json)
+  end
+
+  test 'key_metric_series: invalid granularity returns 400' do
+    Clickhouse.stub(:read_enabled?, true) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/key-metrics/series",
+          params: { metric: 'installs', granularity: 'hour' }, headers: @headers
+    end
+    assert_response :bad_request
   end
 
   # ── GET /overview/versions ───────────────────────────────────────────
@@ -217,6 +348,61 @@ class AnalyticsOverviewTest < ActionDispatch::IntegrationTest
     assert_response :ok
     json = JSON.parse(response.body)
     assert_equal canary, json, 'Controller should pass service result through without modification'
+  end
+
+  test 'user_trends: forwards filters and granularity to service' do
+    captured = nil
+    fake = lambda { |*args, **kw| 
+      captured = [args, kw]
+      { points: [] }
+    }
+
+    with_ch_stub(::Analytics::OverviewStatsService, :user_trends, fake) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/trends/users",
+          params: { granularity: 'month', filters: '[{"field":"country","operator":"is","value":"RO"}]' },
+          headers: @headers
+    end
+
+    assert_response :ok
+    assert_equal 'month', captured[1][:granularity]
+    assert_equal '[{"field":"country","operator":"is","value":"RO"}]', captured[1][:filters]
+  end
+
+  test 'user_trends: unsupported chip returns 400 unsupported_filter' do
+    Clickhouse.stub(:read_enabled?, true) do
+      get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/trends/users",
+          params: { filters: '[{"field":"link_id","operator":"contains","value":"x"}]' },
+          headers: @headers
+    end
+    assert_response :bad_request
+    json = JSON.parse(response.body)
+    assert_equal 'unsupported_filter', json['error_code']
+    assert_analytics_schema(:error_with_code, json)
+  end
+
+  test 'user_trends: heavy filter whose previous period enters cold storage returns 422' do
+    policy = Struct.new(:queryable_cutoff_date, :cold_cutoff_date, :queryable_days, :hot_days)
+                   .new(Date.current - 400, Date.current - 100, 400, 100)
+    # minitest-mock has no stub_any_instance; swap the method on the class and restore it after.
+    Api::V1::Analytics::OverviewController.class_eval { alias_method :__orig_retention_policy, :retention_policy }
+    Api::V1::Analytics::OverviewController.send(:define_method, :retention_policy) { policy }
+    begin
+      Clickhouse.stub(:read_enabled?, true) do
+        get "#{API_PREFIX}/projects/#{@project.id}/analytics/overview/trends/users",
+            params: { start_date: (Date.current - 60).to_s, end_date: Date.current.to_s,
+                      filters: '[{"field":"country","operator":"is_not","value":"RO"}]' },
+            headers: @headers
+      end
+      assert_response :unprocessable_entity
+      assert_equal 'heavy_filter_in_cold', JSON.parse(response.body)['error_code']
+      assert_includes JSON.parse(response.body)['error'], 'last 100 days'
+    ensure
+      Api::V1::Analytics::OverviewController.class_eval do
+        remove_method :retention_policy
+        alias_method :retention_policy, :__orig_retention_policy
+        remove_method :__orig_retention_policy
+      end
+    end
   end
 
   # ── GET /overview/sources/breakdown ──────────────────────────────────

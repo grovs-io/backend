@@ -66,6 +66,43 @@ class SidekiqSchedulerConfigTest < ActiveSupport::TestCase
     assert_operator interval, :<=, 30.minutes, "Stripe has no invoice-time re-push; this bounds the undercount"
   end
 
+  test "every scheduled class exists in this edition and is a Sidekiq job" do
+    names = scheduler_config.fetch(:scheduler).fetch("schedule").values.map { |config| config.fetch("class") }.uniq
+    missing = names.reject do |name|
+      klass = name.safe_constantize
+      klass && (klass.include?(Sidekiq::Job) || klass < ActiveJob::Base)
+    end
+    assert_empty missing, "a scheduled class missing from this edition enqueues a NameError on every run"
+  end
+
+  test "event stream schedules follow the edition and land on a serviced queue" do
+    entries = scheduler_config.fetch(:scheduler).fetch("schedule").values
+    names = entries.map { |config| config.fetch("class") }
+    assert_equal Grovs.ee?, names.include?("EventStreamTickJob")
+    assert_equal Grovs.ee?, names.include?("EgressProjectsReconcileJob")
+    return unless Grovs.ee?
+
+    # These only enqueue; a deployment without an egress worker must still run them.
+    entries.select { |config| config.fetch("class").in?(%w[EventStreamTickJob EgressProjectsReconcileJob]) }.each do |entry|
+      assert_includes serviced_maintenance_queues, entry.fetch("queue")
+    end
+  end
+
+  test "GROVS_EE=true without ee/app schedules no EE job, as in the Community image" do
+    source = Rails.root.join("config/sidekiq_scheduler.yml").read
+    previous = ENV["GROVS_EE"]
+    ENV["GROVS_EE"] = "true"
+    schedule = Dir.mktmpdir do |dir|
+      Dir.chdir(dir) { YAML.safe_load(ERB.new(source).result, permitted_classes: [Symbol], aliases: true) }
+    end.fetch(:scheduler).fetch("schedule")
+    classes = schedule.values.map { |config| config.fetch("class") }
+
+    assert_includes classes, "DisableQuotasJob"
+    assert_empty classes & %w[EventStreamTickJob EgressProjectsReconcileJob SegmentSnapshotTickJob PushCampaignTickJob PushCampaignPurgeJob]
+  ensure
+    ENV["GROVS_EE"] = previous
+  end
+
   private
 
   def interval_seconds(cron)
@@ -89,5 +126,28 @@ class SidekiqSchedulerConfigTest < ActiveSupport::TestCase
     )
 
     config.fetch(:queues).map { |queue| Array(queue).first }
+  end
+
+  test "push campaign purge is scheduled nightly on maintenance in EE only" do
+    schedule = scheduler_config.fetch(:scheduler).fetch("schedule")
+    entry = schedule.values.find { |config| config.fetch("class") == "PushCampaignPurgeJob" }
+    if Grovs.ee?
+      assert entry, "PushCampaignPurgeJob must be scheduled"
+      assert_equal "maintenance", entry.fetch("queue")
+    else
+      assert_nil entry
+    end
+  end
+
+  test "push campaign tick is scheduled every minute on maintenance in EE only" do
+    schedule = scheduler_config.fetch(:scheduler).fetch("schedule")
+    entry = schedule.values.find { |config| config.fetch("class") == "PushCampaignTickJob" }
+    if Grovs.ee?
+      assert entry, "PushCampaignTickJob must be scheduled"
+      assert_equal "maintenance", entry.fetch("queue")
+      assert_equal "* * * * *", entry.fetch("cron")
+    else
+      assert_nil entry
+    end
   end
 end

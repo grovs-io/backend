@@ -299,6 +299,95 @@ class Analytics::OverviewKeyMetricsTest < ActiveSupport::TestCase
     assert_equal 0.0, metrics[:returning_rate]
   end
 
+  test 'filters beyond platform switch to raw events and scope every counter' do
+    in_range = (@now - 1.hour).utc.strftime('%Y-%m-%d %H:%M:%S.%3N')
+    insert_ch_events([
+      { event_id: 'f_ro_install', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 41_001, platform: 'ios', country: 'RO', created_at: in_range },
+      { event_id: 'f_ro_view', project_id: @project.id, event_type: Grovs::Events::VIEW, link_id: 7,
+        visitor_id: 41_001, platform: 'ios', country: 'RO', created_at: in_range },
+      { event_id: 'f_de_install', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 7,
+        visitor_id: 41_002, platform: 'ios', country: 'DE', created_at: in_range }
+    ])
+
+    result = Analytics::OverviewStatsService.key_metrics(
+      @project.id, start_date: Date.current - 7, end_date: Date.current,
+      filters: '[{"field":"country","operator":"is","value":"RO"}]'
+    )
+    m = result[:metrics]
+
+    assert_equal 1, m[:views]
+    assert_equal 1, m[:link_views]
+    assert_equal 1, m[:installs]
+    assert_equal 0, m[:link_driven_installs]
+    assert_equal 1, m[:organic_installs]
+    assert_equal 1, m[:total_users]
+    assert_equal 1, m[:new_users]
+    assert_equal 0, m[:returning_users]
+    assert_equal 0, m[:revenue]
+    assert_equal 0.0, m[:arpu]
+    assert_equal %w[revenue units_sold cancellations first_time_purchases arpu arppu], result[:unsupported_metrics]
+  end
+
+  test 'a platform-is chip keeps the rollup path and matches the platform param' do
+    in_range = (@now - 1.hour).utc.strftime('%Y-%m-%d %H:%M:%S.%3N')
+    insert_ch_events([
+      { event_id: 'p_ios', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 42_001, platform: 'ios', created_at: in_range },
+      { event_id: 'p_android', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 42_002, platform: 'android', created_at: in_range }
+    ])
+    args = { start_date: Date.current - 7, end_date: Date.current }
+
+    via_chip = Analytics::OverviewStatsService.key_metrics(
+      @project.id, **args, filters: '[{"field":"platform","operator":"is","value":"ios"}]'
+    )
+    via_param = Analytics::OverviewStatsService.key_metrics(@project.id, **args, platform: 'ios')
+
+    assert_equal [], via_chip[:unsupported_metrics]
+    assert_equal via_param[:metrics], via_chip[:metrics]
+    assert_equal 1, via_chip[:metrics][:installs]
+  end
+
+  test 'raw path scopes visitor history by the simple platform chip' do
+    prior = (@now - 60.days).utc.strftime('%Y-%m-%d %H:%M:%S.%3N')
+    in_range = (@now - 1.hour).utc.strftime('%Y-%m-%d %H:%M:%S.%3N')
+    insert_ch_events([
+      { event_id: 'h_prior', project_id: @project.id, event_type: Grovs::Events::APP_OPEN,
+        visitor_id: 43_001, platform: 'android', country: 'RO', created_at: prior },
+      { event_id: 'h_install', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 43_001, platform: 'ios', country: 'RO', created_at: in_range }
+    ])
+    filters = '[{"field":"country","operator":"is","value":"RO"},{"field":"platform","operator":"is","value":"ios"}]'
+
+    m = Analytics::OverviewStatsService.key_metrics(
+      @project.id, start_date: Date.current - 7, end_date: Date.current, filters: filters
+    )[:metrics]
+
+    assert_equal 1, m[:total_users]
+    assert_equal 1, m[:new_users], 'no prior iOS history → new on iOS, same rule as the rollup path'
+    assert_equal 0, m[:returning_users]
+  end
+
+  test 'raw path resolves merged visitors like visitor_daily does' do
+    in_range = (@now - 1.hour).utc.strftime('%Y-%m-%d %H:%M:%S.%3N')
+    Clickhouse.with do |conn|
+      conn.insert('visitor_identity_map', [{ project_id: @project.id, from_visitor_id: 44_001, to_visitor_id: 44_002,
+                                             updated_at: in_range }])
+    end
+    insert_ch_events([
+      { event_id: 'm_install', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 44_001, platform: 'ios', country: 'RO', created_at: in_range }
+    ])
+    m = Analytics::OverviewStatsService.key_metrics(
+      @project.id, start_date: Date.current - 7, end_date: Date.current,
+      filters: '[{"field":"country","operator":"is","value":"RO"}]'
+    )[:metrics]
+
+    assert_equal 1, m[:total_users]
+    assert_equal 1, m[:new_users]
+  end
+
   private
 
   test 'a web platform filter counts desktop-family visitors, as PG does' do
@@ -396,5 +485,71 @@ class Analytics::OverviewKeyMetricsTest < ActiveSupport::TestCase
       { event_id: 'km_foreign', project_id: 99_999, event_type: Grovs::Events::INSTALL, link_id: 501,
         visitor_id: 31_001, platform: 'ios', created_at: in_range }
     ])
+  end
+
+  def at_noon(days_ago)
+    ((Date.current - days_ago).to_time(:utc) + 12.hours).strftime('%Y-%m-%d %H:%M:%S.%3N')
+  end
+
+  test 'series: week granularity sums days into range-relative windows' do
+    insert_ch_events([
+      { event_id: 's_w1', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 44_001, platform: 'ios', created_at: at_noon(8) },
+      { event_id: 's_w2a', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 44_002, platform: 'ios', created_at: at_noon(1) },
+      { event_id: 's_w2b', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 44_003, platform: 'ios', created_at: at_noon(1) }
+    ])
+
+    points = Analytics::OverviewStatsService.key_metric_series(
+      @project.id, metric: 'installs', start_date: Date.current - 13, end_date: Date.current, granularity: 'week'
+    )[:points]
+
+    assert_equal 2, points.size
+    assert_equal (Date.current - 13).to_s, points[0][:date]
+    assert_equal 1, points[0][:value]
+    assert_equal (Date.current - 6).to_s, points[1][:date]
+    assert_equal 2, points[1][:value]
+  end
+
+  test 'series: day granularity stays daily and zero-filled' do
+    insert_ch_events([
+      { event_id: 's_d1', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 44_010, platform: 'ios', created_at: at_noon(1) }
+    ])
+    points = Analytics::OverviewStatsService.key_metric_series(
+      @project.id, metric: 'installs', start_date: Date.current - 2, end_date: Date.current
+    )[:points]
+    assert_equal [{ date: (Date.current - 2).to_s, value: 0 },
+                  { date: (Date.current - 1).to_s, value: 1 },
+                  { date: Date.current.to_s, value: 0 }], points
+  end
+
+  test 'series: country filter uses raw events and derives organic installs' do
+    insert_ch_events([
+      { event_id: 's_ro_org', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 44_020, platform: 'ios', country: 'RO', created_at: at_noon(1) },
+      { event_id: 's_ro_link', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 9,
+        visitor_id: 44_021, platform: 'ios', country: 'RO', created_at: at_noon(1) },
+      { event_id: 's_de_org', project_id: @project.id, event_type: Grovs::Events::INSTALL, link_id: 0,
+        visitor_id: 44_022, platform: 'ios', country: 'DE', created_at: at_noon(1) }
+    ])
+    filters = '[{"field":"country","operator":"is","value":"RO"}]'
+    args = { start_date: Date.current - 1, end_date: Date.current, filters: filters }
+
+    installs = Analytics::OverviewStatsService.key_metric_series(@project.id, metric: 'installs', **args)[:points]
+    organic = Analytics::OverviewStatsService.key_metric_series(@project.id, metric: 'organic_installs', **args)[:points]
+    link = Analytics::OverviewStatsService.key_metric_series(@project.id, metric: 'link_driven_installs', **args)[:points]
+
+    assert_equal 2, installs[0][:value]
+    assert_equal 1, organic[0][:value]
+    assert_equal 1, link[0][:value]
+  end
+
+  test 'series: unknown granularity falls back to day' do
+    points = Analytics::OverviewStatsService.key_metric_series(
+      @project.id, metric: 'installs', start_date: Date.current - 2, end_date: Date.current, granularity: 'decade'
+    )[:points]
+    assert_equal 3, points.size
   end
 end

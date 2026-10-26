@@ -1,3 +1,5 @@
+<%# Same rule as Grovs.ee?: read before Rails boots, from the app root. The CE image has no ee/app even with GROVS_EE=true. %>
+<% ee = ENV.fetch("GROVS_EE", "false") == "true" && File.directory?("ee/app") %>
 :concurrency: 1
 :queues:
   - scheduler # never used by any job; this process only enqueues
@@ -70,6 +72,13 @@
       cron: "* * * * *"  # every minute — replays PG-spilled events into CH (primary mode)
       class: "DrainClickhouseSpillJob"
       queue: maintenance
+    # EE-only class: the CE image deletes ee/, so this entry must disappear with it.
+<% if ee %>
+    event_stream_tick:
+      cron: "* * * * *"  # every minute — enqueues one delivery job per due event destination (EE)
+      class: "EventStreamTickJob"
+      queue: maintenance
+<% end %>
     reconcile_link_dimensions:
       cron: "23 * * * *"  # hourly — repairs dropped dimension writes and tombstones deleted links
       class: "ReconcileLinkDimensionsJob"
@@ -78,6 +87,13 @@
       cron: "8,18,28,38,48,58 * * * *"  # every 10 min — rebuilds exact CH rollups from canonical (dual-run, parity-checked)
       class: "RebuildClickhouseRollupsJob"
       queue: maintenance
+    # EE-only class: the CE image deletes ee/, so this entry must disappear with it.
+<% if ee %>
+    egress_projects_reconcile:
+      cron: "20 2 * * *"  # daily — repairs the ClickHouse egress allow-list from event_destinations (EE)
+      class: "EgressProjectsReconcileJob"
+      queue: maintenance
+<% end %>
     rebuild_clickhouse_rollups_catchup:
       cron: "40 1 * * *"  # daily — rebuilds dirty partitions older than the watermark window (late events)
       class: "RebuildClickhouseRollupsJob"
@@ -88,3 +104,38 @@
       class: "RebuildClickhouseRollupsJob"
       args: ["current_month"]
       queue: maintenance
+    # EE-only class: the CE image deletes ee/, so this entry must disappear with it.
+<% if ee %>
+    segment_snapshot_tick:
+      cron: "0 4 * * *"  # daily — enqueues one short size-estimate job per active segment (EE)
+      class: "SegmentSnapshotTickJob"
+      queue: maintenance
+    push_campaign_tick:
+      cron: "* * * * *"  # every minute — enqueue-only: revives sending campaigns, resets stale claims (EE)
+      class: "PushCampaignTickJob"
+      queue: maintenance
+    in_app_campaign_tick:
+      cron: "* * * * *"  # every minute — starts and ends in-app campaigns on time; two updates (EE)
+      class: "InAppCampaignTickJob"
+      queue: maintenance
+    in_app_membership_refresh:
+      cron: "7,22,37,52 * * * *"  # every 15 minutes — one refresh per segment an in-app campaign targets (EE)
+      class: "InAppMembershipRefreshJob"
+      queue: egress_exports
+    in_app_membership_cleanup:
+      cron: "50 2 * * *"  # daily — memberships no campaign targets any more; views of campaigns ended > 30 days ago (EE)
+      class: "InAppMembershipCleanupJob"
+      queue: maintenance
+    journey_tick:
+      cron: "* * * * *"  # every minute — enqueue-only: step jobs for journeys with due people, stale claims released (EE)
+      class: "JourneyTickJob"
+      queue: maintenance
+    journey_prune:
+      cron: "45 3 * * *"  # daily — rows of finished journeys, and after_days leavers already free to re-enter (EE)
+      class: "JourneyPruneJob"
+      queue: maintenance
+    push_campaign_purge:
+      cron: "30 3 * * *"  # daily — deliveries of campaigns finished > 30 days ago, settled rpush rows > 7 days (EE)
+      class: "PushCampaignPurgeJob"
+      queue: maintenance
+<% end %>

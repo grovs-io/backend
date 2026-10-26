@@ -14,9 +14,11 @@ class Api::V1::Sdk::AuthController < Api::V1::Sdk::BaseController
     )
     @visitor = DeviceService.authenticate_visitor(request, @project, attrs)
     @device = @visitor.device
+    stamp_web_sdk_last_seen if @platform == Grovs::Platforms::WEB
 
     render json: {linksquared: @visitor.hashid, uri_scheme: @project.instance.uri_scheme, sdk_identifier: @visitor.sdk_identifier,
-sdk_attributes: @visitor.sdk_attributes, push_token: @device.push_token}
+sdk_attributes: @visitor.sdk_attributes, push_token: @device.push_token,
+has_smart_banners: has_smart_banners?}
   end
 
   def device_for_vendor
@@ -29,6 +31,27 @@ sdk_attributes: @visitor.sdk_attributes, push_token: @device.push_token}
   end
 
   private
+
+  # Banners must never break web auth; any failure here reads as "no banners".
+  def has_smart_banners?
+    return false unless @platform == Grovs::Platforms::WEB
+
+    SmartBanner.sdk_payload_for(@project).any?
+  rescue StandardError => e
+    Rails.logger.warn("has_smart_banners failed for project #{@project.id}: #{e.message}")
+    false
+  end
+
+  # Redis NX caps it at one DB write per project per hour; never raises into the auth response.
+  def stamp_web_sdk_last_seen
+    return unless REDIS.set("smart_banners:web_sdk_seen:#{@project.id}", "1", nx: true, ex: 3600)
+
+    Project.where(id: @project.id)
+           .where("web_sdk_last_seen_at IS NULL OR web_sdk_last_seen_at < ?", 1.hour.ago)
+           .update_all(web_sdk_last_seen_at: Time.current)
+  rescue StandardError => e
+    Rails.logger.warn("stamp_web_sdk_last_seen failed for project #{@project.id}: #{e.message}")
+  end
 
   # devices.updated_at is global, so it only answers once a Visitor proves this device was here.
   def last_seen_for(device)

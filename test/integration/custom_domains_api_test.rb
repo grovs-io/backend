@@ -132,11 +132,16 @@ source: "saas")
   end
 
   test "throttle fails open when Redis is unavailable (admin not locked out of cleanup)" do
-    REDIS.stub(:with, ->(*) { raise Redis::CannotConnectError, "down" }) do
+    headers = doorkeeper_headers_for(users(:admin_user))
+    down = Object.new.tap { |r| r.define_singleton_method(:with) { |*| raise Redis::CannotConnectError, "down" } }
+    redis = REDIS
+    begin
+      silence_warnings { Object.const_set(:REDIS, down) }
       CloudflareCustomHostnameService.stub(:create, { success: true, cf_id: "cf_fo", status: "pending", ssl_status: "pending_validation" }) do
-        post "#{API_PREFIX}/projects/#{projects(:one).id}/custom_domain",
-             params: { hostname: "links.failopen.com" }, headers: doorkeeper_headers_for(users(:admin_user))
+        post "#{API_PREFIX}/projects/#{projects(:one).id}/custom_domain", params: { hostname: "links.failopen.com" }, headers: headers
       end
+    ensure
+      silence_warnings { Object.const_set(:REDIS, redis) }
     end
     assert_response :created, "Redis outage must NOT lock admins out of custom-domain management"
   end

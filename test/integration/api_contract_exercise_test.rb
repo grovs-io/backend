@@ -70,7 +70,7 @@ class ApiContractExerciseTest < ActionDispatch::IntegrationTest
 
   def headers_for(action)
     host =
-      if action.start_with?("Api::V1::Sdk::", "Api::V1::ServerSdkController")
+      if action.start_with?("Api::V1::Sdk::", "Api::V1::ServerSdkController", "Api::V1::Server::")
         sdk_host
       elsif action.start_with?("Api::V1::Mcp::")
         "mcp.sqd.link"
@@ -116,7 +116,7 @@ class ApiContractExerciseTest < ActionDispatch::IntegrationTest
     when "object"
       required = schema.fetch("required", [])
       properties = schema.fetch("properties", {})
-      required.index_with { |key| sample_for(properties.fetch(key, {})) }
+      required.index_with { |key| sample_for_required_value(properties.fetch(key, {})) }
     when "array"
       []
     when "integer"
@@ -136,5 +136,17 @@ class ApiContractExerciseTest < ActionDispatch::IntegrationTest
     return schema.fetch("enum").first if schema["enum"]
 
     "contract-smoke"
+  end
+
+  # An all-optional object samples to {}, which form-encoding drops; populate one property so it survives.
+  def sample_for_required_value(schema)
+    value = sample_for(schema)
+    return value unless value == {} && Array(schema["type"]).first == "object"
+
+    properties = schema.fetch("properties", {})
+    return value if properties.empty?
+
+    key = properties.keys.first
+    { key => sample_for(properties.fetch(key)) }
   end
 end

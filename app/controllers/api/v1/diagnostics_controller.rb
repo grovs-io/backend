@@ -1,6 +1,7 @@
 class Api::V1::DiagnosticsController < ApplicationController
   skip_before_action :verify_authenticity_token, raise: false
   before_action :authenticate_diagnostics_api
+  before_action :require_test_endpoints, only: %i[test_exception test_logs test_diagnostics]
 
   # Test endpoint for exceptions - triggers an error for Signoz exception tracking
   # Usage: GET/POST /api/v1/diagnostics/test_exception
@@ -131,11 +132,8 @@ class Api::V1::DiagnosticsController < ApplicationController
 
     render json: results
   rescue StandardError => e
-    render json: {
-      error: e.message,
-      backtrace: e.backtrace.first(5),
-      timestamp: Time.current.iso8601
-    }, status: :internal_server_error
+    Rails.logger.error("[diagnostics] #{e.class}: #{e.message}\n#{e.backtrace.first(5).join("\n")}")
+    render json: { error: e.message, timestamp: Time.current.iso8601 }, status: :internal_server_error
   end
 
   private
@@ -318,6 +316,13 @@ class Api::V1::DiagnosticsController < ApplicationController
     { up: true, disk_free_pct: disk&.to_f }
   rescue StandardError => e
     { up: false, disk_free_pct: nil, error: e.class.name }
+  end
+
+  # The test_* actions are development instrumentation; production deployments keep them off.
+  def require_test_endpoints
+    return if ENV['DIAGNOSTICS_TEST_ENDPOINTS'] == 'true'
+
+    render json: { error: 'Not found' }, status: :not_found
   end
 
   def authenticate_diagnostics_api

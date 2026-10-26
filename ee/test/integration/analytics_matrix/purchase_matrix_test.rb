@@ -59,7 +59,7 @@ class PurchaseMatrixTest < ActiveSupport::TestCase
     Clickhouse.with do |c|
       c.select_one(
         "SELECT sum(total_revenue_cents) AS rev, sum(units) AS units, " \
-        "uniq(visitor_id) AS payers FROM purchase_project_daily WHERE #{where}"
+        "uniq(visitor_id) AS payers FROM purchase_project_daily FINAL WHERE #{where}"
       )
     end
   end
@@ -113,11 +113,16 @@ class PurchaseMatrixTest < ActiveSupport::TestCase
   # Independent oracle tallies GROSS per event_type/product (what CH sums) and
   # NET revenue (signed revenue_delta — what DailyProjectMetric sums).
   SCENARIOS = [
-    { type: Grovs::Purchases::EVENT_BUY,             ptype: Grovs::Purchases::TYPE_SUBSCRIPTION, store: Grovs::Webhooks::APPLE,  price: 1000, product: "p.annual", device: :ios_device },
-    { type: Grovs::Purchases::EVENT_REFUND,          ptype: Grovs::Purchases::TYPE_ONE_TIME,     store: Grovs::Webhooks::GOOGLE, price: 300,  product: "p.coins",  device: :android_device },
-    { type: Grovs::Purchases::EVENT_REFUND_REVERSED, ptype: Grovs::Purchases::TYPE_SUBSCRIPTION, store: Grovs::Webhooks::APPLE,  price: 500,  product: "p.annual", device: :ios_device },
-    { type: Grovs::Purchases::EVENT_CANCEL,          ptype: Grovs::Purchases::TYPE_SUBSCRIPTION, store: Grovs::Webhooks::APPLE,  price: 700,  product: "p.annual", device: :ios_device },
-    { type: Grovs::Purchases::EVENT_CANCEL,          ptype: Grovs::Purchases::TYPE_ONE_TIME,     store: Grovs::Webhooks::GOOGLE, price: 200,  product: "p.coins",  device: nil }
+    { type: Grovs::Purchases::EVENT_BUY, ptype: Grovs::Purchases::TYPE_SUBSCRIPTION,
+      store: Grovs::Webhooks::APPLE, price: 1000, product: "p.annual", device: :ios_device },
+    { type: Grovs::Purchases::EVENT_REFUND, ptype: Grovs::Purchases::TYPE_ONE_TIME,
+      store: Grovs::Webhooks::GOOGLE, price: 300, product: "p.coins", device: :android_device },
+    { type: Grovs::Purchases::EVENT_REFUND_REVERSED, ptype: Grovs::Purchases::TYPE_SUBSCRIPTION,
+      store: Grovs::Webhooks::APPLE, price: 500, product: "p.annual", device: :ios_device },
+    { type: Grovs::Purchases::EVENT_CANCEL, ptype: Grovs::Purchases::TYPE_SUBSCRIPTION,
+      store: Grovs::Webhooks::APPLE, price: 700, product: "p.annual", device: :ios_device },
+    { type: Grovs::Purchases::EVENT_CANCEL, ptype: Grovs::Purchases::TYPE_ONE_TIME,
+      store: Grovs::Webhooks::GOOGLE, price: 200, product: "p.coins", device: nil }
   ].freeze
 
   test "the purchase matrix reconciles gross CH rollups and net PG revenue" do
@@ -212,9 +217,7 @@ class PurchaseMatrixTest < ActiveSupport::TestCase
     assert_equal 2, prd["payers"].to_i, "2 DISTINCT paying visitors (uniq, not count)"
   end
 
-  # The processed-guard prevents double-processing, so only one rollup row exists
-  # here (non-FINAL read). The signed rollups are also ReplacingMergeTree keyed by
-  # transaction_id, so a duplicate dual-write would additionally dedup under FINAL.
+  # Read under FINAL: re-emits leave superseded rollup versions until merged.
   test "replaying a processed event does not double-count PG or the rollups" do
     event = create_event(usd_price_cents: 800)
     ProcessPurchaseEventJob.new.perform(event.id)
@@ -245,7 +248,7 @@ class PurchaseMatrixTest < ActiveSupport::TestCase
     assert_equal 100, project_daily_purchase("buy")["rev"].to_i, "p1 rollup sees only its own 100"
     p2_rev = Clickhouse.with do |c|
       c.select_value(
-        "SELECT sum(total_revenue_cents) FROM purchase_project_daily " \
+        "SELECT sum(total_revenue_cents) FROM purchase_project_daily FINAL " \
         "WHERE project_id = #{p2.id} AND event_type = 'buy' AND event_date = '#{PURCHASE_DATE.to_date}'"
       )
     end

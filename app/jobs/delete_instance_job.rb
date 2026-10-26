@@ -6,6 +6,28 @@ class DeleteInstanceJob
 
   BATCH_SIZE     = 50_000
   SUB_BATCH_SIZE = 10_000
+  # At most this many run at once, so a burst of deletions never holds every maintenance thread from the ticks.
+  SLOT_KEY = "delete_instance:running".freeze
+  STATEMENT_TIMEOUT = 15.minutes
+  # Renewed after the job's SQL statements; longer than one statement may run, so it cannot lapse mid-statement.
+  LEASE = (STATEMENT_TIMEOUT * 2).to_i
+  RENEW_EVERY = 60
+  RETRY_IN = 30
+  ACQUIRE_LUA = <<~LUA.freeze
+    redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+    if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then return 0 end
+    redis.call('ZADD', KEYS[1], ARGV[3], ARGV[4])
+    redis.call('EXPIRE', KEYS[1], ARGV[5])
+    return 1
+  LUA
+
+  def self.slots(raw = ENV.fetch("DELETE_INSTANCE_CONCURRENCY", "2")) = [Integer(raw), 1].max
+
+  def self.acquire_slot(token)
+    now = Time.now.to_f
+    argv = [now, slots, now + LEASE, token, LEASE].map(&:to_s)
+    REDIS.with { |c| c.eval(ACQUIRE_LUA, keys: [SLOT_KEY], argv: argv) }.to_i == 1
+  end
 
   def perform(instance_id)
     instance = Instance.find_by(id: instance_id)
@@ -14,6 +36,22 @@ class DeleteInstanceJob
       return
     end
 
+    @slot = SecureRandom.hex(16)
+    return self.class.perform_in(RETRY_IN, instance_id) unless self.class.acquire_slot(@slot)
+
+    owner = Thread.current
+    renewer = ActiveSupport::Notifications.subscribe("sql.active_record") { renew_slot if Thread.current == owner }
+    begin
+      delete_instance(instance)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(renewer)
+      REDIS.with { |c| c.zrem(SLOT_KEY, @slot) }
+    end
+  end
+
+  private
+
+  def delete_instance(instance)
     # Entitlement is decided now; the row is written only after the teardown succeeds (the Instance row is gone by then).
     audit_entitled = instance.audit_log_enabled?
     audit_target = Audit.target_for(instance)
@@ -40,6 +78,9 @@ class DeleteInstanceJob
     remove_purchase_events_for_projects(project_ids)
     log "purchase events removed"
 
+    remove_event_stream_for_projects(project_ids) if defined?(EventDestination)
+    remove_segments_for_projects(project_ids) if defined?(Segment)
+
     # Visitor last visits (FK to links, visitors, projects — must go before all three)
     log "removing visitor last visits for projects"
     remove_visitor_last_visits_for_projects(project_ids)
@@ -51,6 +92,8 @@ class DeleteInstanceJob
     log "removing custom hostnames for projects"
     remove_custom_hostnames_for_projects(project_ids)
     log "custom hostnames removed"
+
+    remove_smart_banners_for_projects(project_ids)
 
     # Links (+ children) and domains
     log "removing links for projects"
@@ -97,10 +140,10 @@ class DeleteInstanceJob
     remove_daily_project_metrics_for_projects(project_ids)
     log "daily project metrics removed"
 
-    # Screen aliases (non-cascading FK to projects)
-    log "remove screen aliases for projects"
-    remove_screen_aliases_for_projects(project_ids)
-    log "screen aliases removed"
+    # Screen aliases and dashboards (non-cascading FKs to projects)
+    log "remove screen aliases and dashboards for projects"
+    remove_screen_aliases_and_dashboards_for_projects(project_ids)
+    log "screen aliases and dashboards removed"
 
     # Before the project rows go: a failed CH sweep must retry while the instance still exists.
     log "removing ClickHouse data for projects"
@@ -112,33 +155,80 @@ class DeleteInstanceJob
     Project.unscoped.where(id: project_ids).delete_all
     log "projects removed"
 
-    EnterpriseSubscription.unscoped.where(instance_id: instance.id).delete_all
-    log "enterprise subscriptions removed"
-
-    # FK-blocks instance.destroy!; subs before intents (subs reference intents).
-    StripeSubscription.unscoped.where(instance_id: instance.id).delete_all
-    StripePaymentIntent.unscoped.where(instance_id: instance.id).delete_all
-    log "stripe subscriptions and payment intents removed"
-
-    # Audit shares the destroy transaction: a failed audit rolls back so the Sidekiq retry still finds the row.
+    # Billing rows go with the audit: deleted earlier, a retry would read the instance as unentitled.
     ActiveRecord::Base.transaction do
+      EnterpriseSubscription.unscoped.where(instance_id: instance.id).delete_all
+      # FK-blocks instance.destroy!; subs before intents (subs reference intents).
+      StripeSubscription.unscoped.where(instance_id: instance.id).delete_all
+      StripePaymentIntent.unscoped.where(instance_id: instance.id).delete_all
       instance.destroy!
-      Audit.record(instance_id: instance_id, action: "instance.deleted", actor: AuditActor.system(self.class.name),
+      Audit.record(instance_id: instance.id, action: "instance.deleted", actor: AuditActor.system(self.class.name),
                         target: audit_target, entitled: audit_entitled)
     end
     log "instance #{instance.id} destroyed"
-    Rails.logger.warn(message: "audit.instance_deleted", instance_id: instance_id)
+    Rails.logger.warn(message: "audit.instance_deleted", instance_id: instance.id)
 
   rescue StandardError => e
     log "ERROR: #{e.class}: #{e.message}\n#{e.backtrace&.first(8)&.join("\n")}", level: :error
     raise
   end
 
-  private
+  def remove_in_app_for_projects(project_ids)
+    return unless defined?(InAppSetting) && defined?(SegmentMembership)
 
-  # -----------------------------
-  # Logging
-  # -----------------------------
+    InAppCampaign.where(project_id: project_ids).with_attached_media.find_each do |campaign|
+      [campaign.portrait_image, campaign.landscape_image].each { |image| image.purge if image.attached? }
+      campaign.media.each(&:purge)
+    end
+    # In batches first: left to the foreign key, every view would go in the one statement that deletes the campaigns.
+    InAppView.where(project_id: project_ids).in_batches(of: 10_000).delete_all if defined?(InAppView)
+    if defined?(Journey)
+      Journey.where(project_id: project_ids).with_attached_images.find_each { |journey| journey.images.each(&:purge) }
+      Journey.where(project_id: project_ids).delete_all
+    end
+    InAppCampaign.where(project_id: project_ids).delete_all
+    InAppSetting.where(project_id: project_ids).delete_all
+    InAppMemberships.delete_all_of(SegmentMembership.where(project_id: project_ids))
+  end
+
+  # Exports before segments: the export row's foreign key requires it.
+  def remove_segments_for_projects(project_ids)
+    SegmentExport.where(project_id: project_ids).find_each(&:destroy) if defined?(SegmentExport)
+    if defined?(PushCampaign)
+      campaigns = PushCampaign.where(project_id: project_ids)
+      campaigns.with_attached_image.find_each { |c| c.image.purge if c.image.attached? }
+      queued = PushDelivery.where(push_campaign_id: campaigns.select(:id)).where.not(rpush_notification_id: nil).select(:rpush_notification_id)
+      Rpush::Notification.where(id: queued, delivered: false, failed: false).delete_all
+      campaigns.delete_all
+    end
+    remove_in_app_for_projects(project_ids) if defined?(InAppCampaign)
+    Segment.where(project_id: project_ids).delete_all
+  end
+
+  def remove_event_stream_for_projects(project_ids)
+    log "removing event destinations and stream tokens"
+    EventDestination.where(project_id: project_ids).delete_all
+    EventStreamToken.where(project_id: project_ids).delete_all
+    project_ids.each do |pid|
+      EventStream::Outbox.disable_project!(pid)
+      EventStream::Outbox.purge_project!(pid)
+    rescue StandardError => e
+      log "outbox purge failed for #{pid}: #{e.message}", level: :warn
+    end
+  end
+
+  def renew_slot
+    return if @renewed_at && Time.now - @renewed_at < RENEW_EVERY
+
+    @renewed_at = Time.now
+
+    REDIS.with do |c|
+      c.multi do |m|
+        m.zadd(SLOT_KEY, Time.now.to_f + LEASE, @slot, xx: true)
+        m.expire(SLOT_KEY, LEASE)
+      end
+    end
+  end
 
   def log(msg, level: :info)
     Sidekiq.logger.public_send(level, "[DeleteInstanceJob] #{msg}")
@@ -158,7 +248,7 @@ class DeleteInstanceJob
   # we fail fast and the next deletion step retries.
   # 15min statement: cascading deletes (events, statistics, visitors) can touch
   # millions of rows per table for large tenants.
-  def with_local_timeouts(lock: "2s", statement: "15min")
+  def with_local_timeouts(lock: "2s", statement: "#{STATEMENT_TIMEOUT.in_minutes.to_i}min")
     raise ArgumentError, "invalid lock_timeout: #{lock}" unless lock.match?(VALID_TIMEOUT)
     raise ArgumentError, "invalid statement_timeout: #{statement}" unless statement.match?(VALID_TIMEOUT)
 
@@ -230,6 +320,7 @@ class DeleteInstanceJob
           SQL
           deleted = conn.exec_delete(sql, "BatchDelete")
           break if deleted.zero?
+
           # sleep(0.02) # optional throttle
         end
       end
@@ -241,17 +332,17 @@ class DeleteInstanceJob
   # -----------------------------
 
   def remove_notifications_for_projects(project_ids)
+    conn = ActiveRecord::Base.connection
+    # The legacy tables outlive their models by one release; their rows still belong to the instance.
+    return if project_ids.empty? || !conn.table_exists?(:notifications)
+
+    owned = "SELECT id FROM notifications WHERE project_id IN (#{project_ids.map { |id| Integer(id) }.join(', ')})"
     with_local_timeouts do
-      Notification.unscoped.where(project_id: project_ids).in_batches(of: BATCH_SIZE) do |batch|
-        ids = batch.pluck(:id)
-
-        ids.each_slice(SUB_BATCH_SIZE) do |slice|
-          NotificationTarget.unscoped.where(notification_id: slice).delete_all
-          NotificationMessage.unscoped.where(notification_id: slice).delete_all
-        end
-
-        batch.delete_all
-      end
+      conn.execute("DELETE FROM notification_targets WHERE notification_id IN (#{owned})")
+      # One row per visitor and message, so this is the table that can be large: it goes in pages.
+      page = "SELECT id FROM notification_messages WHERE notification_id IN (#{owned}) LIMIT #{BATCH_SIZE}"
+      nil until conn.exec_delete("DELETE FROM notification_messages WHERE id IN (#{page})").zero?
+      conn.execute("DELETE FROM notifications WHERE id IN (#{owned})")
     end
   end
 
@@ -309,6 +400,18 @@ class DeleteInstanceJob
     end
   end
 
+  def remove_smart_banners_for_projects(project_ids)
+    log "removing smart banners for projects"
+    banner_ids = SmartBanner.where(project_id: project_ids).pluck(:id)
+    unless banner_ids.empty?
+      with_local_timeouts do
+        SmartBannerLink.where(smart_banner_id: banner_ids).in_batches(of: BATCH_SIZE).delete_all
+        SmartBanner.where(id: banner_ids).delete_all
+      end
+    end
+    log "smart banners removed"
+  end
+
   def remove_links_for_projects(project_ids)
     domain_ids = Domain.where(project_id: project_ids).pluck(:id)
 
@@ -350,32 +453,37 @@ class DeleteInstanceJob
     end
   end
 
+  # delete_all skips the push configs' cleanup, which would leave their credentials live in rpush.
+  def remove_rpush_apps(ios_configuration_ids, android_configuration_ids)
+    names = IosPushConfiguration.unscoped.where(ios_configuration_id: ios_configuration_ids).pluck(:name)
+                                .flat_map { |name| ["#{name}-development", "#{name}-production"] }
+    names += AndroidPushConfiguration.unscoped.where(android_configuration_id: android_configuration_ids).pluck(:name)
+    Rpush::Client::ActiveRecord::App.where(name: names).find_each { |app| RpushService.remove_app(app) }
+  end
+
   def remove_applications_for_instance(instance_id)
     application_ids = Application.where(instance_id: instance_id).pluck(:id)
 
-    # iOS
     ios_configuration_ids = IosConfiguration.where(application_id: application_ids).pluck(:id)
+    android_configuration_ids = AndroidConfiguration.where(application_id: application_ids).pluck(:id)
+    remove_rpush_apps(ios_configuration_ids, android_configuration_ids)
     with_local_timeouts do
       IosPushConfiguration.unscoped.where(ios_configuration_id: ios_configuration_ids).delete_all
       IosServerApiKey.unscoped.where(ios_configuration_id: ios_configuration_ids).delete_all
       IosConfiguration.unscoped.where(application_id: application_ids).delete_all
     end
 
-    # Android
-    android_configuration_ids = AndroidConfiguration.where(application_id: application_ids).pluck(:id)
     with_local_timeouts do
       AndroidPushConfiguration.unscoped.where(android_configuration_id: android_configuration_ids).delete_all
       AndroidServerApiKey.unscoped.where(android_configuration_id: android_configuration_ids).delete_all
       AndroidConfiguration.unscoped.where(application_id: application_ids).delete_all
     end
 
-    # Desktop
     desktop_configuration_ids = DesktopConfiguration.where(application_id: application_ids).pluck(:id)
     with_local_timeouts do
       DesktopConfiguration.unscoped.where(id: desktop_configuration_ids).delete_all
     end
 
-    # Web
     web_configuration_ids = WebConfiguration.where(application_id: application_ids).pluck(:id)
     with_local_timeouts do
       WebConfigurationLinkedDomain.unscoped.where(web_configuration_id: web_configuration_ids).delete_all
@@ -423,9 +531,10 @@ class DeleteInstanceJob
     batch_delete_by(scope: scope, table_name: table, where_sql: where_sql, batch_size: BATCH_SIZE)
   end
 
-  def remove_screen_aliases_for_projects(project_ids)
+  def remove_screen_aliases_and_dashboards_for_projects(project_ids)
     with_local_timeouts do
       ScreenAlias.unscoped.where(project_id: project_ids).delete_all
+      Dashboard.unscoped.where(project_id: project_ids).delete_all
     end
   end
 

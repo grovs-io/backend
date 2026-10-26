@@ -16,7 +16,7 @@ module Analytics
     # field_column_expression recognises them and build_filter_clauses routes
     # them through INTEGER_FILTER_FIELDS for proper type handling.
     ALLOWED_FIELDS = %w[
-      event_type event_name screen_name platform app_version country city
+      event_type event_name screen_name platform app_version country city language
       device_model os os_version tracking_source tracking_medium tracking_campaign
       ads_platform sdk_identifier session_id visitor_id link_id campaign_id
     ].freeze
@@ -44,6 +44,10 @@ module Analytics
 
     # --- Public API ---
 
+    def self.filter_clauses(filters)
+      build_event_filters(filters)
+    end
+
     # Paginated event list with optional filters.
     # Returns { data: [...], next_cursor: String|nil, total_count: Integer|nil }
     # total_count is an Integer when include_count is requested and the count query
@@ -51,34 +55,29 @@ module Analytics
     # degraded (e.g. timed out / QueryTooHeavy) — rows are still returned.
     def self.list(project_id, start_date:, end_date:, cursor: nil, limit: DEFAULT_LIMIT,
                   sort_by: 'created_at', sort_order: 'desc', search: nil, filters: [],
-                  include_count: false)
+                  include_count: false, visitor_clause: nil)
       pid = Integer(project_id)
       limit = [[Integer(limit), 1].max, MAX_LIMIT].min
       sort_col = SORTABLE_COLUMNS.include?(sort_by) ? sort_by : 'created_at'
       sort_dir = sort_order == 'asc' ? 'ASC' : 'DESC'
 
       base_where_clauses = base_where(pid, start_date, end_date)
+      base_where_clauses << visitor_clause if visitor_clause
+      src = EventsSource.sql(final: false, project_id: pid, start_sql: to_ch_time(start_date))
       filter_where_clauses = build_event_filters(filters)
       search_where_clause = search_clause(search) if search.present?
-      latest_where_sql = base_where_clauses.join(' AND ')
-      fast_recent_path = filter_where_clauses.empty? && search_where_clause.nil? && sort_col == 'created_at'
-      if fast_recent_path
-        candidate_limit = [[limit * 20, MIN_RECENT_CANDIDATES].max, MAX_RECENT_CANDIDATES].min
-        candidate_where_clauses = base_where_clauses + cursor_clauses(cursor, sort_dir)
-        latest_where_sql = [
-          latest_where_sql,
-          "event_id IN (SELECT event_id FROM events WHERE #{candidate_where_clauses.join(' AND ')} " \
-          "ORDER BY created_at #{sort_dir}, event_id #{sort_dir}, ingested_at DESC " \
-          "LIMIT 1 BY event_id LIMIT #{candidate_limit})"
-        ].join(' AND ')
-      elsif filter_where_clauses.any? || search_where_clause
-        candidate_where_clauses = base_where_clauses + filter_where_clauses
-        candidate_where_clauses << search_where_clause if search_where_clause
-        latest_where_sql = [
-          latest_where_sql,
-          "event_id IN (SELECT DISTINCT event_id FROM events WHERE #{candidate_where_clauses.join(' AND ')})"
-        ].join(' AND ')
-      end
+      # Filters run before LIMIT BY: an id whose stale version matches can use a slot and be dropped later.
+      candidate_limit = [[limit * 20, MIN_RECENT_CANDIDATES].max, MAX_RECENT_CANDIDATES].min
+      candidate_where_clauses = base_where_clauses + filter_where_clauses + cursor_clauses(cursor, sort_dir)
+      candidate_where_clauses << search_where_clause if search_where_clause
+      # Must match the outer sort key, which reads platform through the inner normalized alias.
+      candidate_sort = sort_col == 'platform' ? ClickhouseReadService::NORMALIZED_PLATFORM_SQL : sort_col
+      latest_where_sql = [
+        base_where_clauses.join(' AND '),
+        "event_id IN (SELECT event_id FROM #{src} WHERE #{candidate_where_clauses.join(' AND ')} " \
+        "ORDER BY #{candidate_sort} #{sort_dir}, event_id #{sort_dir}, ingested_at DESC " \
+        "LIMIT 1 BY event_id LIMIT #{candidate_limit})"
+      ].join(' AND ')
 
       list_where_clauses = []
       list_where_clauses.concat(filter_where_clauses)
@@ -99,7 +98,7 @@ module Analytics
         SELECT #{LIST_COLUMNS.join(', ')}
         FROM (
           SELECT #{latest_columns.join(', ')}
-          FROM events
+          FROM #{src}
           WHERE #{latest_where_sql}
           ORDER BY event_id ASC, ingested_at DESC
           LIMIT 1 BY event_id
@@ -116,7 +115,8 @@ module Analytics
       total_count = nil
       if include_count
         begin
-          total_count = with_guard("SELECT count() FROM events FINAL WHERE #{count_where_sql}").first.values.first
+          count_src = EventsSource.sql(final: true, project_id: pid, start_sql: to_ch_time(start_date))
+          total_count = with_guard("SELECT count() FROM #{count_src} WHERE #{count_where_sql}").first.values.first
         rescue Analytics::QueryTooHeavy
           total_count = nil # rows already fetched — don't fail a good page
         end
@@ -128,26 +128,36 @@ module Analytics
       { data: [], next_cursor: nil, total_count: 0 }
     end
 
-    # Find a single event by event_id.
+    # Find a single event by event_id; events first, purchases only when no event has the id.
     def self.find(project_id, event_id:)
       pid = Integer(project_id)
       eid = sanitize_string(event_id.to_s)
-
-      with_guard(<<~SQL).first
-        SELECT * REPLACE (#{ClickhouseReadService::NORMALIZED_PLATFORM_SQL} AS platform)
-        FROM events FINAL
-        WHERE project_id = #{pid}
-          AND event_id = '#{eid}'
-        LIMIT 1
+      # Newest version by ORDER BY instead of FINAL, which read every column of each candidate granule.
+      event = find_one(<<~SQL)
+        SELECT #{EventsSource::COLUMNS.join(', ')} FROM events
+        WHERE project_id = #{pid} AND event_id = '#{eid}'
+        ORDER BY ingested_at DESC LIMIT 1
       SQL
+      return event if event || !eid.match?(/\A\h{32}\z/)
+
+      find_one(EventsSource.purchase_sql(project_id: pid, event_id: eid))
     rescue StandardError => e
       log_query_failure(:find, e)
       nil
     end
 
+    def self.find_one(source_sql)
+      with_guard(<<~SQL).first
+        SELECT * REPLACE (#{ClickhouseReadService::NORMALIZED_PLATFORM_SQL} AS platform)
+        FROM (#{source_sql}) LIMIT 1
+      SQL
+    end
+    private_class_method :find_one
+
     # Time-bucketed volume histogram.
     # Returns { buckets: [{ bucket: "2026-05-01", count: N }, ...] }
-    def self.volume(project_id, start_date:, end_date:, bucket: nil, search: nil, filters: [], timezone: 'UTC')
+    def self.volume(project_id, start_date:, end_date:, bucket: nil, search: nil, filters: [], timezone: 'UTC',
+                    visitor_clause: nil)
       pid = Integer(project_id)
       sd = sanitize_date_value(start_date)
       # Exclusive upper bound: the last included day is a second earlier.
@@ -155,6 +165,7 @@ module Analytics
       bucket_expr = resolve_bucket(bucket, sd, ed, resolve_timezone(timezone))
 
       where_clauses = base_where(pid, start_date, end_date)
+      where_clauses << visitor_clause if visitor_clause
       where_clauses.concat(build_event_filters(filters))
       where_clauses << search_clause(search) if search.present?
       where_sql = where_clauses.join(' AND ')
@@ -163,7 +174,7 @@ module Analytics
         SELECT
           #{bucket_expr} AS bucket,
           count() AS count
-        FROM events FINAL
+        FROM #{EventsSource.sql(final: true, project_id: pid, start_sql: to_ch_time(start_date))}
         WHERE #{where_sql}
         GROUP BY bucket
         ORDER BY bucket
@@ -184,15 +195,19 @@ module Analytics
       # Integer ID fields — resolve to names via PG with cursor pagination.
       # DISTINCT value discovery is idempotent to row duplicates, so no FINAL is
       # needed even though events is a ReplacingMergeTree.
+      window = { date_clause: "AND #{field_date_clause(start_date, end_date)}",
+                 start_sql: to_ch_time(start_date || FIELD_LOOKBACK_DAYS.days.ago) }
       if %w[link_id campaign_id].include?(field.to_s)
-        return resolve_id_field(pid, field.to_s, q: q, limit: limit,
-                                ch_table: 'events', ch_final: false, cursor: cursor)
+        return resolve_id_field(pid, field.to_s, q: q, limit: limit, cursor: cursor,
+                                ch_table: EventsSource::SOURCE_KEY, ch_final: false, **window)
       end
 
       if field.to_s == 'visitor_id'
-        return resolve_visitor_field(pid, q: q, limit: limit,
-                                     ch_table: 'events', ch_final: false, cursor: cursor)
+        return resolve_visitor_field(pid, q: q, limit: limit, cursor: cursor,
+                                     ch_table: EventsSource::SOURCE_KEY, ch_final: false, **window)
       end
+
+      return { values: QueryHelpers::SOURCE_CATEGORIES.dup, next_cursor: nil } if field.to_s == 'source'
 
       col_expr = field_column_expression(field)
       return { values: [] } unless col_expr
@@ -207,9 +222,10 @@ module Analytics
         where << " AND #{col_expr} > '#{sanitize_string(after)}'"
       end
 
+      src = EventsSource.sql(final: false, project_id: pid, start_sql: to_ch_time(start_date || FIELD_LOOKBACK_DAYS.days.ago))
       rows = with_guard(<<~SQL)
         SELECT DISTINCT #{col_expr} AS value
-        FROM events
+        FROM #{src}
         WHERE #{where}
         ORDER BY value
         LIMIT #{limit}
@@ -229,9 +245,9 @@ module Analytics
 
       static = ALLOWED_FIELDS.map { |f| { name: f, type: 'attribute' } }
 
-      cache_key = "analytics:fields:v2:#{pid}:#{start_date}:#{end_date}"
-      property_keys, user_attr_keys = Rails.cache.fetch(cache_key, expires_in: FIELD_CACHE_TTL) do
-        %w[properties sdk_attributes].map do |col|
+      cache_key = "analytics:fields:v3:#{pid}:#{start_date}:#{end_date}"
+      property_keys, user_attr_keys, purchases_enabled = Rails.cache.fetch(cache_key, expires_in: FIELD_CACHE_TTL) do
+        discovered = %w[properties sdk_attributes].map do |col|
           rows = with_guard(<<~SQL)
             SELECT DISTINCT arrayJoin(JSONAllPaths(#{col})) AS key_name
             FROM events
@@ -241,6 +257,7 @@ module Analytics
           SQL
           rows.map { |r| r['key_name'] }
         end
+        discovered << revenue_collection_enabled?(pid)
       end
 
       # Picker set == filterable set: only offer keys that field_column_expression
@@ -249,17 +266,35 @@ module Analytics
       dynamic = property_keys
                 .select { |k| valid_property_key?(k) && ALLOWED_FIELDS.exclude?(k) }
                 .map { |k| { name: k, type: 'property' } }
+      purchase = purchase_property_fields(purchases_enabled)
       user_dynamic = user_attr_keys
                      .select { |k| valid_property_key?(k) }
                      .map { |k| { name: "#{USER_ATTR_PREFIX}#{k}", type: 'user_attribute' } }
 
-      { fields: static + dynamic + user_dynamic }
+      { fields: static + dynamic + purchase + user_dynamic }
     rescue StandardError => e
       log_query_failure(:fields, e)
       { fields: ALLOWED_FIELDS.map { |f| { name: f, type: 'attribute' } } }
     end
 
     # --- Private helpers ---
+
+    # Only revenue tenants get purchase rows, so only they get the purchase filter keys.
+    def self.purchase_property_fields(enabled)
+      return [] unless enabled
+
+      EventsSource::PURCHASE_PROPERTY_KEYS.map { |k| { name: "purchase.#{k}", type: 'property' } }
+    end
+    private_class_method :purchase_property_fields
+
+    # A PG blip must not surface as a ClickHouse failure; the picker just loses the purchase keys.
+    def self.revenue_collection_enabled?(pid)
+      Project.includes(:instance).find_by(id: pid)&.instance&.revenue_collection_enabled || false
+    rescue ActiveRecord::ActiveRecordError, PG::Error => e
+      Rails.logger.warn("EventsQueryService.fields: revenue flag lookup failed: #{e.class}")
+      false
+    end
+    private_class_method :revenue_collection_enabled?
 
     def self.base_where(project_id, start_date, end_date)
       [
@@ -299,19 +334,16 @@ module Analytics
     end
     private_class_method :field_date_clause
 
-    # Builds filter clauses for events, combining shared QueryHelpers
-    # integer/string dispatch for standard fields with native JSON subcolumn
-    # casts for dynamic property fields.
     def self.build_event_filters(filters)
       return [] if filters.blank?
 
       parsed = parse_filters(filters)
+      source_filters, parsed = parsed.partition { |f| f['field'].to_s == 'source' }
       attr_filters, prop_filters = parsed.partition { |f| ALLOWED_FIELDS.include?(f['field'].to_s) }
 
       clauses = build_filter_clauses(attr_filters, allowed_fields: ALLOWED_FIELDS)
+      clauses.concat(source_filters.filter_map { |f| source_clause(f) })
 
-      # Property filters: the column expression is a native JSON subcolumn cast,
-      # but the comparison logic is identical to string filters.
       prop_filters.each do |filter|
         col = field_column_expression(filter['field'].to_s)
         next unless col
@@ -324,22 +356,41 @@ module Analytics
     end
     private_class_method :build_event_filters
 
-    # JSON columns the inner select must project so the outer WHERE can apply dynamic filters.
+    def self.source_clause(filter)
+      values = Array(filter['value']).map(&:to_s).select { |v| QueryHelpers::SOURCE_CATEGORIES.include?(v) }
+      return nil if values.empty?
+
+      predicate = values.map { |v| SourceTaxonomy.where_clause(v) }.join(' OR ')
+      case filter['operator'].to_s
+      when 'is' then "(#{predicate})"
+      when 'is_not' then "NOT (#{predicate})"
+      end
+    end
+    private_class_method :source_clause
+
+    SOURCE_FILTER_COLUMNS = %w[sdk_generated link_visitor_id].freeze
+
+    # Columns the inner select must project so the outer WHERE can apply filters on them.
     def self.dynamic_filter_columns(filters)
       return [] if filters.blank?
 
-      parse_filters(filters).filter_map do |filter|
+      parse_filters(filters).flat_map do |filter|
         field = filter['field'].to_s
-        next if ALLOWED_FIELDS.include?(field)
-
-        if field.start_with?(USER_ATTR_PREFIX)
-          'sdk_attributes' if valid_property_key?(field.delete_prefix(USER_ATTR_PREFIX))
-        elsif valid_property_key?(field)
-          'properties'
+        if field == 'source' then SOURCE_FILTER_COLUMNS
+        elsif ALLOWED_FIELDS.include?(field) then [field]
+        elsif field.start_with?(USER_ATTR_PREFIX)
+          valid_property_key?(field.delete_prefix(USER_ATTR_PREFIX)) ? ['sdk_attributes'] : []
+        elsif valid_property_key?(field) then ['properties']
+        else []
         end
-      end.uniq
+      end.uniq - LIST_ATTRIBUTE_COLUMNS
     end
     private_class_method :dynamic_filter_columns
+
+    # Public: the field-values controller allowlist accepts "purchase.<key>" via this.
+    def self.purchase_field?(field)
+      EventsSource.purchase_field?(field)
+    end
 
     # Public: the field-values controller allowlist accepts "user.<key>" via this.
     def self.user_attribute_field?(field)

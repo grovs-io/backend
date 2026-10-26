@@ -91,8 +91,6 @@ group :development, :test do
   gem 'rubocop', '~> 1.85', require: false
   gem 'rubocop-rails', '~> 2.34', require: false
   gem 'bullet', '~> 8.1'
-  # Strict API request/response contract validation in tests (see test/support/api_contracts.rb)
-  gem 'json-schema', '~> 6.2', require: false
   gem 'webmock', '~> 3.23', require: false
   # Coverage reports: COVERAGE=1 bundle exec rails test:full (see test/test_helper.rb)
   gem 'simplecov', '~> 0.22', require: false
@@ -107,3 +105,6 @@ end
 
 # Windows does not include zoneinfo files, so bundle the tzinfo-data gem
 gem 'tzinfo-data', platforms: [:mingw, :mswin, :x64_mingw, :jruby]
+
+# In-app campaign definitions are checked against ee/config/in_app/definition.schema.json; tests use it for API contracts.
+gem 'json-schema', '~> 6.2', require: false

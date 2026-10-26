@@ -98,4 +98,7 @@ module ApiContracts
   BOOL_OR_NULL = { "type" => %w[boolean string null] }.freeze
   ARRAY_OR_NULL = { "type" => %w[array null] }.freeze
   OBJECT_OR_NULL = { "type" => %w[object null] }.freeze
+
+  SB_STRING_ARRAY = { "type" => "array", "items" => STRING }.freeze
+  SB_COLOR = { "type" => "string", "pattern" => "^#[0-9a-fA-F]{6}$" }.freeze
 end

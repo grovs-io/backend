@@ -24,6 +24,15 @@ class Api::V1::LinksController < Api::V1::ProjectsBaseController
     render json: { links: LinkSerializer.serialize(links) }
   end
 
+  def lookup
+    domain = domain_for_current_project
+    return render_missing_domain unless domain
+
+    links = LinkQueryService.new(domain: domain).lookup(term: term_param, limit: lookup_limit_param)
+    links = links.includes(:custom_redirects, :domain, image_attachment: :blob)
+    render json: { links: LinkSerializer.serialize(links) }
+  end
+
   def create_link
     link = ActiveRecord::Base.transaction do
       created = link_service(@project).create(
@@ -45,6 +54,8 @@ class Api::V1::LinksController < Api::V1::ProjectsBaseController
     render json: { error: e.message }, status: :bad_request
   rescue ActiveRecord::RecordNotFound => e
     render json: { error: e.message }, status: :not_found
+  rescue ActiveRecord::RecordInvalid => e
+    render json: { error: e.message }, status: :unprocessable_entity
   end
 
   def update_link
@@ -85,6 +96,15 @@ class Api::V1::LinksController < Api::V1::ProjectsBaseController
       audit!("link.deleted", instance_id: @project.instance_id, target: audit_target(link).merge("path" => link.path))
     end
     render json: { message: "Link deleted!" }, status: :ok
+  rescue ActiveRecord::RecordInvalid => e
+    render json: { error: e.message }, status: :unprocessable_entity
+  end
+
+  def last_open
+    link = link_for_param
+    return unless link
+
+    render json: { open: LinkLastOpenService.call(link) }, status: :ok
   end
 
   def is_path_available
@@ -167,6 +187,10 @@ class Api::V1::LinksController < Api::V1::ProjectsBaseController
 
   def ids_param
     params.require(:ids)
+  end
+
+  def lookup_limit_param
+    params.permit(:limit)[:limit]
   end
 
 end

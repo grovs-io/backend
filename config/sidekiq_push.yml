@@ -1,0 +1,4 @@
+# worker_push: push handoff only; its loops hold threads up to 55 s, away from event streams.
+:concurrency: <%= ENV.fetch("SIDEKIQ_PUSH_CONCURRENCY", 10).to_i %>
+:queues:
+  - push

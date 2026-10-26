@@ -4,6 +4,11 @@ require 'zlib'
 
 class StripeService
   class WebhookLockContention < StandardError; end
+  class CheckoutAlreadyCompleted < StandardError; end
+
+  # ui_mode "elements" needs dahlia+; matches the stripe-js 10 release train. Only checkout session calls use it.
+  CHECKOUT_API_VERSION = "2026-09-30.endive".freeze
+  CHECKOUT_REQUEST_OPTS = { stripe_version: CHECKOUT_API_VERSION }.freeze
 
   class << self
     include StripeService::WebhookHandlers
@@ -14,21 +19,38 @@ class StripeService
       session_id = instance.id.to_s
 
       stripe_create_session_params = {
-          success_url: ENV['REACT_HOST_PROTOCOL'] + ENV['REACT_HOST'] + '/settings?instance_id=' + session_id,
-          cancel_url: ENV['REACT_HOST_PROTOCOL'] + ENV['REACT_HOST'] + '/settings?cancel=true' + session_id ,
+          ui_mode: 'elements',
           mode: 'subscription',
           customer_email: user.email,
           client_reference_id: session_id,
           line_items: [{
             price: price_id,
+            quantity: 1,
           }],
+          # No redirect-based methods, so no return_url and the dialog never navigates away.
+          allowed_payment_method_types: %w[card link],
+          tax_id_collection: { enabled: true },
+          billing_address_collection: 'required',
+          # rest of the code expects classic billing_mode (Invoice.upcoming, current_period_start/end)
+          subscription_data: { billing_mode: { type: 'classic' } },
       }
 
-      session = Stripe::Checkout::Session.create(stripe_create_session_params)
+      session = Stripe::Checkout::Session.create(stripe_create_session_params, CHECKOUT_REQUEST_OPTS)
 
       create_payment_intent_for_session(user, session, product_type, instance)
 
       session
+    end
+
+    # Leaves at most one payable session: expires open ones; an unseen paid one still blocks.
+    def expire_open_checkout_sessions(instance)
+      instance.stripe_payment_intents.where("created_at > ?", 24.hours.ago).find_each do |intent|
+        session = find_checkout_session(intent.intent_id)
+        next unless session
+
+        expire_checkout_session(session) if session.status == "open"
+        guard_unprocessed_completion(session) if session.status == "complete"
+      end
     end
 
     def handle_webhook(event)
@@ -74,16 +96,31 @@ class StripeService
     end
 
     def cancel_subscription(subscription)
-      
+      if Billing::Plans.flat?(subscription.product_type)
+        return Stripe::Subscription.update(subscription.subscription_id, { cancel_at_period_end: true })
+      end
+
       Stripe::Subscription.cancel(subscription.subscription_id)
     rescue Stripe::StripeError => e
-      # Handle other Stripe-related errors
       Rails.logger.error("Stripe error: #{e.message}")
-      
+      false
+    end
+
+    # Stripe rejects cancel_at_period_end and cancel_at together; cancel_at_period_end alone clears both.
+    def resume_cancellation(subscription)
+      Stripe::Subscription.update(subscription.subscription_id, { cancel_at_period_end: false })
+    rescue Stripe::StripeError => e
+      Rails.logger.error("Stripe error: #{e.message}")
+      false
+    end
+
+    # Applies a retrieved/updated Stripe subscription to the local row (same logic the webhook uses).
+    def apply_flat_subscription(subscription, remote)
+      apply_flat_remote(subscription, subscription.instance, remote)
     end
 
     def generate_portal_link(instance)
-      subscription = instance.subscription
+      subscription = instance.subscription || instance.unresolved_subscription
       if subscription.nil?
         return nil
       end
@@ -96,11 +133,10 @@ class StripeService
       session[:url]
     end
 
-    def get_subscription_details(subscription_id)
-      Stripe::Subscription.retrieve(
-          subscription_id,)
+    def get_subscription_details(subscription_id, expand: nil)
+      return Stripe::Subscription.retrieve(subscription_id) unless expand
 
-      
+      Stripe::Subscription.retrieve({ id: subscription_id, expand: expand })
     end
 
     def set_usage(instance)
@@ -108,6 +144,8 @@ class StripeService
       unless subscription
         return
       end
+
+      return if Billing::Plans.flat?(subscription.product_type)
 
       billing_cycle = get_billing_cycle(subscription)
       unless billing_cycle
@@ -143,6 +181,16 @@ class StripeService
 
     def get_next_invoice(subscription)
       Stripe::Invoice.upcoming({subscription: subscription.subscription_id})
+    end
+
+    def upcoming_invoice_or_nil(subscription)
+      Stripe::Invoice.upcoming({ subscription: subscription.subscription_id })
+    rescue Stripe::InvalidRequestError => e
+      return nil if e.code == "invoice_upcoming_none"
+      # pre-existing flexible-billing_mode subscriptions aren't supported by this API at all
+      return nil if e.message.to_s.match?(/billing_mode\s*=\s*flexible/i)
+
+      raise
     end
 
     def monthly_total_snapshot(subscription)
@@ -192,6 +240,29 @@ class StripeService
     end
 
     private
+
+    def find_checkout_session(session_id)
+      Stripe::Checkout::Session.retrieve(session_id, CHECKOUT_REQUEST_OPTS)
+    rescue Stripe::InvalidRequestError => e
+      raise unless e.code == "resource_missing"
+
+      nil
+    end
+
+    def expire_checkout_session(session)
+      Stripe::Checkout::Session.expire(session.id, {}, CHECKOUT_REQUEST_OPTS)
+    rescue Stripe::InvalidRequestError
+      current = Stripe::Checkout::Session.retrieve(session.id, CHECKOUT_REQUEST_OPTS)
+      return if current.status == "expired"
+      return guard_unprocessed_completion(current) if current.status == "complete"
+
+      raise
+    end
+
+    # Paid but the webhook has not created the row yet; once it exists, the eligibility check decides.
+    def guard_unprocessed_completion(session)
+      raise CheckoutAlreadyCompleted unless StripeSubscription.exists?(subscription_id: session.subscription)
+    end
 
     def process_event(event)
       case event.type

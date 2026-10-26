@@ -22,6 +22,7 @@ module LinkMetricsHelper
     links = domain.links.includes(:campaign)
     links = links.where(active: active)
     links = links.where(sdk_generated: sdk)
+    links = links.where(SmartBanner::HIDE_LINKS_SQL)
     links = links.where(campaign_id: campaign_id_param) if campaign_id_param
 
     links.order(created_at: :desc)

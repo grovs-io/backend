@@ -20,23 +20,19 @@ class ReattributePurchaseJob
     event = PurchaseEvent.includes(:device).find_by(id: purchase_event_id)
     return unless event&.device
 
-    # Idempotency: reattribution sets visitor_id (nil after deviceless processing) — already applied.
-    return if event.visitor_id.present?
+    # One transaction: snapshot and stat moves commit together, so a retry re-applies from scratch.
+    assigned = ActiveRecord::Base.transaction do
+      event.lock! # serialized with apply_correction; every input below is read from the locked row
+      next false if event.visitor_id.present? # already applied, or a retry after commit: nothing to move
 
-    new_platform = event.device.platform_for_metrics || Grovs::Platforms::WEB
-    event_date   = (event.date || event.created_at)&.to_date || Date.current
-    revenue      = event.revenue_delta || 0
+      at_accounted_price(event)
+      revenue      = event.revenue_delta || 0
+      new_platform = event.device.platform_for_metrics || Grovs::Platforms::WEB
+      event_date   = (event.date || event.created_at)&.to_date || Date.current
+      old_platform = event.store_platform || 'unknown' # the platform initial processing used
+      visitor      = event.device.visitor_for_project_id(event.project_id)
+      qty          = event.quantity || 1
 
-    # Determine what platform was used during initial processing
-    old_platform = event.store_platform || 'unknown'
-
-    visitor = event.device.visitor_for_project_id(event.project_id)
-    qty = event.quantity || 1
-
-    # One transaction: snapshot + every stat move commit together, so a mid-job
-    # failure can't leave ledger and stats disagreeing, and a Sidekiq retry
-    # re-applies from scratch instead of double-incrementing.
-    ActiveRecord::Base.transaction do
       # Ledger snapshots follow the reattribution (the only writer besides processing).
       event.update_columns(revenue_platform: new_platform, visitor_id: visitor&.id)
 
@@ -75,10 +71,22 @@ class ReattributePurchaseJob
       end
 
       SubscriptionStateService.upsert(event)
+      visitor.present?
     end
+    notify_journeys(event, assigned)
+    ProcessPurchaseEventJob.perform_async(event.id) # once, post-commit, on both paths
   end
 
   private
+
+  def notify_journeys(event, assigned)
+    Journeys.purchased(event) if assigned
+  end
+
+  # Credit what the ledger accounted (in memory only); the sync enqueued at the end corrects drift.
+  def at_accounted_price(event)
+    event.usd_price_cents = event.accounted_usd_price_cents if event.accounted_usd_price_cents.present?
+  end
 
   # Link revenue: processing ALREADY credited it (link stats don't need a device) —
   # only MOVE it when the platform changed, never re-add.

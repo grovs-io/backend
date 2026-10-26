@@ -3,6 +3,10 @@ require "test_helper"
 class SdkPaymentServiceTest < ActiveSupport::TestCase
   fixtures :instances, :projects, :devices, :visitors, :purchase_events
 
+  teardown do
+    REDIS.scan_each(match: "purchase:sync:*") { |k| REDIS.del(k) }
+  end
+
   setup do
     @project = projects(:one)
     @device = devices(:ios_device)
@@ -179,8 +183,7 @@ class SdkPaymentServiceTest < ActiveSupport::TestCase
     assert enqueued_id, "ProcessPurchaseEventJob should have been enqueued"
   end
 
-  test "skips ProcessPurchaseEventJob for already processed non-store event" do
-    # Create an event that's already processed + non-store
+  test "enqueues one ProcessPurchaseEventJob sync for an already processed non-store event" do
     existing = PurchaseEvent.create!(
       event_type: Grovs::Purchases::EVENT_BUY,
       price_cents: 100, currency: "USD",
@@ -189,21 +192,18 @@ class SdkPaymentServiceTest < ActiveSupport::TestCase
       identifier: "com.test.app", store: false, processed: true,
       purchase_type: Grovs::Purchases::TYPE_ONE_TIME
     )
+    params = valid_params(transaction_id: existing.transaction_id, event_type: existing.event_type,
+                          store: false, price_cents: 250)
 
-    params = valid_params(
-      transaction_id: existing.transaction_id,
-      event_type: existing.event_type,
-      store: false
-    )
-
-    process_called = false
-    ProcessPurchaseEventJob.stub(:perform_async, ->(*_args) { process_called = true }) do
+    enqueued = []
+    ProcessPurchaseEventJob.stub(:perform_async, ->(id) { enqueued << id }) do
       ReattributePurchaseJob.stub(:perform_async, true) do
         build_service.create_or_update(event_params: params)
       end
     end
 
-    assert_not process_called, "Should not enqueue ProcessPurchaseEventJob for already-processed event"
+    assert_equal [existing.id], enqueued
+    assert_equal 250, existing.reload.price_cents, "the SDK rewrite still lands in PG"
   end
 
   # === update_existing ===
@@ -484,36 +484,38 @@ class SdkPaymentServiceTest < ActiveSupport::TestCase
     assert_equal "sess-late", event.reload.session_id
   end
 
-  test "a session filled on a processed purchase re-delivers the ClickHouse row" do
+  test "a session filled on a processed purchase enqueues a sync" do
     params = valid_params
     build_service.create_or_update(event_params: params)
     event = PurchaseEvent.find_by(transaction_id: params[:transaction_id])
     event.update!(webhook_validated: true, processed: true)
 
-    refreshed_id = nil
-    RefreshPurchaseClickhouseRowJob.stub(:perform_async, ->(id) { refreshed_id = id }) do
+    enqueued = []
+    ProcessPurchaseEventJob.stub(:perform_async, ->(id) { enqueued << id }) do
       build_service.create_or_update(event_params: valid_params(
         transaction_id: params[:transaction_id], session_id: "sess-late"
       ))
     end
 
-    assert_equal event.id, refreshed_id
+    assert_equal [event.id], enqueued
   end
 
-  test "an unchanged session on a processed purchase does not re-deliver to ClickHouse" do
+  test "an unchanged re-report of a processed purchase syncs at most once per slot" do
     params = valid_params(session_id: "sess-first")
     build_service.create_or_update(event_params: params)
     event = PurchaseEvent.find_by(transaction_id: params[:transaction_id])
     event.update!(processed: true)
 
-    refreshed = false
-    RefreshPurchaseClickhouseRowJob.stub(:perform_async, ->(*_args) { refreshed = true }) do
-      build_service.create_or_update(event_params: valid_params(
-        transaction_id: params[:transaction_id], session_id: "sess-second"
-      ))
+    enqueued = []
+    ProcessPurchaseEventJob.stub(:perform_async, ->(id) { enqueued << id }) do
+      2.times do
+        build_service.create_or_update(event_params: valid_params(
+          transaction_id: params[:transaction_id], session_id: "sess-second"
+        ))
+      end
     end
 
-    assert_not refreshed
+    assert_equal [event.id], enqueued, "one sync for the slot, the repeat is throttled"
   end
 
   test "the duplicate-creation race still records the session" do
@@ -538,19 +540,18 @@ class SdkPaymentServiceTest < ActiveSupport::TestCase
     assert_equal "sess-race", winner.reload.session_id
   end
 
-  test "a session claim lost to a concurrent writer does not enqueue a second CH refresh" do
+  test "a session claim lost to a concurrent writer syncs at most once and keeps the winner" do
     params = valid_params
     build_service.create_or_update(event_params: params)
     event = PurchaseEvent.find_by(transaction_id: params[:transaction_id])
     event.update!(processed: true)
 
-    # Stale in memory, winner already committed — the shape a real concurrent claim sees.
     stale = PurchaseEvent.find(event.id)
     PurchaseEvent.where(id: event.id).update_all(session_id: "sess-winner")
 
-    refreshed = false
+    enqueued = []
     PurchaseEvent.stub(:find_by, ->(**kw) { kw.key?(:transaction_id) ? stale : PurchaseEvent.find_by!(**kw) }) do
-      RefreshPurchaseClickhouseRowJob.stub(:perform_async, ->(*_args) { refreshed = true }) do
+      ProcessPurchaseEventJob.stub(:perform_async, ->(id) { enqueued << id }) do
         ValidatePurchaseEventJob.stub(:perform_async, true) do
           build_service.create_or_update(event_params: valid_params(
             transaction_id: params[:transaction_id], session_id: "sess-loser"
@@ -559,7 +560,69 @@ class SdkPaymentServiceTest < ActiveSupport::TestCase
       end
     end
 
-    assert_not refreshed, "the loser must not race a second refresh"
+    assert_operator enqueued.size, :<=, 1
     assert_equal "sess-winner", event.reload.session_id, "the loser must not clobber the winner"
+  end
+
+  test "an SDK re-report that turns a processed non-store purchase into a store purchase validates AND syncs" do
+    existing = PurchaseEvent.create!(
+      event_type: Grovs::Purchases::EVENT_BUY, price_cents: 100, currency: "USD",
+      transaction_id: "txn_becomes_store", product_id: "com.test.p", project: @project, device: @device,
+      identifier: "com.test.app", store: false, processed: true, purchase_type: Grovs::Purchases::TYPE_ONE_TIME
+    )
+    validated = []
+    synced = []
+    ValidatePurchaseEventJob.stub(:perform_async, ->(id, _platform) { validated << id }) do
+      ProcessPurchaseEventJob.stub(:perform_async, ->(id) { synced << id }) do
+        build_service.create_or_update(event_params: valid_params(
+          transaction_id: existing.transaction_id, event_type: existing.event_type, store: true
+        ))
+      end
+    end
+    assert_equal [existing.id], validated, "store validation must not be lost"
+    assert_equal [existing.id], synced
+  end
+
+  test "re-pointing the device of a processed purchase enqueues a sync and keeps the visitor snapshot" do
+    existing = PurchaseEvent.create!(
+      event_type: Grovs::Purchases::EVENT_BUY, price_cents: 100, currency: "USD",
+      transaction_id: "txn_repoint", product_id: "com.test.p", project: @project, device: @device,
+      identifier: "com.test.app", store: false, processed: true, visitor_id: visitors(:android_visitor).id,
+      purchase_type: Grovs::Purchases::TYPE_ONE_TIME
+    )
+    other_device = devices(:android_device)
+    service = SdkPaymentService.new(project: @project, device: other_device, visitor: @visitor,
+                                    platform: @platform, identifier: @identifier)
+    enqueued = []
+    ProcessPurchaseEventJob.stub(:perform_async, ->(id) { enqueued << id }) do
+      service.create_or_update(event_params: valid_params(
+        transaction_id: existing.transaction_id, event_type: existing.event_type, store: false
+      ))
+    end
+
+    assert_equal [existing.id], enqueued
+    assert_equal other_device.id, existing.reload.device_id
+    assert_equal visitors(:android_visitor).id, existing.visitor_id, "attribution stays with the ledger snapshot"
+  end
+
+  test "an identical re-report syncs once per slot, and a failed enqueue releases the slot" do
+    params = valid_params(store: false)
+    ProcessPurchaseEventJob.stub(:perform_async, true) { build_service.create_or_update(event_params: params) }
+    existing = PurchaseEvent.find_by!(transaction_id: params[:transaction_id])
+    existing.update_columns(processed: true)
+    key = "purchase:sync:#{existing.id}"
+
+    ProcessPurchaseEventJob.stub(:perform_async, ->(*) { raise Redis::CannotConnectError, "lost" }) do
+      assert_raises(Redis::CannotConnectError) { build_service.create_or_update(event_params: params) }
+    end
+    assert_nil REDIS.get(key), "a failed enqueue releases the slot"
+
+    enqueued = []
+    ProcessPurchaseEventJob.stub(:perform_async, ->(id) { enqueued << id }) do
+      build_service.create_or_update(event_params: params)
+      build_service.create_or_update(event_params: params)
+    end
+    assert_equal [existing.id], enqueued
+    assert_equal "1", REDIS.get(key)
   end
 end

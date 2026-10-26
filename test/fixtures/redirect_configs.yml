@@ -3,3 +3,5 @@ one:
   default_fallback: "https://example.com/fallback"
   show_preview_ios: false
   show_preview_android: false
+  in_app_browser_page_ios: false
+  in_app_browser_page_android: false

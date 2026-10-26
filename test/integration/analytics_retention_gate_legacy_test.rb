@@ -6,7 +6,7 @@ require_relative 'auth_test_helper'
 class AnalyticsRetentionGateLegacyTest < ActionDispatch::IntegrationTest
   include AuthTestHelper
 
-  fixtures :instances, :users, :instance_roles, :projects, :stripe_subscriptions, :stripe_payment_intents
+  fixtures :instances, :users, :instance_roles, :projects, :domains, :redirect_configs, :stripe_subscriptions, :stripe_payment_intents
 
   setup do
     @free_instance = instances(:two)

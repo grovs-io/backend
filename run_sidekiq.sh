@@ -7,6 +7,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 PIDS=()
@@ -40,6 +41,9 @@ bundle exec sidekiq -C config/sidekiq_device_updates.yml -c 3 2>&1 | sed "s/^/${
 PIDS+=($!)
 
 bundle exec sidekiq -C config/sidekiq_maintenance.yml -c 3 2>&1 | sed "s/^/${RED}[maintenance]  ${NC}/" &
+PIDS+=($!)
+
+bundle exec sidekiq -C config/sidekiq_egress.yml -c 3 2>&1 | sed "s/^/${CYAN}[egress]      ${NC}/" &
 PIDS+=($!)
 
 echo "All Sidekiq processes started. Press Ctrl+C to stop all."

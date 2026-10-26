@@ -5,9 +5,7 @@ class PurchaseEventCreator
     @logger = Rails.logger
   end
 
-  # Validate an existing SDK-submitted event with webhook data and dispatch processing.
-  # Used when a mobile SDK event is confirmed by a store webhook, or when a Google
-  # webhook updates an existing event.
+  # Confirms an SDK-submitted event with webhook data and dispatches processing.
   def validate_existing(event, store_source:, **attrs)
     old_usd = event.usd_price_cents
 
@@ -37,8 +35,8 @@ class PurchaseEventCreator
 
     if event.processed? && event.usd_price_cents.to_i != old_usd.to_i
       ProcessPurchaseEventJob.perform_async(event.id, old_usd.to_i)
-    elsif !event.processed?
-      ProcessPurchaseEventJob.perform_async(event.id)
+    else
+      ProcessPurchaseEventJob.perform_async(event.id) # unprocessed: first run; processed: CH sync
     end
 
     event

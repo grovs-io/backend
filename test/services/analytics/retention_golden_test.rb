@@ -43,23 +43,14 @@ require 'test_helper'
 #     -> D7 NOT retained (day+7=-28d, active? no)
 #     -> D30 NOT retained (day+30=-5d, active? no)
 #
-# Summary calculations (all 10 visitors eligible for D1/D7/D30 since first_seen = now-35d):
-#   D1:  eligible = 10, retained = all except v4 = 9.      Rate = 90.0%
-#   D3:  eligible = 10, retained = v1,v2,v3,v5,v7,v8,v9,v10 = 8. Rate = 80.0%
-#   D7:  eligible = 10, retained = v1,v2,v3,v5,v7,v8,v9,v10 = 8. Rate = 80.0%
-#   D14: eligible = 10, retained = v1,v2,v3,v5,v9 = 5.    Rate = 50.0%
-#   D30: eligible = 10, retained = v1,v2,v3,v5,v9 = 5.    Rate = 50.0%
-#   D60: need first_seen <= now-60d. None qualify.          Rate = nil
-#   D90: same.                                              Rate = nil
-#
-# Median churn day: first d where rate < 50 => none (all >= 50). Result = nil
+# Exact-day rates over all 10: D1 80%, D3 0%, D7 70%, D14 0%, D30 30%; D60/D90 nil; median churn nil.
 #
 # Extra visitors (v6-v10, all ios, first_seen = now-35d):
-#   v6:  active days -35, -34 (HomeScreen on day -35). max_event_date=-34.
-#   v7:  active days -35, -34, -28 (HomeScreen on day -35). max_event_date=-28.
-#   v8:  active days -35, -28 (HomeScreen on day -35). max_event_date=-28.
-#   v9:  active days -35, -34, -28, -5 (HomeScreen + SettingsScreen on day -35). max_event_date=-5.
-#   v10: active days -35, -34, -28 (SettingsScreen only on day -35). max_event_date=-28.
+#   v6:  active days -35, -34 (HomeScreen on day -35).
+#   v7:  active days -35, -34, -28 (HomeScreen on day -35).
+#   v8:  active days -35, -28 (HomeScreen on day -35).
+#   v9:  active days -35, -34, -28, -5 (HomeScreen + SettingsScreen on day -35).
+#   v10: active days -35, -34, -28 (SettingsScreen only on day -35).
 #
 # Decoy visitor (project_two):
 #   dv1 (ios, JP): first_seen = now - 35d, active days: -35, -34, -28, -5, -1
@@ -128,61 +119,30 @@ class Analytics::RetentionGoldenTest < ActiveSupport::TestCase
   # Summary tests
   # ==========================================================================
 
-  # --------------------------------------------------------------------------
-  # Test 1: Exact D1/D7/D30 retention rates
-  # --------------------------------------------------------------------------
-  #
-  # From the 5 core visitors (all first_seen = now-35d, all eligible for D1/D7/D30):
-  #   D1 retained: v1,v2,v3,v5 (4 of 5) = 80.0%
-  #   D7 retained: v1,v2,v3 (3 of 5) = 60.0%
-  #   D30 retained: v1,v3 (2 of 5) = 40.0%
-  #
-  # But wait — with 10 total visitors (5 core + 5 extra), all first_seen = now-35d:
-  #   D1 eligible: 10. retained: v1,v2,v3,v5,v6,v7,v8,v9,v10 = 9 (v4 churned). Rate = 90.0%
-  #   D7 eligible: 10. retained: v1,v2,v3,v5,v7,v8,v9,v10 = 8. Rate = 80.0%
-  #   D30 eligible: 10. retained: v1,v2,v3,v5,v9 = 5. Rate = 50.0%
-  #
-  # D3: need max_event_date >= now-32d. v1,v2,v3,v5,v7,v8,v9,v10 = 8. Rate = 80.0%
-  # D14: need max_event_date >= now-21d. v1,v2,v3,v5,v9 = 5. Rate = 50.0%
-  # D60: eligible = first_seen <= now-60d. None. Rate = nil.
-  # D90: same. Rate = nil.
-  #
-  # Median churn: first d where rate < 50 => none of [1,3,7,14,30] are < 50.
-  #   d=1: 90.0, d=3: 80.0, d=7: 80.0, d=14: 50.0, d=30: 50.0 — all >= 50.
-  #   d=60: nil, d=90: nil — nils are skipped by `&.< 50.0`.
-  #   So median_churn_day = nil.
   test 'summary returns exact D1 D7 D30 rates' do
     result = Analytics::RetentionService.summary(@project.id)
 
-    assert_equal 90.0, result[:day_1],  "D1 retention: 9 of 10 returned on day+1"
-    assert_equal 80.0, result[:day_7],  "D7 retention: 8 of 10 returned by day+7"
-    assert_equal 50.0, result[:day_30], "D30 retention: 5 of 10 returned by day+30"
+    assert_equal 80.0, result[:day_1],  "D1 retention: 8 of 10 active on day+1"
+    assert_equal 70.0, result[:day_7],  "D7 retention: 7 of 10 active on day+7"
+    assert_equal 30.0, result[:day_30], "D30 retention: 3 of 10 active on day+30"
+    assert_equal 10, result[:day_1_users]
+    assert_equal 10, result[:day_7_users]
+    assert_equal 10, result[:day_30_users]
   end
 
-  # --------------------------------------------------------------------------
-  # Test 2: Exact eligibility denominators and median churn
-  # --------------------------------------------------------------------------
-  test 'summary median churn day is nil when all rates are at or above 50 percent' do
+  # Exact D3 is 0%, but 80% are still active on or after day 3, so half have not churned.
+  test 'summary median churn day ignores a quiet exact day' do
     result = Analytics::RetentionService.summary(@project.id)
 
-    # D1=90, D3=80, D7=80, D14=50, D30=50 — none < 50
-    # D60/D90 = nil (no eligible visitors) — nil&.<(50) returns nil (falsy)
-    assert_nil result[:median_churn_day],
-               "No rate drops below 50%%, so median_churn_day should be nil"
+    assert_nil result[:median_churn_day]
   end
 
-  # --------------------------------------------------------------------------
-  # Test 3: Sparkline covers last 30 days of daily D1 rates
-  # --------------------------------------------------------------------------
-  #
-  # Sparkline includes visitors with first_seen in [now-30d, now-1d].
-  # All our visitors have first_seen = now-35d which is OUTSIDE this range.
-  # So sparkline should be empty for the base dataset.
+  # Without a range the sparkline covers first visits in the last 30 days; the dataset is 35 days old.
   test 'summary sparkline is empty when no visitors have first_seen in last 30 days' do
     result = Analytics::RetentionService.summary(@project.id)
 
     assert_equal [], result[:sparkline],
-                 "No visitors have first_seen within [now-30d, now-1d]"
+                 "No visitors have first_seen in the last 30 days"
   end
 
   # --------------------------------------------------------------------------
@@ -222,31 +182,11 @@ class Analytics::RetentionGoldenTest < ActiveSupport::TestCase
   # Platform isolation test
   # ==========================================================================
 
-  # --------------------------------------------------------------------------
-  # Test 8: Platform filter isolates ios-only retention
-  # --------------------------------------------------------------------------
-  #
-  # The platform filter scopes BOTH the numerator (visitor_max / visitor_daily)
-  # AND the denominator (up / user_profiles, which carries a platform column). So
-  # the denominator is the 8 iOS-profile visitors — the android-only (v2) and
-  # web-only (v5) installs are excluded from both sides.
-  #
-  # visitor_max CTE with platform='ios' (only ios visitor_daily rows):
-  #   v1: max = now-1d, v3: now-5d, v4: now-35d, v6: now-34d, v7: now-28d,
-  #   v8: now-28d, v9: now-5d, v10: now-28d ; v2/v5 not iOS → excluded.
-  #
-  # Denominator = 8 iOS-profile visitors (v1,v3,v4,v6,v7,v8,v9,v10).
-  #
-  # D1 retained (max_event_date >= now-34d):
-  #     v1, v3, v6, v7, v8, v9, v10 = 7 ; v4(now-35 no) → 7/8 = 87.5%
-  # D7 retained (max >= now-28d):
-  #     v1, v3, v7, v8, v9, v10 = 6 ; v4/v6 no → 6/8 = 75.0%
-  # D30 retained (max >= now-5d):
-  #     v1, v3, v9 = 3 → 3/8 = 37.5%
+  # Denominator is the 8 iOS profiles; D1 6/8, D7 6/8, D30 3/8.
   test 'summary with ios platform filter returns ios-only rates' do
     result = Analytics::RetentionService.summary(@project.id, platform: 'ios')
 
-    assert_equal 87.5, result[:day_1],  "iOS D1: 7 of 8 iOS installs retained"
+    assert_equal 75.0, result[:day_1],  "iOS D1: 6 of 8 iOS installs retained"
     assert_equal 75.0, result[:day_7],  "iOS D7: 6 of 8 iOS installs retained"
     assert_equal 37.5, result[:day_30], "iOS D30: 3 of 8 iOS installs retained"
   end
@@ -255,19 +195,7 @@ class Analytics::RetentionGoldenTest < ActiveSupport::TestCase
   # Date range filtering tests
   # ==========================================================================
 
-  # --------------------------------------------------------------------------
-  # Test 13: Summary with date range excludes out-of-range visitors
-  # --------------------------------------------------------------------------
-  #
-  # Add 2 visitors with first_seen = now-10d:
-  #   v20 (ios, US): active days -10, -9, -3 -> D1 retained, D7 retained
-  #   v21 (ios, DE): active days -10 only (churned) -> D1 NOT retained
-  #
-  # Date range [now-15d, now-1d]:
-  #   Original 10 visitors (first_seen=now-35d) are EXCLUDED (outside range).
-  #   Only v20 and v21 are in range.
-  #   D1 eligible: 2 (both first_seen=now-10d <= now-1d). retained: v20 (1 of 2) = 50.0%
-  #   D7 eligible: 2 (first_seen=now-10d <= now-7d). retained: v20 (max=-3d >= -3d) = 50.0%
+  # Only v20/v21 have day 1 and day 7 inside [now-15d, now-1d]; v20 is active on both.
   test 'summary with date range excludes out of range visitors' do
     insert_date_range_visitors
 
@@ -350,10 +278,10 @@ class Analytics::RetentionGoldenTest < ActiveSupport::TestCase
     filters = [{ 'field' => 'bogus_field', 'operator' => 'is', 'value' => 'anything' }]
     result = Analytics::RetentionService.summary(@project.id, filters: filters)
 
-    # Should return same as unfiltered (D1=90.0, D7=80.0, D30=50.0)
-    assert_equal 90.0, result[:day_1],  "Bogus filter ignored: D1 same as unfiltered"
-    assert_equal 80.0, result[:day_7],  "Bogus filter ignored: D7 same as unfiltered"
-    assert_equal 50.0, result[:day_30], "Bogus filter ignored: D30 same as unfiltered"
+    # Should return same as unfiltered (D1=80.0, D7=70.0, D30=30.0)
+    assert_equal 80.0, result[:day_1],  "Bogus filter ignored: D1 same as unfiltered"
+    assert_equal 70.0, result[:day_7],  "Bogus filter ignored: D7 same as unfiltered"
+    assert_equal 30.0, result[:day_30], "Bogus filter ignored: D30 same as unfiltered"
   end
 
   # --------------------------------------------------------------------------
@@ -362,9 +290,9 @@ class Analytics::RetentionGoldenTest < ActiveSupport::TestCase
   test 'empty filters array returns unfiltered results' do
     result = Analytics::RetentionService.summary(@project.id, filters: [])
 
-    assert_equal 90.0, result[:day_1]
-    assert_equal 80.0, result[:day_7]
-    assert_equal 50.0, result[:day_30]
+    assert_equal 80.0, result[:day_1]
+    assert_equal 70.0, result[:day_7]
+    assert_equal 30.0, result[:day_30]
   end
 
   # --------------------------------------------------------------------------
@@ -434,45 +362,17 @@ class Analytics::RetentionGoldenTest < ActiveSupport::TestCase
     assert_equal '', join, "Disallowed field should produce empty join"
   end
 
-  # --------------------------------------------------------------------------
-  # Test 26: cohort_date_filter returns empty string for nil dates
-  # --------------------------------------------------------------------------
-  test 'cohort_date_filter returns empty for nil dates' do
-    result = Analytics::RetentionService.send(:cohort_date_filter, nil, nil)
-    assert_equal '', result
+  test 'eligible_sql without dates only requires day N to have ended' do
+    result = Analytics::RetentionService.send(:eligible_sql, 7, nil, nil)
+    assert_equal 'up.first_date <= today() - 8', result
   end
 
-  # --------------------------------------------------------------------------
-  # Test 27: cohort_date_filter with start_date only
-  # --------------------------------------------------------------------------
-  test 'cohort_date_filter with start date only' do
-    result = Analytics::RetentionService.send(:cohort_date_filter, Date.new(2026, 3, 1), nil)
+  test 'eligible_sql shifts the range back by N days' do
+    result = Analytics::RetentionService.send(:eligible_sql, 30, Date.new(2026, 3, 1), Date.new(2026, 5, 1))
 
-    assert_match(/first_seen.*>=.*2026-03-01/, result)
-    refute_match(/<=/, result, "Should not have end date clause")
-  end
-
-  # --------------------------------------------------------------------------
-  # Test 28: cohort_date_filter with end_date only
-  # --------------------------------------------------------------------------
-  test 'cohort_date_filter with end date only' do
-    result = Analytics::RetentionService.send(:cohort_date_filter, nil, Date.new(2026, 5, 1))
-
-    assert_match(/first_seen.*<=.*2026-05-01/, result)
-    refute_match(/>=/, result, "Should not have start date clause")
-  end
-
-  # --------------------------------------------------------------------------
-  # Test 29: cohort_date_filter with both dates
-  # --------------------------------------------------------------------------
-  test 'cohort_date_filter with both dates' do
-    result = Analytics::RetentionService.send(
-      :cohort_date_filter, Date.new(2026, 3, 1), Date.new(2026, 5, 1)
-    )
-
-    assert_match(/first_seen.*>=.*2026-03-01/, result)
-    assert_match(/first_seen.*<=.*2026-05-01/, result)
-    assert result.start_with?(' AND '), "Should start with AND"
+    assert_includes result, "up.first_date >= toDate('2026-03-01') - 30"
+    assert_includes result, "up.first_date <= toDate('2026-05-01') - 30"
+    assert_includes result, 'up.first_date <= today() - 31'
   end
 
   # ==========================================================================
@@ -498,12 +398,10 @@ class Analytics::RetentionGoldenTest < ActiveSupport::TestCase
   # Test 12: Decoy project data does not leak into golden project results
   # --------------------------------------------------------------------------
   test 'retention excludes decoy project data' do
-    # The decoy visitor (dv1) has perfect retention (D1/D7/D30 all retained).
-    # If it leaked into P1, rates would change.
-    # With 10 P1 visitors: D1=90.0. If decoy leaked: 10 retained out of 11 = 90.9.
+    # A leaked decoy (fully retained) would make D1 9 of 11 = 81.8.
     result = Analytics::RetentionService.summary(@project.id)
 
-    assert_equal 90.0, result[:day_1], "D1 should be exactly 90.0%%, not affected by decoy"
+    assert_equal 80.0, result[:day_1], "D1 should be exactly 80.0%%, not affected by decoy"
   end
 
   private

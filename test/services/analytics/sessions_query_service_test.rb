@@ -327,6 +327,37 @@ class Analytics::SessionsQueryServiceTest < ActiveSupport::TestCase
   end
 end
 
+class Analytics::SessionsQueryServiceVisitorClauseTest < ActiveSupport::TestCase
+  include AnalyticsSqlCaptureHelper
+
+  PID = 8_800
+  START_DATE = Date.new(2026, 5, 1)
+  END_DATE = Date.new(2026, 5, 8)
+  # Frozen literal: an always-on predicate added to the unfiltered WHERE must fail here.
+  EXPECTED_WHERE = "project_id = #{PID} AND event_date >= '2026-05-01' AND event_date <= '2026-05-08'"
+
+  test 'list appends visitor_clause to the query' do
+    clause = 'visitor_id IN (1, 2)'
+    sqls = capture_stubbed_ch_sql do
+      Analytics::SessionsQueryService.list(PID, start_date: START_DATE, end_date: END_DATE, visitor_clause: clause)
+    end
+    assert_equal 1, sqls.size
+    assert_includes sqls.first, clause
+  end
+
+  test 'list with visitor_clause nil matches omitting it, on the frozen unfiltered WHERE, with no segment_results' do
+    baseline = capture_stubbed_ch_sql do
+      Analytics::SessionsQueryService.list(PID, start_date: START_DATE, end_date: END_DATE)
+    end
+    with_nil = capture_stubbed_ch_sql do
+      Analytics::SessionsQueryService.list(PID, start_date: START_DATE, end_date: END_DATE, visitor_clause: nil)
+    end
+    assert_equal baseline, with_nil
+    assert_not_includes baseline.first, 'segment_results'
+    assert_includes baseline.first, "WHERE #{EXPECTED_WHERE} ORDER BY"
+  end
+end
+
 # Pure key encode/decode — no ClickHouse required, so this always runs (even in CI
 # without a CH instance), locking the opaque-detail-key contract.
 class Analytics::SessionsKeyTest < ActiveSupport::TestCase

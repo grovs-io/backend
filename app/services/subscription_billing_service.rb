@@ -1,18 +1,22 @@
 class SubscriptionBillingService
+  ENDED_STATUSES = %w[canceled incomplete_expired].freeze
+
   def initialize(instance:, project_service: nil)
     @instance = instance
     @project_service = project_service || ProjectService.new
   end
 
-  # Returns { url: String } — Stripe Checkout session URL.
-  # Raises if instance already has active subscription.
-  def create_checkout_session(user:, price_id: nil)
-    subscription = @instance.subscription
-    raise ArgumentError, "This project is already subscribed" if subscription
+  # Returns { client_secret: }; raises ArgumentError, UnknownPlan or CheckoutAlreadyCompleted.
+  def create_checkout_session(user:, plan:, interval:)
+    price_id = Billing::Plans.price(plan, interval)
 
-    price_id ||= ENV["STRIPE_STANDARD_PRICE_ID"]
-    session = StripeService.create_checkout_session_for_product(price_id, user, "scale_up", @instance)
-    { url: session[:url] }
+    @instance.with_lock do
+      raise ArgumentError, "This project is already subscribed" if subscribed_or_unresolved?
+
+      StripeService.expire_open_checkout_sessions(@instance)
+      session = StripeService.create_checkout_session_for_product(price_id, user, plan, @instance)
+      { client_secret: session[:client_secret] }
+    end
   end
 
   # Returns { url: String } — Stripe billing portal URL.
@@ -26,19 +30,43 @@ class SubscriptionBillingService
     subscription = @instance.subscription
     return nil unless subscription
 
-    StripeService.cancel_subscription(subscription)
+    result = StripeService.cancel_subscription(subscription)
+    apply_flat_update(subscription, result)
+    result
+  end
+
+  # Resumes a flat plan's pending cancellation. Returns result hash or nil if there is no flat subscription.
+  def resume_subscription
+    subscription = @instance.subscription
+    return nil unless subscription && Billing::Plans.flat?(subscription.product_type)
+
+    result = StripeService.resume_cancellation(subscription)
+    apply_flat_update(subscription, result)
+    result
   end
 
   # Returns Hash with subscription details (stripe or enterprise) or nil if no subscription.
   def subscription_details
     subscription = @instance.subscription
     if subscription
+      return flat_details(subscription) if Billing::Plans.flat?(subscription.product_type)
+
       return stripe_subscription_details(subscription)
     end
 
     enterprise = @instance.valid_enterprise_subscription
     if enterprise
       return enterprise_subscription_details(enterprise)
+    end
+
+    unresolved = @instance.unresolved_subscription
+    if unresolved
+      return {
+        type: "stripe",
+        payment_issue: true,
+        status: unresolved.status,
+        plan: (unresolved.product_type if Billing::Plans.flat?(unresolved.product_type))
+      }
     end
 
     nil
@@ -54,6 +82,8 @@ class SubscriptionBillingService
   def current_usage
     subscription = @instance.subscription
     if subscription&.active
+      return flat_details(subscription) if Billing::Plans.flat?(subscription.product_type)
+
       return stripe_usage(subscription)
     end
 
@@ -66,6 +96,19 @@ class SubscriptionBillingService
   end
 
   private
+
+  # Applies the cancel/resume response immediately, so cancels_at is visible without waiting for the webhook.
+  def apply_flat_update(subscription, remote)
+    return unless remote && Billing::Plans.flat?(subscription.product_type)
+
+    StripeService.apply_flat_subscription(subscription, remote)
+  end
+
+  def subscribed_or_unresolved?
+    @instance.valid_enterprise_subscription.present? ||
+      @instance.subscription.present? ||
+      @instance.stripe_subscriptions.where.not(status: ENDED_STATUSES).exists?
+  end
 
   def stripe_subscription_details(subscription)
     result = { active: subscription.active, paused: (subscription.status == "paused") }
@@ -101,6 +144,68 @@ class SubscriptionBillingService
       period_end: snap[:period_end],
       next_payment_attempt: snap[:next_payment_attempt]
     }
+  end
+
+  def flat_details(subscription)
+    remote = StripeService.get_subscription_details(subscription.subscription_id, expand: ["latest_invoice"])
+    invoice = StripeService.upcoming_invoice_or_nil(subscription)
+    latest = remote[:latest_invoice]
+    first_item = remote[:items][:data][0]
+    interval = first_item[:price][:recurring][:interval] == "year" ? "yearly" : "monthly"
+    # flexible billing_mode subscriptions carry the period on the item, not the subscription itself
+    period_start = remote[:current_period_start] || first_item[:current_period_start]
+    period_end = remote[:current_period_end] || first_item[:current_period_end]
+
+    {
+      type: "stripe",
+      plan: subscription.product_type,
+      interval: interval,
+      mau_cap: Billing::Plans.mau_cap(subscription.product_type),
+      maus: @project_service.current_mau(@instance),
+      details: { active: subscription.active, paused: subscription.status == "paused" },
+      stripe_subscription: { current_period_start: period_start, current_period_end: period_end },
+      amount_cents: invoice&.total,
+      next_payment_attempt: invoice&.next_payment_attempt,
+      period_start: period_start,
+      period_end: period_end,
+      cancels_at: subscription.cancels_at,
+      latest_invoice: latest_invoice_summary(latest),
+      billed_to: billed_to(latest)
+    }
+  end
+
+  def latest_invoice_summary(invoice)
+    return nil unless invoice
+
+    {
+      number: invoice[:number],
+      invoice_pdf: invoice[:invoice_pdf],
+      hosted_invoice_url: invoice[:hosted_invoice_url],
+      amount_paid: invoice[:amount_paid],
+      status: invoice[:status],
+      paid_at: invoice[:status_transitions]&.[](:paid_at)
+    }
+  end
+
+  def billed_to(invoice)
+    return nil unless invoice
+
+    {
+      name: invoice[:customer_name],
+      tax_id: Array(invoice[:customer_tax_ids]).first&.[](:value),
+      address_lines: address_lines(invoice[:customer_address])
+    }
+  end
+
+  def address_lines(address)
+    return nil unless address
+
+    lines = [
+      [address[:line1], address[:line2]].compact_blank.join(", "),
+      [[address[:postal_code], address[:city]].compact_blank.join(" "), address[:state]].compact_blank.join(", "),
+      address[:country]
+    ].compact_blank
+    lines.presence
   end
 
   def enterprise_subscription_details(enterprise)

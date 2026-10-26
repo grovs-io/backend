@@ -4,7 +4,7 @@ Rack::Attack.blocklisted_responder = lambda do |_request|
   [ 503, {}, ['Blocked']]
 end
 
-Rack::Attack.throttled_responder = lambda do |request|
+Rack::Attack::GROVS_THROTTLED_RESPONDER = lambda do |request|
   # Entra backs off on 429 + Retry-After but quarantines a provisioning job after repeated 5xx.
   if request.env['rack.attack.matched'] == 'scim/token'
     period = request.env['rack.attack.match_data'][:period]
@@ -12,9 +12,18 @@ Rack::Attack.throttled_responder = lambda do |request|
           [{ schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'], status: '429', detail: 'Too many requests' }.to_json]]
   end
 
+  # MCP and server API clients are agents: a JSON 429 with Retry-After tells them to wait, not retry in a loop.
+  if Rack::Attack::JSON_THROTTLES.include?(request.env['rack.attack.matched'])
+    data = request.env['rack.attack.match_data']
+    retry_after = data[:period] - (data[:epoch_time] % data[:period])
+    next [429, { 'Content-Type' => 'application/json', 'Retry-After' => retry_after.to_s },
+          [{ error: "Rate limit exceeded; retry in #{retry_after}s", error_code: 'rate_limited', retry_after: retry_after }.to_json]]
+  end
+
   # 503 so an attacker thinks the site fell over; Rack::Attack returns 429 by default.
   [ 503, {}, ["Server Error\n"]]
 end
+Rack::Attack.throttled_responder = Rack::Attack::GROVS_THROTTLED_RESPONDER
 
 
 class Rack::Attack
@@ -27,16 +36,88 @@ class Rack::Attack
     Grovs::Domains.split(host)&.first == subdomain
   end
 
+  # One counter per token, whatever the route's format suffix, slashes or the header's spacing.
+  def self.prefixed_token_key(req, path_regex, prefix)
+    return nil unless reserved_main_host?(req.host, Grovs::Subdomains::API)
+    return nil unless normalized_path(req).match?(path_regex)
+
+    token = req.env["HTTP_AUTHORIZATION"].to_s.sub(/\ABearer\s+/i, "").strip
+    return nil unless token.start_with?(prefix)
+
+    Digest::SHA256.hexdigest(token)
+  end
+
+  # Match what the router matches: Journey collapses repeated slashes and drops a trailing one,
+  # and a format segment is anything up to the next slash.
+  def self.normalized_path(req)
+    ActionDispatch::Journey::Router::Utils.normalize_path(req.path)
+  rescue StandardError
+    req.path.to_s
+  end
+
+  # `[^/.]+` is the router's own id segment: it also covers a percent-encoded id, which Rails decodes.
+  EVENT_STREAM_PATH = %r{\A/api/v1/projects/[^/.]+/event_stream(\.[^/]+)?\z}
+  AUDIT_EVENTS_PATH = %r{\A/api/v1/instances/[^/.]+/audit_events(/head)?(\.[^/]+)?\z}
+
+  def self.event_stream_token_key(req) = prefixed_token_key(req, EVENT_STREAM_PATH, "est_")
+  def self.audit_export_token_key(req) = prefixed_token_key(req, AUDIT_EVENTS_PATH, "aet_")
+
+  MCP_DATA_PATH = %r{\A/api/v1/mcp/}
+  MCP_HEAVY_PATH = %r{\A/api/v1/mcp/(analytics/|projects/[^/.]+/(analytics/|segments|push_campaigns/[^/.]+/experiment|
+                     in_app_campaigns/[^/.]+/(report|experiment|comments)|journeys/[^/.]+/report))}x
+  # Throttles that answer a JSON 429 with Retry-After.
+  JSON_THROTTLES = %w[mcp_data/token mcp_heavy/token mcp_data/ip server_api/key].freeze
+  SERVER_API_PATH = %r{\A/api/v1/sdk/server/(segments|in_app_campaigns)(/|\.|\z)}
+
+  def self.mcp_data_request?(req)
+    reserved_main_host?(req.host, Grovs::Subdomains::MCP) && normalized_path(req).match?(MCP_DATA_PATH)
+  end
+
+  def self.mcp_token_key(req)
+    return nil unless mcp_data_request?(req)
+
+    token = req.env["HTTP_AUTHORIZATION"].to_s.sub(/\ABearer\s+/i, "").strip
+    token.empty? ? nil : Digest::SHA256.hexdigest(token)
+  end
+
+  # The hosted MCP server calls from these IPs for every user, so only direct callers get the IP ceiling.
+  def self.mcp_proxy_ip?(req) = ENV.fetch("MCP_PROXY_IPS", "").split(",").map(&:strip).include?(req.ip)
+
+  # Every caller outside the API, SDK and link hosts; MCP data routes have their own buckets below.
+  def self.general_ip_key(req)
+    return nil if reserved_main_host?(req.host, Grovs::Subdomains::API) || reserved_main_host?(req.host, Grovs::Subdomains::SDK)
+    return nil if req.host&.start_with?('dls') || mcp_data_request?(req)
+
+    req.ip
+  end
+
+  def self.register_mcp_throttles!(token_limit: 120, heavy_limit: 30, ip_limit: 2000)
+    throttle('mcp_data/token', limit: token_limit, period: 1.minute) { |req| mcp_token_key(req) }
+    throttle('mcp_heavy/token', limit: heavy_limit, period: 1.minute) do |req|
+      mcp_token_key(req) if normalized_path(req).match?(MCP_HEAVY_PATH)
+    end
+    throttle('mcp_data/ip', limit: ip_limit, period: 1.minute) do |req|
+      req.ip if mcp_data_request?(req) && !mcp_proxy_ip?(req)
+    end
+  end
+
+  def self.server_api_key(req)
+    return nil unless reserved_main_host?(req.host, Grovs::Subdomains::SDK) && normalized_path(req).match?(SERVER_API_PATH)
+
+    key = req.env["HTTP_PROJECT_KEY"].to_s.strip
+    key.empty? ? nil : Digest::SHA256.hexdigest(key)
+  end
+
+  def self.register_server_api_throttle!(limit: 120)
+    throttle('server_api/key', limit: limit, period: 1.minute) { |req| server_api_key(req) }
+  end
+
   # Only enable rate limiting in production — development and staging
   # need unrestricted access for testing and debugging.
   if Rails.env.production?
-    throttle('req/ip', limit: 200, period: 1.minute) do |req|
-      unless reserved_main_host?(req.host, Grovs::Subdomains::API) ||
-             reserved_main_host?(req.host, Grovs::Subdomains::SDK) ||
-             req.host&.start_with?('dls')
-        req.ip
-      end
-    end
+    throttle('req/ip', limit: 200, period: 1.minute) { |req| general_ip_key(req) }
+    register_mcp_throttles!
+    register_server_api_throttle!
 
     throttle('logins/ip', limit: 20, period: 1.minute) do |req|
       req.ip if req.path == "/oauth/token" && req.post?
@@ -121,12 +202,14 @@ class Rack::Attack
       end
     end
 
+    # Pull-feed clients poll continuously; this bounds one token, not the dashboard's own reads.
+    throttle('event_stream/token', limit: 120, period: 1.minute) do |req|
+      event_stream_token_key(req)
+    end
+
     # SIEM pollers: 60 pulls a minute per token is plenty for a 1000-row page size.
     throttle('audit_export/token', limit: 60, period: 1.minute) do |req|
-      if reserved_main_host?(req.host, Grovs::Subdomains::API) && req.path.match?(%r{/api/v1/instances/\w+/audit_events})
-        auth = req.env["HTTP_AUTHORIZATION"].to_s
-        Digest::SHA256.hexdigest(auth) if auth.include?("aet_")
-      end
+      audit_export_token_key(req)
     end
 
     # /api/v1/projects/:id/migration_source/test triggers a synchronous outbound HTTP call
@@ -139,6 +222,10 @@ class Rack::Attack
          req.path =~ %r{\A/api/v1/projects/[^/]+/migration_source/test\z}
         req.ip
       end
+    end
+
+    throttle('diagnostics/ip', limit: 60, period: 1.minute) do |req|
+      req.ip if req.path.start_with?('/api/v1/diagnostics/')
     end
 
     # 5000/sec: prod-measured (03ff4f4) — carrier NATs exceeded 500/sec in the May incidents

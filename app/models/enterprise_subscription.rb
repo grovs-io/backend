@@ -5,5 +5,5 @@ class EnterpriseSubscription < ApplicationRecord
   # You can add validations if necessary
   validates :start_date, :end_date, :total_maus, presence: true
 
-  
+  scope :current, -> { where(active: true).where("end_date >= ?", Time.current) }
 end

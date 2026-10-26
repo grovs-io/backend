@@ -46,10 +46,17 @@ module Grovs
     USER_REFERRED = "user_referred"
     SCREEN_VIEW = "screen_view"
     CUSTOM = "custom"
+    PUSH_OPEN = "push_open"
     ALL = [APP_OPEN, VIEW, OPEN, INSTALL, REINSTALL, TIME_SPENT, REACTIVATION, USER_REFERRED, SCREEN_VIEW, CUSTOM].freeze
-    # Event names that clients must not use as custom event_name values.
-    # screen_view is excluded because add_custom_event explicitly handles it.
-    RESERVED_EVENT_NAMES = (ALL - [SCREEN_VIEW, CUSTOM]).to_set.freeze
+    # Raised by a message, not by the person: seeing or tapping one is not activity of theirs.
+    MESSAGE_EVENT_NAMES = [PUSH_OPEN, "in_app_viewed", "in_app_clicked", "in_app_dismissed", "in_app_answered",
+                           "in_app_commented", "in_app_held", "push_delivered", "push_held", "journey_entered", "journey_held", "journey_path"].freeze
+    NOT_A_MESSAGE_SQL = "NOT (event_type = 'custom' AND event_name IN (#{MESSAGE_EVENT_NAMES.map { |n| "'#{n}'" }.join(', ')}))".freeze
+    # Written by the server, not by a device: never part of a session.
+    SERVER_EVENT_NAMES = %w[in_app_held push_held push_delivered journey_entered journey_held journey_path].freeze
+    NOT_A_SERVER_EVENT_SQL = "NOT (event_type = 'custom' AND event_name IN (#{SERVER_EVENT_NAMES.map { |n| "'#{n}'" }.join(', ')}))".freeze
+    # Names clients may not send as custom event_name (screen_view is handled by add_custom_event itself).
+    RESERVED_EVENT_NAMES = (ALL - [SCREEN_VIEW, CUSTOM] + [PUSH_OPEN]).to_set.freeze
     # Maps system event types to LinkDailyStatistic/VisitorDailyStatistic counter columns.
     # CUSTOM and SCREEN_VIEW are intentionally omitted — they flow to ClickHouse only
     # and do not increment PG dashboard stat counters.
@@ -141,7 +148,7 @@ module Grovs
     VALIDITY_MINUTES = 5
     CLIPBOARD_VALIDITY = 48.hours
     LOGO = Grovs.configured_link_asset_url("DEFAULT_LOGO_URL", "logo-square-black.png")
-    SOCIAL_PREVIEW = Grovs.configured_link_asset_url("DEFAULT_SOCIAL_PREVIEW_URL", "logo-large-black.png")
+    SOCIAL_PREVIEW = Grovs.configured_link_asset_url("DEFAULT_SOCIAL_PREVIEW_URL", "social-media-placeholder.jpg")
     DEFAULT_TITLE = ENV.fetch("DEFAULT_LINK_TITLE", "grovs")
     DEFAULT_SUBTITLE = ENV.fetch("DEFAULT_LINK_SUBTITLE", "Dynamic links, attributions, and referrals across mobile and web platforms.")
   end
@@ -236,6 +243,21 @@ module Grovs
     ENV["GROVS_SELF_HOSTED"] == "true"
   end
 
+  # Incident kill switch for in-app messages: sync returns nothing and the jobs do not run.
+  def self.in_app_enabled?
+    ENV.fetch("IN_APP_ENABLED", "true") == "true"
+  end
+
+  # Incident kill switch for journeys: the engine stops moving people; the API stays readable.
+  def self.journeys_enabled?
+    ENV.fetch("JOURNEYS_ENABLED", "true") == "true"
+  end
+
+  # Incident kill switch for outbound delivery only; configuration endpoints stay up.
+  def self.event_stream_enabled?
+    ENV.fetch("EVENT_STREAM_ENABLED", "true") == "true"
+  end
+
   # SMTP configured for outbound mail — self-hosted installs without it must not attempt delivery.
   def self.smtp_enabled?
     ENV["MAILER_DELIVERY_METHOD"] == "smtp"
@@ -278,6 +300,34 @@ module Grovs
   def self.migrations_enabled?
     ENV["MIGRATIONS_ENABLED"] == "true" && custom_domains_enabled?
   end
+
+  # Allowed parents for the in-app HTML preview page: IN_APP_PREVIEW_ORIGINS (comma-separated)
+  # replaces the default entirely, for self-hosted dashboards on their own origin.
+  def self.in_app_preview_origins
+    raw = ENV["IN_APP_PREVIEW_ORIGINS"].to_s.strip
+    return raw.split(",").map { |entry| entry.strip.sub(%r{/+\z}, "") }.reject(&:blank?) if raw.present?
+
+    [react_dashboard_origin, react_beta_dashboard_origin].compact
+  end
+
+  def self.react_dashboard_origin
+    origin_for(ENV["REACT_HOST_PROTOCOL"], ENV["REACT_HOST"])
+  end
+
+  def self.react_beta_dashboard_origin
+    origin_for(ENV["REACT_BETA_HOST_PROTOCOL"], ENV["REACT_BETA_HOST"])
+  end
+
+  def self.origin_for(protocol, host)
+    host = host.to_s.strip
+    return nil if host.blank?
+
+    protocol = protocol.to_s.strip
+    protocol = "https://" if protocol.blank?
+    protocol = "#{protocol}://" unless protocol.end_with?("://")
+    "#{protocol}#{host}".sub(%r{/+\z}, "")
+  end
+  private_class_method :origin_for
 
   GOOGLE_PUBLISHER_SCOPE = 'https://www.googleapis.com/auth/androidpublisher'.freeze
 end

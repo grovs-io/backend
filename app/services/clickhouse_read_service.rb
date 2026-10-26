@@ -625,6 +625,8 @@ module ClickhouseReadService
   # Mirrors LinkStatisticsQuery#links_scope so both paths select the same links.
   def self.link_dimension_predicates(filters, placeholders)
     sql = +''
+    # A specific link_id is a direct lookup, not a list — never hide it (mirrors links_scope).
+    sql << " AND NOT has(tags, '#{SmartBanner::LINK_TAG}')" if filters[:link_id].blank?
     sql << " AND active = {f_active:UInt8}" unless filters[:active].nil?
     placeholders[:f_active] = filters[:active] ? 1 : 0 unless filters[:active].nil?
     sql << " AND sdk_generated = {f_sdk:UInt8}" unless filters[:sdk_generated].nil?

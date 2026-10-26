@@ -81,19 +81,21 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
   )
 
   ANALYTICS_RETENTION = strict_object(
-    required: %w[plan queryable_days cold_after_days can_query_cold],
+    required: %w[plan queryable_days cold_after_days can_query_cold raw_max_days raw_counter_max_days],
     properties: {
       "plan" => STRING,
       "queryable_days" => NUMBER,
       "cold_after_days" => NUMBER,
-      "can_query_cold" => BOOL
+      "can_query_cold" => BOOL,
+      "raw_max_days" => NUMBER,
+      "raw_counter_max_days" => NUMBER
     }
   )
 
   INSTANCE_RESPONSE = strict_object(
     required: %w[
       id api_key uri_scheme updated_at get_started_dismissed quota_exceeded
-      revenue_collection_enabled production test hash_id analytics_retention
+      revenue_collection_enabled production test hash_id icon_url analytics_retention
     ],
     properties: {
       "id" => ID,
@@ -106,6 +108,7 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
       "production" => PROJECT_RESPONSE.merge("type" => %w[object null]),
       "test" => PROJECT_RESPONSE.merge("type" => %w[object null]),
       "hash_id" => STRING,
+      "icon_url" => STRING_OR_NULL,
       "analytics_retention" => ANALYTICS_RETENTION
     }
   )
@@ -219,11 +222,78 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
       "show_preview_android" => BOOL_OR_NULL,
       "show_preview_ios" => BOOL_OR_NULL,
       "copy_to_clipboard_android" => BOOL,
-      "copy_to_clipboard_ios" => BOOL
+      "copy_to_clipboard_ios" => BOOL,
+      "in_app_browser_page_android" => BOOL,
+      "in_app_browser_page_ios" => BOOL
     }
   }.freeze
   REDIRECT_CONFIG_ENVELOPE = strict_object(required: %w[redirect_config], properties: { "redirect_config" => REDIRECT_CONFIG_RESPONSE })
   REDIRECT_CONFIG_AS_CONFIG_ENVELOPE = strict_object(required: %w[config], properties: { "config" => REDIRECT_CONFIG_RESPONSE })
+
+  SB_DASHBOARD_STATS = strict_object(
+    required: %w[views clicks dismisses ctr opens installs],
+    properties: {
+      "views" => { "type" => "integer" }, "clicks" => { "type" => "integer" },
+      "dismisses" => { "type" => "integer" }, "ctr" => NUMBER,
+      "opens" => { "type" => "integer" }, "installs" => { "type" => "integer" }
+    }
+  )
+
+  SB_DASHBOARD_BANNER = strict_object(
+    required: %w[id name status priority platforms url_include url_exclude position title subtitle button_text
+                 background_color text_color button_color button_text_color icon_url dismiss_days open_hide_days
+                 default_link created_at updated_at stats],
+    properties: {
+      "id" => { "type" => "integer" }, "name" => STRING,
+      "status" => { "type" => "string", "enum" => %w[draft live paused archived] },
+      "priority" => { "type" => "integer" }, "platforms" => SB_STRING_ARRAY,
+      "url_include" => SB_STRING_ARRAY, "url_exclude" => SB_STRING_ARRAY,
+      "position" => { "type" => "string", "enum" => %w[top bottom] }, "title" => STRING,
+      "subtitle" => STRING_OR_NULL, "button_text" => STRING, "background_color" => SB_COLOR,
+      "text_color" => SB_COLOR, "button_color" => SB_COLOR, "button_text_color" => SB_COLOR,
+      "icon_url" => STRING_OR_NULL, "dismiss_days" => { "type" => "integer" },
+      "open_hide_days" => { "type" => "integer" }, "default_link" => STRING_OR_NULL,
+      "created_at" => STRING, "updated_at" => STRING, "stats" => SB_DASHBOARD_STATS
+    }
+  )
+
+  SB_DASHBOARD_ONE = strict_object(required: %w[smart_banner], properties: { "smart_banner" => SB_DASHBOARD_BANNER })
+  SB_DASHBOARD_LIST = strict_object(
+    required: %w[smart_banners],
+    properties: { "smart_banners" => { "type" => "array", "items" => SB_DASHBOARD_BANNER } }
+  )
+
+  SB_DASHBOARD_WRITE_REQUEST = strict_object(
+    required: %w[smart_banner],
+    properties: {
+      "smart_banner" => strict_object(
+        required: [],
+        properties: {
+          "name" => STRING, "status" => STRING, "position" => STRING, "title" => STRING,
+          "subtitle" => STRING_OR_NULL, "button_text" => STRING, "background_color" => STRING,
+          "text_color" => STRING, "button_color" => STRING, "button_text_color" => STRING,
+          "dismiss_days" => { "type" => %w[integer string] }, "open_hide_days" => { "type" => %w[integer string] },
+          "platforms" => SB_STRING_ARRAY,
+          "url_include" => SB_STRING_ARRAY, "url_exclude" => SB_STRING_ARRAY,
+          "icon" => JSON_VALUE, "remove_icon" => BOOL
+        }
+      )
+    }
+  )
+
+  SB_DASHBOARD_REORDER_REQUEST = strict_object(
+    required: %w[ids], properties: { "ids" => { "type" => "array", "items" => ID } }
+  )
+
+  SB_DASHBOARD_FAILURES = { 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }.freeze
+
+  SB_DASHBOARD_STATUS = strict_object(
+    required: %w[web_configured domains sdk_last_seen_at],
+    properties: {
+      "web_configured" => { "type" => "boolean" }, "domains" => SB_STRING_ARRAY,
+      "sdk_last_seen_at" => { "type" => %w[string null] }
+    }
+  )
 
   CAMPAIGN_ENVELOPE = strict_object(required: %w[campaign], properties: { "campaign" => MCP_CAMPAIGN_RESPONSE })
   PAGINATED_RESPONSE = strict_object(
@@ -290,39 +360,10 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
     }
   )
 
-  NOTIFICATION_TARGET_RESPONSE = strict_object(
-    required: %w[id existing_users new_users platforms],
-    properties: {
-      "id" => ID,
-      "existing_users" => BOOL,
-      "new_users" => BOOL,
-      "platforms" => ARRAY_OR_NULL
-    }
-  )
-  NOTIFICATION_RESPONSE = strict_object(
-    required: %w[id title subtitle html archived auto_display send_push updated_at target access_url],
-    properties: {
-      "id" => ID,
-      "title" => STRING_OR_NULL,
-      "subtitle" => STRING_OR_NULL,
-      "html" => STRING_OR_NULL,
-      "archived" => BOOL,
-      "auto_display" => BOOL,
-      "send_push" => BOOL,
-      "updated_at" => STRING,
-      "read_count" => { "type" => %w[integer null] },
-      "target" => NOTIFICATION_TARGET_RESPONSE,
-      "access_url" => STRING
-    }
-  )
-  NOTIFICATION_ENVELOPE = strict_object(required: %w[notification], properties: { "notification" => NOTIFICATION_RESPONSE })
-  NOTIFICATIONS_ARCHIVE_ENVELOPE = strict_object(
-    required: %w[notifications],
-    properties: { "notifications" => NOTIFICATION_RESPONSE }
-  )
 
   URL_RESPONSE = strict_object(required: %w[url], properties: { "url" => STRING })
-  RESULT_RESPONSE = strict_object(required: %w[result], properties: { "result" => { "type" => %w[object boolean string null] } })
+  CLIENT_SECRET_RESPONSE = strict_object(required: %w[client_secret], properties: { "client_secret" => STRING })
+  RESULT_RESPONSE = strict_object(required: %w[result], properties: { "result" => { "type" => "boolean" } })
   AUTOMATION_VISITOR_RESPONSE = strict_object(
     required: %w[id uuid sdk_identifier sdk_attributes inviter_id web_visitor created_at updated_at inviter],
     properties: {
@@ -509,7 +550,11 @@ properties: { "link" => SORTED_LINK_RAW_RESPONSE, "metrics" => EVENT_COUNT_BUCKE
       "metrics" => VISITOR_OWN_METRICS_RESPONSE,
       "aggregated_metrics" => VISITOR_REFERRAL_METRICS_RESPONSE,
       "number_of_generated_links" => { "type" => "integer" },
-      "metrics_since" => STRING
+      "metrics_since" => STRING,
+      "push" => { "oneOf" => [strict_object(required: %w[platform registered],
+                                            properties: { "platform" => { "type" => %w[string null] },
+                                                          "registered" => { "type" => "boolean" } }),
+                              { "type" => "null" }] }
     }
   )
   DATE_NUMBER_MAP_RESPONSE = {
@@ -548,6 +593,52 @@ properties: { "link" => SORTED_LINK_RAW_RESPONSE, "metrics" => EVENT_COUNT_BUCKE
     required: %w[message subscription],
     properties: { "message" => STRING, "subscription" => DYNAMIC_OBJECT_RESPONSE }
   )
+  FLAT_BILLING_DETAILS_RESPONSE = strict_object(
+    required: %w[type plan interval mau_cap maus details stripe_subscription amount_cents next_payment_attempt
+period_start period_end cancels_at latest_invoice billed_to],
+    properties: {
+      "type" => { "enum" => ["stripe"] },
+      "plan" => STRING,
+      "interval" => STRING,
+      "mau_cap" => { "type" => %w[number integer null] },
+      "maus" => { "type" => %w[number integer null] },
+      "details" => strict_object(
+        required: %w[active paused],
+        properties: { "active" => BOOL, "paused" => BOOL }
+      ),
+      "stripe_subscription" => strict_object(
+        required: %w[current_period_start current_period_end],
+        properties: {
+          "current_period_start" => { "type" => %w[number integer null] },
+          "current_period_end" => { "type" => %w[number integer null] }
+        }
+      ),
+      "amount_cents" => { "type" => %w[number integer null] },
+      "next_payment_attempt" => { "type" => %w[number integer null] },
+      "period_start" => { "type" => %w[string integer null] },
+      "period_end" => { "type" => %w[string integer null] },
+      "cancels_at" => STRING_OR_NULL,
+      "latest_invoice" => strict_object(
+        required: %w[number invoice_pdf hosted_invoice_url amount_paid status paid_at],
+        properties: {
+          "number" => STRING_OR_NULL,
+          "invoice_pdf" => STRING_OR_NULL,
+          "hosted_invoice_url" => STRING_OR_NULL,
+          "amount_paid" => { "type" => %w[integer null] },
+          "status" => STRING_OR_NULL,
+          "paid_at" => { "type" => %w[integer null] }
+        }
+      ).merge("type" => %w[object null]),
+      "billed_to" => strict_object(
+        required: %w[name tax_id address_lines],
+        properties: {
+          "name" => STRING_OR_NULL,
+          "tax_id" => STRING_OR_NULL,
+          "address_lines" => { "type" => %w[array null], "items" => STRING }
+        }
+      ).merge("type" => %w[object null])
+    }
+  ).freeze
   BILLING_SUBSCRIPTION_DETAILS_RESPONSE = {
     "oneOf" => [
       strict_object(
@@ -590,6 +681,16 @@ next_payment_attempt],
           "status" => STRING,
           "mau_limit" => NUMBER
         }
+      ),
+      FLAT_BILLING_DETAILS_RESPONSE,
+      strict_object(
+        required: %w[type payment_issue status plan],
+        properties: {
+          "type" => { "enum" => ["stripe"] },
+          "payment_issue" => { "enum" => [true] },
+          "status" => STRING_OR_NULL,
+          "plan" => STRING_OR_NULL
+        }
       )
     ]
   }.freeze
@@ -620,7 +721,8 @@ next_payment_attempt],
           "start_at" => STRING_OR_NULL,
           "end_at" => STRING_OR_NULL
         }
-      )
+      ),
+      FLAT_BILLING_DETAILS_RESPONSE
     ]
   }.freeze
   NUMBER_OR_NULL = { "type" => %w[number integer null] }.freeze
@@ -940,14 +1042,32 @@ properties: { "enabled" => BOOL, "generated_page" => BOOL_OR_NULL, "fallback_url
 
   register "Api::V1::RedirectsController#redirect_config", request: NO_PARAMS, responses: { 200 => REDIRECT_CONFIG_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR }
   register "Api::V1::RedirectsController#set_redirect_config",
-           request: strict_object(required: [], 
+           request: strict_object(required: [],
 properties: { "default_fallback" => STRING_OR_NULL, "show_preview_android" => BOOL, "show_preview_ios" => BOOL,
-              "copy_to_clipboard_android" => BOOL, "copy_to_clipboard_ios" => BOOL }),
+              "copy_to_clipboard_android" => BOOL, "copy_to_clipboard_ios" => BOOL,
+              "in_app_browser_page_android" => BOOL, "in_app_browser_page_ios" => BOOL }),
            responses: { 200 => REDIRECT_CONFIG_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR, 422 => ERROR }
   register "Api::V1::RedirectsController#set_redirect",
-           request: strict_object(required: %w[platform variation], 
+           request: strict_object(required: %w[platform variation],
 properties: { "platform" => STRING, "variation" => STRING, "appstore" => BOOL, "fallback_url" => STRING_OR_NULL, "enabled" => BOOL }),
            responses: { 200 => REDIRECT_CONFIG_AS_CONFIG_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR, 422 => ERROR }
+
+  register "Api::V1::SmartBannersController#status", request: NO_PARAMS,
+           responses: { 200 => SB_DASHBOARD_STATUS, **SB_DASHBOARD_FAILURES }
+  register "Api::V1::SmartBannersController#index", request: NO_PARAMS,
+           responses: { 200 => SB_DASHBOARD_LIST, **SB_DASHBOARD_FAILURES }
+  register "Api::V1::SmartBannersController#show", request: NO_PARAMS,
+           responses: { 200 => SB_DASHBOARD_ONE, **SB_DASHBOARD_FAILURES }
+  register "Api::V1::SmartBannersController#create", request: SB_DASHBOARD_WRITE_REQUEST,
+           responses: { 201 => SB_DASHBOARD_ONE, 422 => ERROR, **SB_DASHBOARD_FAILURES }
+  register "Api::V1::SmartBannersController#duplicate", request: NO_PARAMS,
+           responses: { 201 => SB_DASHBOARD_ONE, **SB_DASHBOARD_FAILURES }
+  register "Api::V1::SmartBannersController#update", request: SB_DASHBOARD_WRITE_REQUEST,
+           responses: { 200 => SB_DASHBOARD_ONE, 422 => ERROR, **SB_DASHBOARD_FAILURES }
+  register "Api::V1::SmartBannersController#destroy", request: NO_PARAMS,
+           responses: { 200 => strict_object(required: [], properties: {}), **SB_DASHBOARD_FAILURES }
+  register "Api::V1::SmartBannersController#reorder", request: SB_DASHBOARD_REORDER_REQUEST,
+           responses: { 200 => SB_DASHBOARD_LIST, 422 => ERROR, **SB_DASHBOARD_FAILURES }
 
   # Campaigns, links, dashboard, events.
   %w[
@@ -967,12 +1087,73 @@ properties: { "platform" => STRING, "variation" => STRING, "appstore" => BOOL, "
   register "Api::V1::CampaignsController#archive", request: strict_object(required: [], properties: { "campaign_id" => ID }), responses: { 200 => CAMPAIGN_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
   register "Api::V1::CampaignsController#metrics_for_overview", request: SEARCH_REQUEST, responses: { 200 => EVENT_TIMESERIES_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 422 => CODED_UNAVAILABLE }
 
-  register "Api::V1::LinksController#create_link", request: DASHBOARD_LINK_REQUEST, responses: { 200 => LINK_ENVELOPE, 400 => ERROR, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => RAILS_EXCEPTION_RESPONSE }
+  # Dashboards
+  DASHBOARD_WIDGET_RESPONSE = strict_object(
+    required: %w[id dashboard_id title subtitle kind panel viz size query filters position created_at updated_at],
+    properties: { "id" => ID, "dashboard_id" => ID, "title" => STRING, "subtitle" => STRING_OR_NULL, "kind" => { "enum" => %w[metric panel] },
+                  "panel" => STRING_OR_NULL, "viz" => STRING, "size" => STRING,
+                  "query" => JSON_VALUE, "filters" => ARRAY, "position" => { "type" => "integer" },
+                  "created_at" => STRING, "updated_at" => STRING }
+  )
+  DASHBOARD_RESPONSE = strict_object(
+    required: %w[id name position created_at updated_at widgets],
+    properties: { "id" => ID, "name" => STRING, "position" => { "type" => "integer" },
+                  "created_at" => STRING, "updated_at" => STRING,
+                  "widgets" => { "type" => "array", "items" => DASHBOARD_WIDGET_RESPONSE } }
+  )
+  DASHBOARD_ENVELOPE = strict_object(required: %w[dashboard], properties: { "dashboard" => DASHBOARD_RESPONSE })
+  DASHBOARDS_ENVELOPE = strict_object(required: %w[dashboards],
+                                      properties: { "dashboards" => { "type" => "array", "items" => DASHBOARD_RESPONSE } })
+  DASHBOARD_WIDGET_ENVELOPE = strict_object(required: %w[widget], properties: { "widget" => DASHBOARD_WIDGET_RESPONSE })
+  DASHBOARD_WIDGET_REQUEST = strict_object(
+    required: [],
+    properties: { "dashboard_id" => ID, "widget_id" => ID, "title" => STRING_OR_NULL, "subtitle" => STRING_OR_NULL, "kind" => STRING_OR_NULL,
+                  "panel" => STRING_OR_NULL, "viz" => STRING_OR_NULL,
+                  "size" => STRING_OR_NULL, "query" => JSON_VALUE, "filters" => ARRAY_OR_NULL }
+  )
+  DASHBOARD_CRUD_RESPONSES = { 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => ERROR }.freeze
+
+  register "Api::V1::DashboardsController#index", request: NO_PARAMS, responses: { 200 => DASHBOARDS_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
+  register "Api::V1::DashboardsController#create", request: strict_object(required: [], properties: { "name" => STRING_OR_NULL }),
+           responses: { 200 => DASHBOARD_ENVELOPE }.merge(DASHBOARD_CRUD_RESPONSES)
+  register "Api::V1::DashboardsController#update",
+           request: strict_object(required: [], properties: { "dashboard_id" => ID, "name" => STRING_OR_NULL, "widget_order" => ARRAY_OR_NULL }),
+           responses: { 200 => DASHBOARD_ENVELOPE }.merge(DASHBOARD_CRUD_RESPONSES)
+  register "Api::V1::DashboardsController#destroy", request: strict_object(required: [], properties: { "dashboard_id" => ID }),
+           responses: { 200 => MESSAGE }.merge(DASHBOARD_CRUD_RESPONSES)
+  register "Api::V1::DashboardsController#create_widget", request: DASHBOARD_WIDGET_REQUEST,
+           responses: { 200 => DASHBOARD_WIDGET_ENVELOPE }.merge(DASHBOARD_CRUD_RESPONSES)
+  register "Api::V1::DashboardsController#update_widget", request: DASHBOARD_WIDGET_REQUEST,
+           responses: { 200 => DASHBOARD_WIDGET_ENVELOPE }.merge(DASHBOARD_CRUD_RESPONSES)
+  register "Api::V1::DashboardsController#destroy_widget", request: strict_object(required: [], properties: { "dashboard_id" => ID, "widget_id" => ID }),
+           responses: { 200 => MESSAGE }.merge(DASHBOARD_CRUD_RESPONSES)
+
+  SDK_STATUS_RESPONSE = strict_object(
+    required: %w[ios_seen_at android_seen_at web_seen_at has_events has_purchases has_links],
+    properties: { "ios_seen_at" => STRING_OR_NULL, "android_seen_at" => STRING_OR_NULL,
+                  "web_seen_at" => STRING_OR_NULL, "has_events" => { "type" => "boolean" },
+                  "has_purchases" => { "type" => "boolean" }, "has_links" => { "type" => "boolean" } }
+  )
+  register "Api::V1::SdkStatusController#show", request: NO_PARAMS,
+           responses: { 200 => SDK_STATUS_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
+
+  register "Api::V1::LinksController#create_link", request: DASHBOARD_LINK_REQUEST, responses: { 200 => LINK_ENVELOPE, 400 => ERROR, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => ERROR }
   register "Api::V1::LinksController#update_link", request: DASHBOARD_LINK_REQUEST, responses: { 200 => LINK_ENVELOPE, 400 => ERROR, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => ERROR }
-  register "Api::V1::LinksController#remove_link", request: NO_PARAMS, responses: { 200 => MESSAGE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
+  register "Api::V1::LinksController#remove_link", request: NO_PARAMS, responses: { 200 => MESSAGE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => ERROR }
+  LINK_LAST_OPEN = strict_object(
+    required: %w[opened_at platform model app_version],
+    properties: { "opened_at" => STRING, "platform" => STRING_OR_NULL, "model" => STRING_OR_NULL,
+                  "app_version" => STRING_OR_NULL }
+  )
+  register "Api::V1::LinksController#last_open", request: NO_PARAMS,
+           responses: { 200 => strict_object(required: %w[open], properties: { "open" => LINK_LAST_OPEN.merge("type" => %w[object null]) }),
+                        401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
   register "Api::V1::LinksController#is_path_available", request: strict_object(required: %w[path], properties: { "path" => STRING }), responses: { 200 => AVAILABLE_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR }
   register "Api::V1::LinksController#generate_path", request: NO_PARAMS, responses: { 200 => GENERATED_PATH_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR }
   register "Api::V1::LinksController#links_by_ids", request: strict_object(required: %w[ids], properties: { "ids" => ARRAY }), responses: { 200 => LINKS_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR }
+  register "Api::V1::LinksController#lookup",
+           request: strict_object(required: [], properties: { "term" => STRING_OR_NULL, "limit" => { "type" => %w[integer string null] } }),
+           responses: { 200 => LINKS_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
 
   register "Api::V1::DashboardController#metrics_overview", request: SEARCH_REQUEST, responses: { 200 => strict_object(required: %w[metrics], properties: { "metrics" => DASHBOARD_METRICS_RESPONSE }), 401 => AUTH_ERROR, 403 => ERROR, 422 => CODED_UNAVAILABLE, 503 => CODED_UNAVAILABLE }
   register "Api::V1::DashboardController#links_views", request: SEARCH_REQUEST, responses: { 200 => strict_object(required: %w[metrics], properties: { "metrics" => DATE_NUMBER_MAP_RESPONSE }), 401 => AUTH_ERROR, 403 => ERROR, 410 => CODED_UNAVAILABLE }
@@ -983,23 +1164,14 @@ properties: { "platform" => STRING, "variation" => STRING, "appstore" => BOOL, "
   register "Api::V1::EventsController#events_for_payment_screen", request: SEARCH_REQUEST, responses: { 200 => PAYMENT_SCREEN_EVENTS_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
   register "Api::V1::EventsController#metrics_values", request: NO_PARAMS, responses: { 200 => METRICS_VALUES_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR }
 
-  # Notifications
-  register "Api::V1::NotificationsController#test", request: NO_PARAMS,
-           responses: { 200 => strict_object(required: %w[notifications], properties: { "notifications" => STRING }), 401 => AUTH_ERROR }
-  register "Api::V1::NotificationsController#create",
-           request: strict_object(required: [], 
-properties: { "title" => STRING_OR_NULL, "html" => STRING_OR_NULL, "subtitle" => STRING_OR_NULL, "auto_display" => BOOL_OR_NULL, "send_push" => BOOL_OR_NULL, 
-"new_users" => BOOL_OR_NULL, "existing_users" => BOOL_OR_NULL, "platforms" => ARRAY_OR_NULL }),
-           responses: { 200 => NOTIFICATION_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
-  register "Api::V1::NotificationsController#notifications", request: SEARCH_REQUEST, responses: { 200 => PAGINATED_RESPONSE, 400 => RAILS_EXCEPTION_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
-  register "Api::V1::NotificationsController#archive_notification", request: NO_PARAMS, responses: { 200 => NOTIFICATIONS_ARCHIVE_ENVELOPE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 422 => ERROR }
 
   # Payments/admin/export/diagnostics/webhooks/SSO/IAP/purchases.
-  %w[
-    Api::V1::PaymentsController#create_subscription_session
-    Api::V1::PaymentsController#stripe_dashboard_url
-  ].each { |action| register action, request: NO_PARAMS, responses: { 200 => URL_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 422 => ERROR } }
-  register "Api::V1::PaymentsController#cancel_subscription", request: NO_PARAMS, responses: { 200 => RESULT_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR }
+  register "Api::V1::PaymentsController#create_subscription_session",
+           request: strict_object(required: [], properties: { "plan" => STRING_OR_NULL, "interval" => STRING_OR_NULL }),
+           responses: { 200 => CLIENT_SECRET_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 422 => ERROR }
+  register "Api::V1::PaymentsController#stripe_dashboard_url", request: NO_PARAMS, responses: { 200 => URL_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 422 => ERROR }
+  register "Api::V1::PaymentsController#cancel_subscription", request: NO_PARAMS, responses: { 200 => RESULT_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 502 => ERROR }
+  register "Api::V1::PaymentsController#resume_subscription", request: NO_PARAMS, responses: { 200 => RESULT_RESPONSE, 401 => AUTH_ERROR, 403 => ERROR, 404 => ERROR, 502 => ERROR }
   %w[
     Api::V1::PaymentsController#subscription_details
   ].each do |action| 
@@ -1023,15 +1195,15 @@ properties: { "title" => STRING_OR_NULL, "html" => STRING_OR_NULL, "subtitle" =>
   register "Api::V1::DiagnosticsController#test_logs",
            request: strict_object(required: [], 
 properties: { "level" => STRING_OR_NULL, "message" => STRING_OR_NULL, "count" => { "type" => %w[integer string null] }, "api_key" => STRING_OR_NULL }),
-           responses: { 200 => DIAGNOSTIC_LOGS_RESPONSE, 401 => AUTH_ERROR }
+           responses: { 200 => DIAGNOSTIC_LOGS_RESPONSE, 401 => AUTH_ERROR, 404 => ERROR }
   register "Api::V1::DiagnosticsController#test_exception",
            request: strict_object(required: [], properties: { "type" => STRING_OR_NULL, "message" => STRING_OR_NULL }),
            responses: { 401 => AUTH_ERROR, 404 => { "oneOf" => [ERROR, RAILS_EXCEPTION_RESPONSE] }, 500 => RAILS_EXCEPTION_RESPONSE }
   register "Api::V1::DiagnosticsController#test_diagnostics",
            request: strict_object(required: [], 
 properties: { "iterations" => { "type" => %w[integer string null] }, "include_slow" => BOOL_OR_NULL, "cleanup" => BOOL_OR_NULL }),
-           responses: { 200 => DIAGNOSTICS_RESPONSE, 401 => AUTH_ERROR,
-500 => strict_object(required: %w[error backtrace timestamp], properties: { "error" => STRING, "backtrace" => ARRAY, "timestamp" => STRING }) }
+           responses: { 200 => DIAGNOSTICS_RESPONSE, 401 => AUTH_ERROR, 404 => ERROR,
+500 => strict_object(required: %w[error timestamp], properties: { "error" => STRING, "timestamp" => STRING }) }
   register "Api::V1::DiagnosticsController#health_metrics",
            request: strict_object(required: [], properties: { "api_key" => STRING_OR_NULL }),
            responses: {

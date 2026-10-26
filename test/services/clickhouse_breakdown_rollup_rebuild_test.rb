@@ -61,6 +61,18 @@ class ClickhouseBreakdownRollupRebuildTest < ActiveSupport::TestCase
     assert_equal 55, rows.map { |r| r["inviter_id_state"].to_i }.max
   end
 
+  test "visitor_daily leaves message events out, and keeps the person's own custom events" do
+    named = ->(id, name) { ev(id, "custom", link_id: 0).merge(event_name: name) }
+    messages = Grovs::Events::MESSAGE_EVENT_NAMES.each_with_index.map { |name, i| named.call("evt-m#{i}", name) }
+    seed_canonical(canonical_events + messages + [named.call("evt-c1", "checkout")])
+    rebuild!
+
+    custom = ch_query("visitor_daily", PROJECT_ID).select { |r| r["event_type"] == "custom" }.sum { |r| r["cnt"].to_i }
+    assert_equal 1, custom
+    # Only the per-visitor rollup changes: the project's own totals still count every event.
+    assert_equal Grovs::Events::MESSAGE_EVENT_NAMES.size + 1, project_daily_by_type.dig("custom", "cnt")
+  end
+
   test "source breakdown: SourceTaxonomy labels, exact uniq visitors" do
     seed_canonical(canonical_events)
     rebuild!
@@ -113,7 +125,7 @@ class ClickhouseBreakdownRollupRebuildTest < ActiveSupport::TestCase
       canonical_base.merge(event_id: "b2", event_type: "open", visitor_id: mobile_visitor)
     ])
     # Alias web -> mobile in the identity map.
-    ClickhouseWriteService.insert_identity_rows([{
+    ClickhouseWriteService.insert_identity_rows!([{
       project_id: PROJECT_ID, from_visitor_id: web_visitor, to_visitor_id: mobile_visitor,
       updated_at: "2026-06-10 12:05:00.000"
     }])

@@ -10,7 +10,8 @@ class Api::V1::Sdk::LinksController < Api::V1::Sdk::BaseController
   def data_for_device_details_and_url
     link = LinksService.link_for_url(url_param, @project)
     link ||= resolve_via_migration(url_param)
-    result = build_link_data_service.resolve_for_link(link, request, user_agent_param, raw_url: url_param)
+    result = build_link_data_service.resolve_for_link(link, request, user_agent_param, raw_url: url_param,
+                                                                                       from_push: params[:source] == "push")
     render json: result, status: :ok
   end
 
@@ -21,7 +22,7 @@ class Api::V1::Sdk::LinksController < Api::V1::Sdk::BaseController
   end
 
   def link_details
-    link = Link.find_by(domain_id: @project.domain.id, path: path_param)
+    link = LinksService.find_link_preferring_active(@project.domain.id, path_param)
     unless link
       render json: nil
       return

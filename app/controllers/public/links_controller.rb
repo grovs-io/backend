@@ -38,7 +38,7 @@ class Public::LinksController < Public::BaseController
 
     decision = PlatformRenderDecisionService.call(
       device: @device, link: link, project: @project,
-      go_to_fallback: go_to_fallback_param
+      go_to_fallback: go_to_fallback_param, grovs_redirect: grovs_redirect
     )
 
     execute_render_decision(decision)
@@ -65,7 +65,13 @@ class Public::LinksController < Public::BaseController
       @name, @image = name_and_image.values_at(:name, :image)
     end
 
-    @redirect_url = LinksService.build_redirect_url_for_preview(url_param, link, @device)
+    @in_app_browser = InAppBrowserDetector.match?(request.user_agent) &&
+                      InAppBrowserPage.eligible?(link: link, platform: live_platform, user_agent: request.user_agent)
+    @hint_text = @in_app_browser ? InAppBrowserPage.hint_text(live_platform) : nil
+    @redirect_url = InAppBrowserPage.button_url(
+      redirect_url: LinksService.build_redirect_url_for_preview(url_param, link, @device),
+      link: link, platform: live_platform, in_app_browser: @in_app_browser
+    )
     @copy_payload = link.copy_to_clipboard_for?(live_platform) ? url_param : nil
     @skip_client_data = true
     assign_generic_data(link)

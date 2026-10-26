@@ -109,7 +109,7 @@ module ApiContracts
            request: MIGRATIONS_CREATE_REQUEST,
            responses: {
              201 => { "oneOf" => [migrations_create_response, provider_hosted_create_response] },
-             402 => ERROR, 409 => ERROR, 422 => ERROR, 502 => ERROR, 404 => ERROR,
+             402 => ERROR, 409 => ERROR, 422 => ERROR, 424 => ERROR, 404 => ERROR,
              429 => ERROR,
              401 => AUTH_ERROR, 403 => ERROR, 503 => ERROR
            }

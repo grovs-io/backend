@@ -57,6 +57,13 @@ class SdkVisitorsTest < ActionDispatch::IntegrationTest
     assert_empty enqueued
   end
 
+  test "attributes a journey set survive the app replacing its own" do
+    @visitor.update!(sdk_attributes: { "plan" => "free", "journey_onboarded" => "true" })
+    post "#{SDK_PREFIX}/visitor_attributes", params: { sdk_attributes: { plan: "pro" } }, headers: @headers, as: :json
+    assert_response :success
+    assert_equal({ "plan" => "pro", "journey_onboarded" => "true" }, @visitor.reload.sdk_attributes)
+  end
+
   def capture_profile_syncs(&block)
     enqueued = []
     SyncVisitorProfileJob.stub(:perform_later, ->(id) { enqueued << id }, &block)
@@ -111,5 +118,19 @@ class SdkVisitorsTest < ActionDispatch::IntegrationTest
 
     @device.reload
     assert_equal "test-push-token-abc", @device.push_token, "push_token must persist on device in DB"
+  end
+
+  # The iOS SDK posts push_token: null until APNs hands it a token; that must not wipe the stored one.
+  test "a null or missing push token keeps the device's stored token" do
+    @device.update!(push_token: "stored-token")
+
+    post "#{SDK_PREFIX}/visitor_attributes",
+         params: { sdk_identifier: "user-1", sdk_attributes: nil, push_token: nil }, headers: @headers, as: :json
+    assert_response :success
+    assert_equal "stored-token", @device.reload.push_token
+
+    post "#{SDK_PREFIX}/visitor_attributes", params: { sdk_identifier: "user-1" }, headers: @headers, as: :json
+    assert_response :success
+    assert_equal "stored-token", @device.reload.push_token
   end
 end

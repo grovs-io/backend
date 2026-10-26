@@ -4,7 +4,9 @@ require 'digest/md5'
 
 module ClickhouseWriteService
   # DateTime64(3, 'UTC') columns need 'YYYY-MM-DD HH:MM:SS' strings.
-  TIMESTAMP_KEYS = %i[created_at purchase_date first_seen last_seen ingested_at updated_at].freeze
+  # The egress outbox MV hangs off `events`; its failure must never fail ingestion (the Bookmark is the retry).
+  EVENTS_INSERT_SETTINGS = { materialized_views_ignore_errors: 1 }.freeze
+  TIMESTAMP_KEYS = %i[created_at purchase_date recorded_at first_seen last_seen ingested_at updated_at].freeze
 
   # Durable (bounded retry -> DLQ) delivery hardening. Shared by canonical, purchase, and
   # events-table dual-writes so a CH hiccup parks rows for replay instead of dropping them.
@@ -189,9 +191,7 @@ module ClickhouseWriteService
   # purchase_events is ReplacingMergeTree(created_at), so a replay/retry of the same
   # (project_id, transaction_id, event_type) collapses; bounded retry then DLQ.
   def self.deliver_purchase_events(ch_rows)
-    # Guarded here (unlike deliver_canonical, whose batch-processor call site is already
-    # gated by ch_enabled): the purchase job calls this unconditionally, so a disabled-CH
-    # run must no-op rather than spuriously DLQ.
+    # Guarded here too: a disabled-CH run must no-op rather than spuriously DLQ.
     return true unless Clickhouse.enabled?
 
     deliver_with_dlq('purchase_events', ch_rows, PURCHASE_DLQ_KEY, metric: "clickhouse.purchase.delivery_ms")
@@ -242,11 +242,14 @@ module ClickhouseWriteService
     insert_to_table('purchase_events', ch_rows)
   end
 
-  # Visitor identity-map aliases (merged -> survivor). ReplacingMergeTree on
-  # (project_id, from_visitor_id) by updated_at, so re-inserting an alias is an
-  # idempotent upsert. Used by ClickhouseIdentityMapService during visitor merge.
-  def self.insert_identity_rows(rows)
-    insert_to_table('visitor_identity_map', rows)
+  # A durable alias acknowledgment requires a completed insert, even with an async server profile.
+  def self.insert_identity_rows!(rows)
+    return unless Clickhouse.enabled? && rows.any?
+
+    Clickhouse.with do |conn|
+      conn.insert('visitor_identity_map', rows.map { |row| format_timestamps(row) },
+                  settings: {async_insert: 0, wait_for_async_insert: 1})
+    end
   end
 
   def self.upsert_user_profile(row)
@@ -345,7 +348,8 @@ module ClickhouseWriteService
   def self.raw_insert(table, rows)
     return if rows.empty?
 
-    Clickhouse.with { |conn| conn.insert(table, rows.map { |r| format_timestamps(r) }) }
+    settings = table == 'events' ? EVENTS_INSERT_SETTINGS : {}
+    Clickhouse.with { |conn| conn.insert(table, rows.map { |r| format_timestamps(r) }, settings: settings) }
   end
   private_class_method :raw_insert
 

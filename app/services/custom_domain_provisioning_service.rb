@@ -54,7 +54,7 @@ class CustomDomainProvisioningService
       cf = CloudflareCustomHostnameService.lookup(hostname: hostname)
       unless cf[:success] && cf[:cf_id].present?
         custom_hostname.destroy!
-        return Result.new(ok: false, error: "Cloudflare provisioning failed", status: :bad_gateway)
+        return Result.new(ok: false, error: "Cloudflare provisioning failed", status: :failed_dependency)
       end
     end
 

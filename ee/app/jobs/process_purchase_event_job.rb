@@ -16,9 +16,7 @@ class ProcessPurchaseEventJob
     Rails.logger.error "PURCHASE DLQ: #{job['class']} permanently failed for args #{job['args']}: #{ex&.message || job['error_message']}"
   end
 
-  # @param purchase_event_id [Integer]
-  # @param old_usd_price_cents [Integer, nil] non-nil selects the correction path; the delta itself comes
-  #   from accounted_usd_price_cents, and this value is only the baseline for rows that predate that column.
+  # A non-nil old_usd_price_cents selects the correction path (baseline only for pre-column rows).
   def perform(purchase_event_id, old_usd_price_cents = nil)
     event = PurchaseEvent.includes(:device).find_by(id: purchase_event_id)
     return unless event
@@ -28,28 +26,34 @@ class ProcessPurchaseEventJob
       return
     end
 
-    # Retry currency conversion BEFORE the transaction to avoid holding
-    # DB locks during external HTTP calls to exchange-rate APIs.
-    retry_currency_conversion!(event)
+    # Before the transaction: no DB locks held during the exchange-rate HTTP call.
+    retry_currency_conversion!(event) unless event.processed?
 
-    # Single transaction: atomic claim + all stats writes.
-    # If any write fails the whole thing rolls back (including processed flag)
-    # so Sidekiq retry can re-claim the event.  Prevents both double-counting
-    # and data loss from partial failures.
-    ActiveRecord::Base.transaction do
+    claimed = ActiveRecord::Base.transaction do
+      # Accounted price comes from the row the claim locks, never from the cached object.
       rows = PurchaseEvent.where(id: event.id, processed: false)
-                          .update_all(processed: true, accounted_usd_price_cents: event.usd_price_cents.to_i)
-      if rows == 0
-        Rails.logger.debug { "ProcessPurchaseEventJob: event #{purchase_event_id} already processed, skipping" }
-        return
+                          .update_all("processed = TRUE, accounted_usd_price_cents = COALESCE(usd_price_cents, 0)")
+      if rows == 1
+        event.reload # same lock: aggregates are computed from the state the claim protects
+        process_event(event)
       end
-
-      process_event(event)
+      rows == 1
+    end
+    if claimed
+      Journeys.purchased(event)
+      return self.class.dual_write_clickhouse(event)
     end
 
-    # Fire-and-forget CH dual-write — after PG transaction succeeds.
-    # CH failures are logged but don't affect the PG pipeline.
-    self.class.dual_write_clickhouse(event)
+    # Already processed: re-emit; non-null price drift corrects first (null baseline is not drift).
+    event = PurchaseEvent.includes(:device).find_by(id: event.id)
+    return if event.nil?
+
+    accounted = event.accounted_usd_price_cents
+    if accounted.present? && accounted != event.usd_price_cents.to_i
+      apply_correction(event, accounted)
+    else
+      self.class.dual_write_clickhouse(event)
+    end
   rescue StandardError => e
     Rails.logger.error "Failed to process purchase event #{purchase_event_id}: #{e.message}"
     Rails.logger.error e.backtrace.join("\n")
@@ -87,34 +91,28 @@ class ProcessPurchaseEventJob
     SubscriptionStateService.upsert(event)
   end
 
-  # Webhook delivered authoritative pricing after the event was already
-  # processed.  Compute the difference and apply it as a correction.
+  # Authoritative price arrived after processing: apply the difference as a correction.
   def apply_correction(event, old_cents)
     ActiveRecord::Base.transaction do
-      # Row lock + delta from the persisted accounted price: concurrent or redelivered corrections serialize
-      # and each applies only what the ledger has not counted yet. NULL predates the column; trust the argument.
+      # Row lock; delta from the persisted accounted price (NULL predates the column: trust arg).
       event.lock!
       accounted  = event.accounted_usd_price_cents || old_cents.to_i
       correction = (event.revenue_delta || 0) - (event.revenue_delta(accounted) || 0)
-      return if correction == 0
-
       event.update_columns(accounted_usd_price_cents: event.usd_price_cents.to_i)
-      # Snapshot platform, not a recompute — a device whose platform changed since
-      # processing must not split one purchase's money across two platforms.
-      platform   = event.revenue_platform || determine_platform(event)
-      event_date = event_date_for(event)
-
-      # Snapshot visitor too — a device re-pointed to a different visitor since
-      # processing must not split one purchase's money across two visitors.
-      update_visitor_stats(event, platform, event_date, correction, visitor: event.visitor)
-      update_link_stats(event, platform, event_date, correction)
-      InAppProductEventService.apply_revenue_correction(event, platform: platform, event_date: event_date, correction: correction)
-      DailyProjectMetric.increment!(event.project_id, platform, event_date, revenue: correction)
+      if correction != 0
+        # Snapshot platform and visitor: one purchase's money must never split across two of either.
+        platform   = event.revenue_platform || determine_platform(event)
+        event_date = event_date_for(event)
+        # Visitor credit waits for reattribution; device credit follows device_id.
+        update_visitor_stats(event, platform, event_date, correction, visitor: event.visitor) if event.visitor_id.present?
+        update_link_stats(event, platform, event_date, correction)
+        InAppProductEventService.apply_revenue_correction(event, platform: platform, event_date: event_date, correction: correction)
+        DailyProjectMetric.increment!(event.project_id, platform, event_date, revenue: correction)
+      end
     end
 
-    # Re-insert the corrected row so CH rollups converge — ReplacingMergeTree
-    # keeps the newest version, and the MV re-signs from the new usd_price_cents.
-    self.class.dual_write_clickhouse(event, version_ts: Time.current)
+    # Re-emit even at zero delta: cancels and zero-cent rows change fields the ledger ignores.
+    self.class.dual_write_clickhouse(event)
   end
 
   def retry_currency_conversion!(event)
@@ -130,13 +128,10 @@ class ProcessPurchaseEventJob
     end
   end
 
-  # Ledger snapshots: platform/visitor as counted. Written only here and by
-  # ReattributePurchaseJob — never recomputed at read time, never touched by corrections.
+  # Ledger snapshots (platform/visitor as counted): written here and by ReattributePurchaseJob only.
   def persist_ledger_snapshots(event, platform, visitor)
     event.update_columns(revenue_platform: platform, visitor_id: visitor&.id)
   end
-
-  # --- stats writers ---------------------------------------------------
 
   def update_visitor_stats(event, platform, event_date, value, visitor: nil)
     return unless event.device
@@ -176,18 +171,24 @@ class ProcessPurchaseEventJob
     InAppProductEventService.record_purchase(event, platform: platform, event_date: event_date)
   end
 
-  # version_ts overrides the RMT version column (created_at) so a re-insert supersedes the original.
-  def self.dual_write_clickhouse(event, version_ts: nil)
-    ch_row = build_clickhouse_purchase_row(event, version_ts: version_ts)
-    # Durable delivery (bounded retry -> DLQ): revenue must not silently drop on a CH hiccup.
-    ClickhouseWriteService.deliver_purchase_events([ch_row])
-  rescue StandardError => e
-    Rails.logger.error("ProcessPurchaseEventJob: CH dual-write failed for event #{event.id}: #{e.class} - #{e.message}")
+  # Stamp after the caller's commit, then reload; never call this inside a transaction.
+  def self.dual_write_clickhouse(event)
+    return unless Clickhouse.enabled?
+
+    version = Time.current
+    event = PurchaseEvent.includes(:device).find_by(id: event.id) # outside the rescue: a PG error must retry
+    return if event.nil? # deleted meanwhile (DeleteInstanceJob): nothing to emit, nothing to retry
+
+    begin
+      # Durable delivery (bounded retry -> DLQ): revenue must not silently drop on a CH hiccup.
+      ClickhouseWriteService.deliver_purchase_events([build_clickhouse_purchase_row(event, version_ts: version)])
+    rescue StandardError => e
+      Rails.logger.error("ProcessPurchaseEventJob: CH dual-write failed for event #{event.id}: #{e.class} - #{e.message}")
+    end
   end
 
-  def self.build_clickhouse_purchase_row(event, version_ts: nil)
-    # Snapshot when present (just persisted / backfilled); live resolve only for
-    # pre-backfill rows hit by a correction.
+  def self.build_clickhouse_purchase_row(event, version_ts:)
+    # Snapshot when present; live resolve only for pre-backfill rows hit by a correction.
     visitor_id = event.visitor_id || event.device&.visitor_for_project_id(event.project_id)&.id
 
     {
@@ -195,7 +196,8 @@ class ProcessPurchaseEventJob
       event_type:              event.event_type.to_s,
       purchase_type:           event.purchase_type.to_s,
       product_id:              event.product_id.to_s,
-      usd_price_cents:         event.usd_price_cents.to_i,
+      # Ledger's figure: a refresh during an un-accounted price rewrite must not move CH revenue.
+      usd_price_cents:         (event.accounted_usd_price_cents || event.usd_price_cents).to_i,
       currency:                event.currency.to_s,
       quantity:                event.quantity || 1,
       transaction_id:          event.transaction_id.to_s,
@@ -206,19 +208,11 @@ class ProcessPurchaseEventJob
       visitor_id:              visitor_id.to_i,
       session_id:              event.session_id.to_s,
       purchase_date:           event.date || event.created_at,
-      created_at:              version_ts || event.created_at
+      recorded_at:             event.created_at,
+      platform:                (event.revenue_platform.presence || event.store_platform).to_s,
+      created_at:              version_ts
     }
   end
-
-  # CH purchase identity is the SAME key PG enforces unique: (project_id, transaction_id,
-  # event_type) — CH purchase_events ORDER BY mirrors idx_purchase_events_unique_txn. This is
-  # already correct per purchase-event-type: a renewal carries a fresh transaction_id (new
-  # row), a refund/cancel differs by event_type (coexists with the buy), and a restore reuses
-  # the original transaction_id (PG rejects the dup; CH collapses it). PurchaseEvent guarantees
-  # a non-blank transaction_id at save (assign_unique_transaction_id), so no fallback is needed
-  # here — the no-provider-id case gets a unique id upstream.
-
-  # --- helpers ----------------------------------------------------------
 
   def determine_platform(event)
     # Store webhooks (Apple/Google) authoritatively know the platform —

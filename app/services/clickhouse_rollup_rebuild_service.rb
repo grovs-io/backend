@@ -21,6 +21,9 @@ module ClickhouseRollupRebuildService
     [Integer(ENV.fetch("CLICKHOUSE_ROLLUP_MAX_EXECUTION_SECONDS", 240)), LOCK_TTL - 60].min
   # Uncapped, each rebuild INSERT grabs one thread per core — concurrent lanes exhausted CH's pool.
   REBUILD_MAX_THREADS = Integer(ENV.fetch("CLICKHOUSE_ROLLUP_MAX_THREADS", 16)).clamp(1, 64)
+  # Merge repairs fan out per visitor with no lock; 97 in flight took every CH query slot on 2026-09-09.
+  ACQUISITION_REPAIR_CONCURRENCY =
+    Integer(ENV.fetch("CLICKHOUSE_ACQUISITION_REPAIR_CONCURRENCY", 2)).clamp(1, 16)
   LOCK_PREFIX = "clickhouse:rollup:rebuild"
 
   # CAS-unlock so a TTL-expired holder can't stomp a successor's lock.
@@ -87,6 +90,10 @@ module ClickhouseRollupRebuildService
   def self.effective_visitor_id_expr
     "if(#{IDENTITY_MAP_ALIAS}.to_visitor_id > 0, #{IDENTITY_MAP_ALIAS}.to_visitor_id, events.visitor_id)"
   end
+
+  # Unique-visitor/device states skip id 0 and message events; Analytics::MetricQuery raw reads match.
+  COUNTED_VISITORS_STATE = "uniqIfState(EFFECTIVE_VISITOR, EFFECTIVE_VISITOR > 0 AND #{Grovs::Events::NOT_A_MESSAGE_SQL})".freeze
+  COUNTED_DEVICES_STATE = "uniqIfState(device_id, device_id > 0 AND #{Grovs::Events::NOT_A_MESSAGE_SQL})".freeze
 
   # Phase 5 — per-visitor source classification, derived ONLY from the FROZEN
   # event-time fields (campaign_id, sdk_generated, link_visitor_id, link_id) via the
@@ -261,8 +268,8 @@ module ClickhouseRollupRebuildService
           platform,
           count()               AS cnt,
           sum(engagement_time)  AS total_engagement_time,
-          uniqState(EFFECTIVE_VISITOR) AS visitors_state,
-          uniqState(device_id)  AS devices_state
+          COUNTED_VISITORS_STATE AS visitors_state,
+          COUNTED_DEVICES_STATE AS devices_state
         FROM_WITH_IDENTITY_MAP
         WHERE toYYYYMM(toDate(created_at)) = {partition:UInt32}
         GROUP BY project_id, event_date, event_type, platform
@@ -307,6 +314,7 @@ module ClickhouseRollupRebuildService
         FROM_WITH_IDENTITY_MAP
         WHERE toYYYYMM(toDate(created_at)) = {partition:UInt32}
           AND EFFECTIVE_VISITOR > 0
+          AND #{Grovs::Events::NOT_A_MESSAGE_SQL}
         GROUP BY project_id, visitor_id, event_date, event_type, platform
       SQL
     },
@@ -342,7 +350,7 @@ module ClickhouseRollupRebuildService
           event_type,
           platform,
           count()               AS cnt,
-          uniqState(EFFECTIVE_VISITOR) AS visitors_state
+          COUNTED_VISITORS_STATE AS visitors_state
         FROM_WITH_IDENTITY_MAP
         WHERE toYYYYMM(toDate(created_at)) = {partition:UInt32}
         GROUP BY project_id, event_date, country, event_type, platform
@@ -361,7 +369,7 @@ module ClickhouseRollupRebuildService
           app_version,
           platform,
           count()               AS cnt,
-          uniqState(EFFECTIVE_VISITOR) AS visitors_state,
+          COUNTED_VISITORS_STATE AS visitors_state,
           min(created_at)       AS first_seen
         FROM_WITH_IDENTITY_MAP
         WHERE toYYYYMM(toDate(created_at)) = {partition:UInt32}
@@ -380,7 +388,7 @@ module ClickhouseRollupRebuildService
           SOURCE_EXPR AS source,
           platform,
           count()               AS cnt,
-          uniqState(EFFECTIVE_VISITOR) AS visitors_state
+          COUNTED_VISITORS_STATE AS visitors_state
         FROM_WITH_IDENTITY_MAP
         WHERE toYYYYMM(toDate(created_at)) = {partition:UInt32}
         GROUP BY project_id, event_date, source, platform
@@ -401,14 +409,14 @@ module ClickhouseRollupRebuildService
           event_type,
           platform,
           count()               AS cnt,
-          uniqState(visitor_id) AS visitors_state
+          uniqIfState(visitor_id, visitor_id > 0) AS visitors_state
         FROM (
           SELECT
             events.project_id AS project_id,
             toDate(created_at) AS event_date,
             event_type,
             platform,
-            EFFECTIVE_VISITOR AS visitor_id,
+            if(#{Grovs::Events::NOT_A_MESSAGE_SQL}, EFFECTIVE_VISITOR, 0) AS visitor_id,
             arrayJoin([
               tuple('plan', CAST(properties.`plan` AS String)),
               tuple('tier', CAST(properties.`tier` AS String))
@@ -518,10 +526,7 @@ module ClickhouseRollupRebuildService
     mark_watermark_window_dirty
   end
 
-  # Explicit visitor-merge acquisition repair. The normal scheduler path stays
-  # partition-local and project-wide; merge repair is tighter and visitor-scoped:
-  # after the identity alias exists, discover the raw partitions for the merged
-  # and survivor ids, then insert acquisition states for only those raw visitors.
+  # The summary is unpartitioned; discovered months are only needed if this one fold is shed.
   def self.repair_acquisition_for_visitor_merge(project_id, merged_visitor_id, survivor_visitor_id)
     return [] unless Clickhouse.enabled?
 
@@ -529,12 +534,9 @@ module ClickhouseRollupRebuildService
     visitor_ids = acquisition_repair_visitor_ids(pid, merged_visitor_id, survivor_visitor_id)
     return [] if visitor_ids.empty?
 
-    # Only discovered historical months: live months are the watermark lane's job (rebuilt
-    # project-wide every pass), so a fresh visitor's merge costs no CH work here at all.
     partitions = visitor_partitions(pid, visitor_ids)
-    partitions.each do |partition|
-      rebuild_acquisition(partition, project_id: pid, raw_visitor_ids: visitor_ids)
-    end
+    return false unless repair_acquisition_slice(partitions, pid, visitor_ids)
+
     partitions
   end
 
@@ -562,7 +564,8 @@ module ClickhouseRollupRebuildService
     rows = Clickhouse.with do |conn|
       conn.select_all(
         "SELECT from_visitor_id FROM visitor_identity_map FINAL " \
-        "WHERE project_id = #{Integer(project_id)} AND to_visitor_id = #{Integer(final_survivor)}"
+        "WHERE project_id = #{Integer(project_id)} AND to_visitor_id = #{Integer(final_survivor)} " \
+        "SETTINGS max_execution_time = 5, max_threads = 1"
       )
     end
 
@@ -690,7 +693,7 @@ module ClickhouseRollupRebuildService
       # contributed by this partition is enough for normal event-ingestion repair.
       # Merge-specific acquisition repair must stay out of this scheduler path.
       begin
-        rebuild_acquisition(partition)
+        ok = false unless rebuild_acquisition(partition)
       rescue StandardError => e
         ok = false
         Rails.logger.error(
@@ -855,6 +858,8 @@ module ClickhouseRollupRebuildService
     # would be left unresolved).
     select_sql
       .gsub("FROM_WITH_IDENTITY_MAP", FROM_WITH_IDENTITY_MAP)
+      .gsub("COUNTED_VISITORS_STATE", COUNTED_VISITORS_STATE)
+      .gsub("COUNTED_DEVICES_STATE", COUNTED_DEVICES_STATE)
       .gsub("EFFECTIVE_VISITOR", effective_visitor_id_expr)
       .gsub("HAS_LINK", has_link_predicate)
       .gsub("SOURCE_EXPR", source_expr)
@@ -909,13 +914,7 @@ module ClickhouseRollupRebuildService
     return false unless Clickhouse.enabled?
 
     part = Integer(partition)
-    # Visitor-scoped repairs insert idempotent states — safe concurrently, no lock to contend on.
-    if raw_visitor_ids.present?
-      Clickhouse.with do |conn|
-        conn.execute(acquisition_insert_query(part, project_id: project_id, raw_visitor_ids: raw_visitor_ids))
-      end
-      return true
-    end
+    return repair_acquisition_slice([part], project_id, raw_visitor_ids) if raw_visitor_ids.present?
 
     lock_key = lock_key_for(:acquisition, partition)
     token = SecureRandom.hex(16)
@@ -926,18 +925,92 @@ module ClickhouseRollupRebuildService
     end
 
     begin
-      Clickhouse.with do |conn|
-        conn.execute(acquisition_insert_query(part, project_id: project_id, raw_visitor_ids: nil))
-      end
+      execute_acquisition_insert(part, project_id: project_id, raw_visitor_ids: nil)
       true
     ensure
       release_lock(lock_key, token)
     end
   end
 
+  # Both slot contention and oversized clusters must retain every discovered month for catch-up.
+  def self.repair_acquisition_slice(partitions, project_id, raw_visitor_ids)
+    ids = raw_visitor_ids.map { |id| Integer(id) }.uniq
+    oversized = ids.size > Clickhouse::MAX_IN_LIST_IDS
+    slot_key, token = acquire_repair_slot unless oversized
+    unless slot_key
+      REDIS.with { |c| c.sadd?(dirty_key, partitions) } if partitions.any?
+      Grovs::Metrics.increment("clickhouse.acquisition_repair.shed")
+      reason = oversized ? "visitor ID limit" : "slots busy"
+      Rails.logger.info("ClickhouseRollupRebuildService: shed acquisition repair — #{reason}")
+      return false
+    end
+
+    release_on_exit = true
+    begin
+      execute_acquisition_insert(nil, project_id: project_id, raw_visitor_ids: ids)
+      true
+    rescue IOError, SystemCallError, Timeout::Error, SocketError
+      # A lost response does not prove the server stopped; retain the slot until its lease expires.
+      release_on_exit = false
+      raise
+    ensure
+      release_lock(slot_key, token) if release_on_exit
+    end
+  end
+  private_class_method :repair_acquisition_slice
+
+  # Leave time for the server to report its deadline before the client abandons the response.
+  def self.execute_acquisition_insert(partition, project_id:, raw_visitor_ids:)
+    timeout = raw_visitor_ids.present? ? 15 : ACQUISITION_MAX_EXECUTION_SECONDS + 30
+    Clickhouse.with_request_timeout(timeout) do
+      Clickhouse.with do |conn|
+        query = if raw_visitor_ids.present?
+                  acquisition_fold_query(project_id, raw_visitor_ids)
+                else
+                  acquisition_insert_query(partition, project_id: project_id)
+                end
+        conn.execute(query)
+      end
+    end
+  end
+  private_class_method :execute_acquisition_insert
+
+  # Fold stored states; rescanning canonical history per merge exhausted ClickHouse resources.
+  def self.acquisition_fold_query(project_id, visitor_ids)
+    ids = visitor_ids.map { |id| Integer(id) }.uniq
+
+    ClickHouse::Client::Query.new(raw_query: <<~SQL, placeholders: {project: Integer(project_id), ids: ids})
+      INSERT INTO visitor_acquisition
+      SELECT a.project_id, if(vim.to_visitor_id > 0, vim.to_visitor_id, a.visitor_id) AS visitor_id,
+        argMinIfMergeState(a.install_source), argMinIfMergeState(a.first_touch_source),
+        maxIfMergeState(a.has_install), maxIfMergeState(a.has_link),
+        minIfMergeState(a.install_ts), minIfMergeState(a.first_ts)
+      FROM visitor_acquisition AS a
+      LEFT ANY JOIN (
+        SELECT project_id, from_visitor_id, to_visitor_id FROM visitor_identity_map FINAL
+        WHERE project_id = {project:UInt64} AND from_visitor_id IN {ids:Array(UInt64)}
+      ) AS vim ON a.project_id = vim.project_id AND a.visitor_id = vim.from_visitor_id
+      WHERE a.project_id = {project:UInt64} AND a.visitor_id IN {ids:Array(UInt64)}
+      GROUP BY a.project_id, if(vim.to_visitor_id > 0, vim.to_visitor_id, a.visitor_id)
+      SETTINGS max_execution_time = 10, max_threads = 1, max_memory_usage = 268435456
+    SQL
+  end
+  private_class_method :acquisition_fold_query
+
+  def self.acquire_repair_slot
+    token = SecureRandom.hex(16)
+    ACQUISITION_REPAIR_CONCURRENCY.times do |i|
+      key = "#{LOCK_PREFIX}:#{Clickhouse.default_database}:acquisition_repair_slot:#{i}"
+      acquired = REDIS.with { |c| c.set(key, token, nx: true, ex: ACQUISITION_MAX_EXECUTION_SECONDS + 60) }
+      return [key, token] if acquired
+    end
+    [nil, nil]
+  end
+  private_class_method :acquire_repair_slot
+
   # INSERT...SELECT that contributes this partition's acquisition states
   # (effective id, identity-map applied).
-  def self.acquisition_insert_query(partition, project_id: nil, raw_visitor_ids: nil)
+  def self.acquisition_insert_query(partition, project_id: nil)
     select = ACQUISITION_SELECT
     placeholders = { partition: partition }
 
@@ -947,14 +1020,6 @@ module ClickhouseRollupRebuildService
         "WHERE events.project_id = {project_id:UInt64}\n      AND toYYYYMM(toDate(created_at)) = {partition:UInt32}"
       )
       placeholders[:project_id] = Integer(project_id)
-    end
-
-    if raw_visitor_ids.present?
-      ids = raw_visitor_ids.map { |id| Integer(id) }.uniq
-      select = select.sub(
-        "AND EFFECTIVE_VISITOR > 0",
-        "AND events.visitor_id IN (#{ids.join(',')})\n      AND EFFECTIVE_VISITOR > 0"
-      )
     end
 
     ClickHouse::Client::Query.new(

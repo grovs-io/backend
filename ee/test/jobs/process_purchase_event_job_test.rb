@@ -19,6 +19,16 @@ class ProcessPurchaseEventJobTest < ActiveSupport::TestCase
     assert event.processed?
   end
 
+  test "a purchase is handed to journeys once, after its claim" do
+    event = purchase_events(:unprocessed_buy)
+    handed = []
+    Journeys.stub(:purchased, ->(e) { handed << e.id }) do
+      @job.perform(event.id)
+      @job.perform(event.id)
+    end
+    assert_equal [event.id], handed
+  end
+
   test "skips already processed event" do
     event = purchase_events(:buy_event)
     assert event.processed?

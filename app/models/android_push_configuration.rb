@@ -2,6 +2,7 @@ class AndroidPushConfiguration < ApplicationRecord
   belongs_to :android_configuration
 
   after_create_commit :sync_rpush_app
+  after_commit :clear_application_configuration_cache
   has_one_attached :certificate
 
   # Callbacks
@@ -13,6 +14,11 @@ class AndroidPushConfiguration < ApplicationRecord
   validate :certificate_must_be_json_extension
 
   private
+
+  # Application#configuration caches the parent config for an hour; a push row changes what it serializes.
+  def clear_application_configuration_cache
+    android_configuration&.application&.clear_configuration_cache
+  end
 
   def certificate_must_be_attached
     errors.add(:certificate, 'must be attached') unless certificate.attached?
@@ -42,13 +48,8 @@ class AndroidPushConfiguration < ApplicationRecord
     RpushService.update_android_rpush_app(id)
   end
 
-  # This method will handle any cleanup necessary before destroying the record
   def cleanup_resources
-    # Example of cleanup logic, modify as needed
-    # For instance, you can delete the attached certificate
     certificate.purge if certificate.attached?
-      
-    # Additional cleanup logic (if needed) can go here
     Rails.logger.info "Cleaning up AndroidPushConfiguration with ID #{id} before destroying."
 
     instance = android_configuration.application&.instance
@@ -56,15 +57,8 @@ class AndroidPushConfiguration < ApplicationRecord
       test = instance.test
       production = instance.production
 
-      test_app = RpushService.app_for_platform(Grovs::Platforms::ANDROID, test)
-      if test_app
-        test_app.destroy
-      end
-
-      prod_app = RpushService.app_for_platform(Grovs::Platforms::ANDROID, production)
-      if prod_app
-        prod_app.destroy
-      end
+      RpushService.remove_app(RpushService.app_for_platform(Grovs::Platforms::ANDROID, test))
+      RpushService.remove_app(RpushService.app_for_platform(Grovs::Platforms::ANDROID, production))
     end
   end
 end

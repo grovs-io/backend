@@ -67,24 +67,26 @@ class ActiveSupport::TestCase
   # PARALLEL_WORKERS=1 only to debug a failure serially.
   parallelize(workers: ENV.key?("PARALLEL_WORKERS") ? ENV["PARALLEL_WORKERS"].to_i : :number_of_processors)
 
-  # Rails skips parallelize_setup below a 2-worker count, so a serial run would otherwise
-  # inherit the previous run's Redis keys — long-TTL, fixture-id-keyed ones corrupt it.
-  REDIS.flushdb if ENV.key?("PARALLEL_WORKERS") && ENV["PARALLEL_WORKERS"].to_i <= 1
-
-  parallelize_setup do |worker|
-    SimpleCov.command_name "#{SimpleCov.command_name}-worker#{worker}" if ENV["COVERAGE"]
-
-    # Each parallel worker gets its own Redis database (0, 1, 2, ...)
-    # to prevent key collisions between workers. Default Redis supports db 0-15.
+  # Tests never touch Redis db 0: that is the development server's database on the same instance.
+  def self.rebind_redis_to_db(index)
     redis_url = ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379/0")
-    worker_url = redis_url.sub(%r{/\d+\s*$}, "") + "/#{worker}"
-
+    worker_url = redis_url.sub(%r{/\d+\s*$}, "") + "/#{index}"
     new_pool = ConnectionPool::Wrapper.new(size: REDIS_POOL_SIZE, timeout: 5) do
       Redis.new(url: worker_url, ssl_params: { verify_mode: OpenSSL::SSL::VERIFY_NONE })
     end
     Object.send(:remove_const, :REDIS)
     Object.const_set(:REDIS, new_pool)
+  end
 
+  # Serial and below-threshold runs skip parallelize_setup; db 15 keeps them off db 0 and the workers' dbs.
+  rebind_redis_to_db(15)
+  REDIS.flushdb
+
+  parallelize_setup do |worker|
+    SimpleCov.command_name "#{SimpleCov.command_name}-worker#{worker}" if ENV["COVERAGE"]
+
+    # Each parallel worker gets its own Redis database (1, 2, 3, ...); db 0 stays the dev server's.
+    rebind_redis_to_db(worker + 1)
     REDIS.flushdb
 
     # Each parallel worker gets its own ClickHouse database.
@@ -97,6 +99,7 @@ class ActiveSupport::TestCase
                 .execute("CREATE DATABASE IF NOT EXISTS `#{ch_db}`")
 
       # Reconfigure ClickHouse::Client to point to the worker database
+      variables = ClickHouse::Client.configuration.databases.fetch(:main).uri.query_values.except('database').symbolize_keys
       ClickHouse::Client.configuration.databases.delete(:main)
       raw_url = ENV.fetch('CLICKHOUSE_URL', 'http://localhost:8123')
       uri = URI.parse(raw_url)
@@ -105,7 +108,7 @@ class ActiveSupport::TestCase
         url: "#{uri.scheme}://#{uri.host}:#{uri.port || 8123}",
         username: uri.user || 'default',
         password: uri.password || '',
-        variables: ClickhouseTestHelper::TEST_CLICKHOUSE_VARIABLES
+        variables: variables.merge(ClickhouseTestHelper::TEST_CLICKHOUSE_VARIABLES)
       )
       Clickhouse.reset_connection!
 
@@ -129,6 +132,7 @@ class ActiveSupport::TestCase
        "#{ClickhouseDeleteService::TOMBSTONE_PREFIX}:*",
        ReconcileLinkDimensionsJob::LOCK_KEY, ReconcileLinkDimensionsJob::SWEEP_CURSOR_KEY,
        "clickhouse:identity_sync:*",
+       "smart_banners:web_sdk_seen:*",
        "#{BatchEventProcessorJob::DEDUP_PREFIX}:*"].each do |pattern|
         keys = conn.keys(pattern)
         conn.del(*keys) unless keys.empty?

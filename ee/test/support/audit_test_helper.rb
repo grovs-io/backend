@@ -6,5 +6,6 @@ module AuditTestHelper
 
   def unentitle!(instance)
     EnterpriseSubscription.where(instance: instance).delete_all
+    StripeSubscription.where(instance: instance).update_all(active: false)
   end
 end

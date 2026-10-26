@@ -32,7 +32,19 @@ class McpInstanceStatusSerializer
         web: app_configured?(Grovs::Platforms::WEB),
         desktop: app_configured?(Grovs::Platforms::DESKTOP)
       },
-      usage: build_usage
+      usage: build_usage,
+      features: build_features
+    }
+  end
+
+  # Which MCP tool families this instance can use, so a client never infers it from a 404.
+  def build_features
+    {
+      analytics: Clickhouse.read_enabled?,
+      segments: Grovs.ee? && Segments.available?,
+      push_campaigns: instance.push_campaigns_enabled?,
+      in_app: instance.in_app_enabled?,
+      journeys: instance.journeys_enabled?
     }
   end
 

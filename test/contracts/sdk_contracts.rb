@@ -1,4 +1,5 @@
 require_relative "external_api_contracts"
+require_relative "push_campaign_schemas"
 
 # Strict contracts for SDK and server-SDK endpoints. Request schemas model the
 # controller's accepted params, and response schemas lock the public JSON
@@ -82,9 +83,30 @@ module ApiContracts
     properties: {
       "accepted" => { "type" => "integer" },
       "rejected" => { "type" => "integer" },
-      "errors" => ARRAY
+      "errors" => ARRAY,
+      "in_app" => strict_object(required: %w[campaigns_changed_at user_changed_at],
+                                properties: { "campaigns_changed_at" => STRING, "user_changed_at" => STRING })
     }
   )
+  IN_APP_SYNC_REQUEST = strict_object(
+    required: [],
+    properties: { "campaigns_changed_at" => STRING_OR_NULL, "user_changed_at" => STRING_OR_NULL, "format" => { "type" => "integer" },
+                  "sdk_version" => STRING }
+  )
+  IN_APP_SYNC_RESPONSE = {
+    "oneOf" => [
+      strict_object(required: %w[unchanged server_time store_url],
+                    properties: { "unchanged" => BOOL, "server_time" => STRING, "store_url" => STRING_OR_NULL }),
+      strict_object(required: %w[server_time store_url first_seen_at global_caps campaigns test_messages],
+                    properties: { "campaigns_changed_at" => STRING, "user_changed_at" => STRING, "server_time" => STRING, "store_url" => STRING_OR_NULL,
+                                  "first_seen_at" => STRING_OR_NULL,
+                                  "global_caps" => strict_object(required: %w[session day],
+                                                                 properties: { "session" => { "type" => "integer" },
+                                                                               "day" => { "type" => "integer" } }),
+                                  "campaigns" => { "type" => "array", "items" => ANY_OBJECT },
+                                  "test_messages" => { "type" => "array", "items" => ANY_OBJECT } })
+    ]
+  }.freeze
 
   # screen_aliases#create — array of {identifier, alias}; returns saved count.
   SCREEN_ALIASES_REQUEST = strict_object(
@@ -116,7 +138,8 @@ module ApiContracts
     properties: {
       "url" => STRING,
       "user_agent" => STRING,
-      "session_id" => STRING_OR_NULL
+      "session_id" => STRING_OR_NULL,
+      "source" => { "type" => "string", "enum" => ["push"] }
     }
   )
 
@@ -168,14 +191,14 @@ module ApiContracts
   )
 
   NOTIFICATIONS_PAGE_REQUEST = strict_object(
-    required: %w[page],
+    required: [],
     properties: {
       "page" => { "type" => %w[integer string] }
     }
   )
 
   NOTIFICATION_ID_REQUEST = strict_object(
-    required: %w[id],
+    required: [],
     properties: {
       "id" => { "type" => %w[integer string] }
     }
@@ -207,13 +230,14 @@ module ApiContracts
   )
 
   SDK_AUTH_RESPONSE = strict_object(
-    required: %w[linksquared uri_scheme sdk_identifier sdk_attributes push_token],
+    required: %w[linksquared uri_scheme sdk_identifier sdk_attributes push_token has_smart_banners],
     properties: {
       "linksquared" => STRING,
       "uri_scheme" => STRING_OR_NULL,
       "sdk_identifier" => STRING_OR_NULL,
       "sdk_attributes" => SDK_ATTRIBUTES,
-      "push_token" => STRING_OR_NULL
+      "push_token" => STRING_OR_NULL,
+      "has_smart_banners" => { "type" => "boolean" }
     }
   )
 
@@ -373,6 +397,45 @@ module ApiContracts
     422 => ERROR
   }.freeze
 
+  SB_SDK_BANNER = strict_object(
+    required: %w[id platforms url_include url_exclude position title subtitle button_text background_color
+                 text_color button_color button_text_color icon_url dismiss_days open_hide_days default_link],
+    properties: {
+      "id" => { "type" => "integer" },
+      "platforms" => SB_STRING_ARRAY,
+      "url_include" => SB_STRING_ARRAY,
+      "url_exclude" => SB_STRING_ARRAY,
+      "position" => { "type" => "string", "enum" => %w[top bottom] },
+      "title" => STRING,
+      "subtitle" => STRING_OR_NULL,
+      "button_text" => STRING,
+      "background_color" => SB_COLOR,
+      "text_color" => SB_COLOR,
+      "button_color" => SB_COLOR,
+      "button_text_color" => SB_COLOR,
+      "icon_url" => STRING_OR_NULL,
+      "dismiss_days" => { "type" => "integer" },
+      "open_hide_days" => { "type" => "integer" },
+      "default_link" => STRING
+    }
+  )
+
+  SB_SDK_LIST_RESPONSE = strict_object(
+    required: %w[smart_banners],
+    properties: { "smart_banners" => { "type" => "array", "items" => SB_SDK_BANNER } }
+  )
+
+  # Shapes are validated by the endpoint (422), so the request contract stays permissive.
+  SB_SDK_LINK_REQUEST = strict_object(required: [], properties: { "page_path" => JSON_VALUE, "data" => JSON_VALUE })
+
+  register "Api::V1::Sdk::SmartBannersController#index",
+           request: NO_PARAMS,
+           responses: { 200 => SB_SDK_LIST_RESPONSE, 422 => ERROR, **SDK_AUTH_FAILURES }
+
+  register "Api::V1::Sdk::SmartBannersController#link",
+           request: SB_SDK_LINK_REQUEST,
+           responses: { 200 => LINK_PATH_RESPONSE, 404 => ERROR, 422 => ERROR, 429 => ERROR, **SDK_AUTH_FAILURES }
+
   SERVER_SDK_AUTH_FAILURES = {
     400 => ERROR,
     403 => ERROR
@@ -426,16 +489,20 @@ module ApiContracts
            request: NO_PARAMS,
            responses: { 200 => strict_object(required: %w[clipboard_active], properties: { "clipboard_active" => BOOL }), **SDK_AUTH_FAILURES }
 
+  register "Api::V1::Sdk::PushController#open",
+           request: strict_object(required: [], properties: { "campaign_id" => STRING, "session_id" => STRING_OR_NULL }),
+           responses: { 200 => MESSAGE, 400 => ERROR, 404 => ERROR, **SDK_AUTH_FAILURES }
+
   register "Api::V1::Sdk::NotificationsController#mark_notification_as_read",
            request: NOTIFICATION_ID_REQUEST,
-           responses: { 200 => MESSAGE, 404 => ERROR, **SDK_AUTH_FAILURES }
+           responses: { 200 => MESSAGE, **SDK_AUTH_FAILURES }
 
   register "Api::V1::Sdk::NotificationsController#notifications_for_device",
            request: NOTIFICATIONS_PAGE_REQUEST,
            responses: { 200 => NOTIFICATIONS_ENVELOPE, **SDK_AUTH_FAILURES }
 
   register "Api::V1::Sdk::NotificationsController#notifications_to_display_automatically",
-           request: NO_PARAMS,
+           request: NOTIFICATIONS_PAGE_REQUEST,
            responses: { 200 => NOTIFICATIONS_ENVELOPE, **SDK_AUTH_FAILURES }
 
   register "Api::V1::Sdk::NotificationsController#number_of_unread_notifications",
@@ -446,6 +513,9 @@ module ApiContracts
     register "Api::V1::Sdk::PaymentsController#add_payment_event",
              request: SDK_REQUEST,
              responses: { 200 => SDK_PAYMENT_EVENT_RESPONSE, **SDK_AUTH_FAILURES }
+    register "Api::V1::Sdk::InAppController#sync",
+             request: IN_APP_SYNC_REQUEST,
+             responses: { 200 => IN_APP_SYNC_RESPONSE, **SDK_AUTH_FAILURES }
   end
 
   register "Api::V1::Sdk::VisitorsController#set_visitor_attributes",
@@ -471,4 +541,15 @@ module ApiContracts
   register "Api::V1::ServerSdkController#metrics_for_project",
            request: NO_PARAMS,
            responses: { 200 => METRICS_ARRAY_RESPONSE, **SERVER_SDK_AUTH_FAILURES }
+
+  register "Api::V1::ServerSdkController#push",
+           request: PUSH_SERVER_REQUEST,
+           responses: { **SERVER_SDK_AUTH_FAILURES,
+                        202 => strict_object(required: %w[campaign], properties: { "campaign" => PUSH_CAMPAIGN }),
+                        403 => { "anyOf" => [ERROR, PUSH_CODED_ERROR] }, 404 => ERROR, 422 => ERROR, 429 => PUSH_CODED_ERROR }
+
+  register "Api::V1::ServerSdkController#push_status",
+           request: NO_PARAMS,
+           responses: { **SERVER_SDK_AUTH_FAILURES, 200 => strict_object(required: %w[campaign], properties: { "campaign" => PUSH_CAMPAIGN }),
+                        403 => { "anyOf" => [ERROR, PUSH_CODED_ERROR] }, 404 => ERROR }
 end

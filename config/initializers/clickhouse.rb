@@ -17,6 +17,9 @@ module Clickhouse
   # Row-at-a-time writers let the server batch, or each save is its own part. Off in test: the suite reads back.
   ASYNC_INSERT = Rails.env.test? ? {} : { async_insert: 1, wait_for_async_insert: 0 }.freeze
 
+  # Transport failures — the connection never produced a ClickHouse answer at all.
+  TRANSPORT_ERRORS = [IOError, SystemCallError, Timeout::Error, SocketError].freeze
+
   class Connection
     def initialize(database = :main, configuration = ClickHouse::Client.configuration)
       @database = database
@@ -99,9 +102,6 @@ module Clickhouse
       raise "CLICKHOUSE_PRIMARY on a metered deployment requires the MAU chain wired to " \
             "ClickHouse (ProjectService::MAU_SOURCE must be :clickhouse, got #{mau_source.inspect})"
     end
-
-    # Transport failures — the connection never produced a ClickHouse answer at all.
-    TRANSPORT_ERRORS = [IOError, SystemCallError, Timeout::Error, SocketError].freeze
 
     # DatabaseError covers BOTH outages and defects (unknown identifier, syntax, auth), so it
     # is classified by code the way Analytics::QueryHelpers::HEAVY does. Anything unmatched is
@@ -209,11 +209,26 @@ module Clickhouse
       Thread.current[:clickhouse_read_timeout_override] = previous
     end
 
+    # Private CA for a self-hosted ClickHouse (PEM in CLICKHOUSE_CA_CERT); peer verification stays on.
+    def ca_cert_store
+      pem = ENV['CLICKHOUSE_CA_CERT'].to_s.strip
+      return nil if pem.empty?
+
+      @ca_cert_stores ||= {}
+      @ca_cert_stores[pem] ||= OpenSSL::X509::Store.new.tap do |store|
+        store.set_default_paths
+        store.add_cert(OpenSSL::X509::Certificate.new(pem))
+      end
+    end
+
     def build_http_post_proc
       lambda { |url, headers, body|
         uri = URI.parse(url)
         http = Net::HTTP.new(uri.host, uri.port)
         http.use_ssl = uri.scheme == 'https'
+        if uri.scheme == 'https' && (store = ca_cert_store)
+          http.cert_store = store
+        end
         # Connect is bounded by the override too, but never RAISED above the 10s default —
         # a long read budget must not also mean a long wait on an unreachable host.
         override = Thread.current[:clickhouse_read_timeout_override]
@@ -277,7 +292,8 @@ module Clickhouse
           database: database,
           url: "#{uri.scheme}://#{uri.host}:#{uri.port || 8123}",
           username: uri.user ? URI::DEFAULT_PARSER.unescape(uri.user) : 'default',
-          password: uri.password ? URI::DEFAULT_PARSER.unescape(uri.password) : ''
+          password: uri.password ? URI::DEFAULT_PARSER.unescape(uri.password) : '',
+          variables: { output_format_json_quote_64bit_integers: 0 }
         )
 
         config.http_post_proc = build_http_post_proc
@@ -308,7 +324,7 @@ ClickHouse::Client.configure do |config|
     url: "#{uri.scheme}://#{uri.host}:#{uri.port || 8123}",
     username: (uri.user ? URI::DEFAULT_PARSER.unescape(uri.user) : nil) || main['username'] || 'default',
     password: (uri.password ? URI::DEFAULT_PARSER.unescape(uri.password) : nil) || main['password'] || '',
-    variables: (main['variables'] || {}).symbolize_keys
+    variables: { output_format_json_quote_64bit_integers: 0 }.merge((main['variables'] || {}).symbolize_keys)
   )
 
   config.json_parser = JSON

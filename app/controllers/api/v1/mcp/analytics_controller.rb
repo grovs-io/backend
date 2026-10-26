@@ -13,7 +13,7 @@ class Api::V1::Mcp::AnalyticsController < Api::V1::Mcp::BaseController
       return
     end
 
-    link = domain.links.find_by(path: params[:path])
+    link = LinksService.find_link_preferring_active(domain.id, params[:path])
     unless link
       render json: { error: "Link not found" }, status: :not_found
       return

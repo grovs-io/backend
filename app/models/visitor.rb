@@ -4,7 +4,6 @@ class Visitor < ApplicationRecord
 
   # First: a raise in an after_commit callback halts the rest of the chain.
   after_create_commit :stamp_device_last_seen
-  after_create_commit :add_notifications_if_needed
 
   belongs_to :project
   belongs_to :device
@@ -13,8 +12,6 @@ class Visitor < ApplicationRecord
 
   has_many :links
   has_many :events, through: :links
-  has_many :notifications
-  has_many :notification_messages, dependent: :destroy
 
   # A visitor can invite many other visitors
   has_many :invited_visitors, class_name: "Visitor", foreign_key: "inviter_id", dependent: :nullify
@@ -54,10 +51,6 @@ class Visitor < ApplicationRecord
       keys << multi_condition_cache_key({device_id: old_device_id, project_id: project_id})
     end
     keys
-  end
-
-  def add_notifications_if_needed
-    NotificationMessageService.add_messages_for_new_visitor(self)
   end
 
   # Visitor is the (project, device) grain: stamping here is what makes device_last_seens complete.

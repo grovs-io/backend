@@ -15,11 +15,16 @@ class ActionsService
       Action.where(device_id: device.id).where("created_at >= ?", Grovs::Links::VALIDITY_MINUTES.minutes.ago).order(created_at: :desc).first
     end
 
-    def mark_actions_before_action_as_handled(old_action)
+    def action_ids_before_action(old_action)
       Action.where(device_id: old_action.device_id)
             .where('created_at <= ?', old_action.created_at)
             .where(handled: false)
-            .update_all(handled: true, updated_at: Time.current)
+            .pluck(:id)
+    end
+
+    def mark_actions_before_action_as_handled(old_action, action_ids: nil)
+      action_ids ||= action_ids_before_action(old_action)
+      Action.where(id: action_ids, handled: false).update_all(handled: true, updated_at: Time.current)
     end
   end
 

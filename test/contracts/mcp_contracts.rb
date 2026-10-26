@@ -83,6 +83,8 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
       "show_preview_android" => BOOL_OR_NULL,
       "copy_to_clipboard_ios" => BOOL_OR_NULL,
       "copy_to_clipboard_android" => BOOL_OR_NULL,
+      "in_app_browser_page_ios" => BOOL_OR_NULL,
+      "in_app_browser_page_android" => BOOL_OR_NULL,
       "platforms" => {
         "type" => %w[object null],
         "additionalProperties" => MCP_REDIRECT_PLATFORM_CONFIG
@@ -239,7 +241,7 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
   )
 
   MCP_INSTANCE_STATUS_RESPONSE = strict_object(
-    required: %w[id name uri_scheme production test configurations usage],
+    required: %w[id name uri_scheme production test configurations usage features],
     properties: {
       "id" => ID,
       "name" => STRING_OR_NULL,
@@ -255,7 +257,11 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
           "desktop" => BOOL
         }
       ),
-      "usage" => MCP_USAGE_DETAILS_RESPONSE
+      "usage" => MCP_USAGE_DETAILS_RESPONSE,
+      "features" => strict_object(
+        required: %w[analytics segments push_campaigns in_app journeys],
+        properties: %w[analytics segments push_campaigns in_app journeys].index_with { BOOL }
+      )
     }
   )
 
@@ -301,6 +307,8 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
       "show_preview_android" => BOOL_OR_NULL,
       "copy_to_clipboard_ios" => BOOL,
       "copy_to_clipboard_android" => BOOL,
+      "in_app_browser_page_ios" => BOOL,
+      "in_app_browser_page_android" => BOOL,
       "ios" => MCP_REDIRECT_TARGET_RESPONSE,
       "android" => MCP_REDIRECT_TARGET_RESPONSE,
       "desktop" => MCP_DESKTOP_REDIRECT_TARGET_RESPONSE
@@ -330,12 +338,14 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
   )
 
   MCP_ANALYTICS_RETENTION = strict_object(
-    required: %w[plan queryable_days cold_after_days can_query_cold],
+    required: %w[plan queryable_days cold_after_days can_query_cold raw_max_days raw_counter_max_days],
     properties: {
       "plan" => STRING,
       "queryable_days" => NUMBER,
       "cold_after_days" => NUMBER,
-      "can_query_cold" => BOOL
+      "can_query_cold" => BOOL,
+      "raw_max_days" => NUMBER,
+      "raw_counter_max_days" => NUMBER
     }
   )
 
@@ -352,6 +362,7 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
       "production" => MCP_PROJECT_RESPONSE.merge("type" => %w[object null]),
       "test" => MCP_PROJECT_RESPONSE.merge("type" => %w[object null]),
       "hash_id" => STRING,
+      "icon_url" => STRING_OR_NULL,
       "analytics_retention" => MCP_ANALYTICS_RETENTION
     }
   )
@@ -737,4 +748,20 @@ module ApiContracts # rubocop:disable Metrics/ModuleLength
                401 => MCP_ERROR,
                422 => MCP_ERROR
              }
+
+  MCP_FIELD_NOT_ALLOWED = mcp_object(required: %w[error error_code], properties: { "error" => STRING, "error_code" => STRING })
+
+  def self.with_mcp_warning(schema)
+    return schema unless schema.is_a?(Hash) && schema["type"] == "object" && schema["properties"]
+
+    schema.merge("properties" => schema["properties"].merge("_warning" => STRING_OR_NULL))
+  end
+
+  # An MCP subclass answers like its dashboard parent, plus MCP auth errors and the quota warning.
+  def self.register_mcp_subclass(action, parent:, request: :inherit, responses: {})
+    base = contracts.fetch(parent)
+    inherited = base.responses.transform_values { |schema| with_mcp_warning(schema) }
+    register action, request: request == :inherit ? base.request : request,
+                     responses: inherited.merge(MCP_AUTH_FAILURES).merge(responses)
+  end
 end

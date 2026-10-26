@@ -45,11 +45,7 @@ module ClickhouseIdentityMapService
     rows.concat(repoint_rows(pid, from, survivor))
 
     now = Time.current
-    # insert_identity_rows swallows CH errors and returns false — turn that into a
-    # raise so the fold job retries instead of silently losing the alias. resolve/
-    # repoint above raise on their own CH failures, which now propagate too.
-    ok = ClickhouseWriteService.insert_identity_rows(rows.map { |r| r.merge(updated_at: now) })
-    raise "ClickhouseIdentityMapService: identity-map insert failed for #{from}->#{survivor} in project #{pid}" unless ok
+    ClickhouseWriteService.insert_identity_rows!(rows.map { |r| r.merge(updated_at: now) })
   end
 
   # Resolve a visitor_id to its current final survivor (or itself if unmapped).
@@ -66,7 +62,8 @@ module ClickhouseIdentityMapService
     rows = Clickhouse.with do |conn|
       conn.select_all(
         "SELECT from_visitor_id, to_visitor_id FROM #{TABLE} FINAL " \
-        "WHERE project_id = #{Integer(project_id)} AND from_visitor_id IN (#{ids.join(', ')})"
+        "WHERE project_id = #{Integer(project_id)} AND from_visitor_id IN (#{ids.join(', ')}) " \
+        "SETTINGS max_execution_time = 5, max_threads = 1"
       )
     end
     rows.each { |r| map[r["from_visitor_id"].to_i] = r["to_visitor_id"].to_i }
@@ -78,7 +75,8 @@ module ClickhouseIdentityMapService
     existing = Clickhouse.with do |conn|
       conn.select_all(
         "SELECT from_visitor_id FROM #{TABLE} FINAL " \
-        "WHERE project_id = #{Integer(project_id)} AND to_visitor_id = #{Integer(from)}"
+        "WHERE project_id = #{Integer(project_id)} AND to_visitor_id = #{Integer(from)} " \
+        "SETTINGS max_execution_time = 5, max_threads = 1"
       )
     end
     existing.map do |r|

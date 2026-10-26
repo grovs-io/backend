@@ -44,6 +44,32 @@ class LinkManagementServiceTest < ActiveSupport::TestCase
     assert_equal ["tag1", "tag2"], link.tags
   end
 
+  test "reserved smart banner tags are stripped on create" do
+    link = build_service.create(
+      link_attrs: { title: "Tagged", path: "rsv-#{SecureRandom.hex(4)}" },
+      tags: '["smart_banner", "smart_banner:1", "promo", "smart_bannerx"]'
+    )
+    assert_equal %w[promo smart_bannerx], link.tags
+  end
+
+  test "update refuses a link carrying the reserved smart_banner tag" do
+    link = build_service.create(link_attrs: { title: "Tagged", path: "rsv-#{SecureRandom.hex(4)}" })
+    link.update_column(:tags, ["smart_banner", "smart_banner:7"])
+
+    assert_raises(ActiveRecord::RecordInvalid) do
+      build_service.update(link: link, link_attrs: { title: "Hacked" }, tags: '["new"]')
+    end
+    assert_equal "Tagged", link.reload.title
+  end
+
+  test "archive refuses a link carrying the reserved smart_banner tag" do
+    link = build_service.create(link_attrs: { title: "Tagged", path: "rsv2-#{SecureRandom.hex(4)}" })
+    link.update_column(:tags, ["smart_banner", "smart_banner:7"])
+
+    assert_raises(ActiveRecord::RecordInvalid) { build_service.archive(link: link) }
+    assert link.reload.active
+  end
+
   test "create with non-array tags raises ArgumentError" do
     assert_raises(ArgumentError) do
       build_service.create(

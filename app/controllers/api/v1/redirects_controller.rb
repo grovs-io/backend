@@ -71,7 +71,8 @@ class Api::V1::RedirectsController < Api::V1::ProjectsBaseController
 
   def redirect_config_params
     params.permit(:default_fallback, :show_preview_android, :show_preview_ios,
-                  :copy_to_clipboard_android, :copy_to_clipboard_ios)
+                  :copy_to_clipboard_android, :copy_to_clipboard_ios,
+                  :in_app_browser_page_android, :in_app_browser_page_ios)
   end
 
   def render_validation_error(exception)

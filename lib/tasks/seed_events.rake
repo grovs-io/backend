@@ -645,7 +645,9 @@ session_id: session_id)
       original_transaction_id: purchase[:original_transaction_id].to_s,
       store_source: purchase[:store_source].to_s,
       device_id: purchase[:device_id], link_id: purchase[:link_id] || 0, visitor_id: purchase[:visitor_id],
-      purchase_date: purchase[:purchase_date], created_at: purchase[:purchase_date]
+      purchase_date: purchase[:purchase_date], created_at: purchase[:purchase_date],
+      recorded_at: purchase[:purchase_date], session_id: '',
+      platform: PurchaseEvent::STORE_SOURCE_PLATFORM[purchase[:store_source].to_s].to_s
     }
   end
 

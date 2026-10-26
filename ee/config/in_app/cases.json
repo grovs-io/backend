@@ -1,0 +1,4678 @@
+{
+  "version": 1,
+  "base_campaign": {
+    "format": 1,
+    "id": "c1",
+    "revision": 1,
+    "created_at": "2026-09-01T00:00:00Z",
+    "priority": 1,
+    "template": "interstitial",
+    "content": {
+      "title": "Hello",
+      "message": "Welcome",
+      "image": {
+        "portrait": null,
+        "landscape": null
+      },
+      "colors": {},
+      "close_button": true,
+      "backdrop": "dim",
+      "buttons": [],
+      "tap_action": null
+    },
+    "triggers": [
+      {
+        "type": "event",
+        "name": "cart_viewed"
+      }
+    ],
+    "conditions": [],
+    "caps": {
+      "session": null,
+      "day": null,
+      "week": null,
+      "lifetime": null,
+      "ignore_global": false
+    },
+    "schedule": {
+      "start_at": "2026-09-01T00:00:00Z",
+      "end_at": null,
+      "days": null,
+      "from": null,
+      "to": null
+    },
+    "delay_seconds": 0,
+    "delivery_mode": "device",
+    "variants": null,
+    "control_group": null,
+    "conversion": null
+  },
+  "base_device": {
+    "platform": "ios",
+    "app_version": "2.1.0",
+    "os_version": "17.2",
+    "language": "en",
+    "first_seen_at": "2026-08-01T00:00:00Z",
+    "utc_offset_minutes": 0,
+    "user": {
+      "first_name": "Ana",
+      "plan": "pro",
+      "age": 31
+    },
+    "unsupported_templates": [],
+    "unsupported_actions": [],
+    "orientation": "portrait"
+  },
+  "base_case": {
+    "global_caps": {
+      "session": 10,
+      "day": 10
+    },
+    "synced_at": "2026-10-01T09:00:00Z",
+    "not_ready": []
+  },
+  "cases": [
+    {
+      "name": "an event trigger shows the campaign",
+      "campaigns": [
+        {}
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {},
+            "title": "Hello",
+            "message": "Welcome"
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "Cart_Viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "no_trigger"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:02:00Z",
+          "event": {
+            "type": "screen_view",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "no_trigger"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a numeric filter needs a number and a present property",
+      "campaigns": [
+        {
+          "triggers": [
+            {
+              "type": "event",
+              "name": "cart_viewed",
+              "filters": [
+                {
+                  "field": "total",
+                  "op": "gt",
+                  "value": 50
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed",
+            "properties": {
+              "total": 80
+            }
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed",
+            "properties": {
+              "total": "80.5"
+            }
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T10:02:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed",
+            "properties": {
+              "total": 50
+            }
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "no_trigger"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:03:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed",
+            "properties": {
+              "total": "lots"
+            }
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "no_trigger"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:04:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed",
+            "properties": {}
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "no_trigger"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "every filter operator",
+      "campaigns": [
+        {
+          "id": "eq",
+          "priority": 9,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "eq",
+                  "value": "red"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "neq",
+          "priority": 8,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "neq",
+                  "value": "red"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "contains",
+          "priority": 7,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "contains",
+                  "value": "re"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "not_contains",
+          "priority": 6,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "not_contains",
+                  "value": "re"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "between",
+          "priority": 5,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "between",
+                  "value": [
+                    1,
+                    5
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "lt",
+          "priority": 4,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "lt",
+                  "value": 3
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "is_set",
+          "priority": 3,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "is_set"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "is_not_set",
+          "priority": 2,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "is_not_set"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "probe",
+            "properties": {
+              "v": "Red"
+            }
+          },
+          "expect": {
+            "show": "eq",
+            "reasons": {
+              "neq": "no_trigger",
+              "contains": "lower_priority",
+              "not_contains": "no_trigger",
+              "between": "no_trigger",
+              "lt": "no_trigger",
+              "is_set": "lower_priority",
+              "is_not_set": "no_trigger"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "probe",
+            "properties": {
+              "v": 2
+            }
+          },
+          "expect": {
+            "show": "neq",
+            "reasons": {
+              "eq": "no_trigger",
+              "contains": "no_trigger",
+              "not_contains": "lower_priority",
+              "between": "lower_priority",
+              "lt": "lower_priority",
+              "is_set": "lower_priority",
+              "is_not_set": "no_trigger"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:02:00Z",
+          "event": {
+            "type": "event",
+            "name": "probe",
+            "properties": {
+              "v": 5
+            }
+          },
+          "expect": {
+            "show": "neq",
+            "reasons": {
+              "eq": "no_trigger",
+              "contains": "no_trigger",
+              "not_contains": "lower_priority",
+              "between": "lower_priority",
+              "lt": "no_trigger",
+              "is_set": "lower_priority",
+              "is_not_set": "no_trigger"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:03:00Z",
+          "event": {
+            "type": "event",
+            "name": "probe",
+            "properties": {
+              "v": ""
+            }
+          },
+          "expect": {
+            "show": "is_not_set",
+            "reasons": {
+              "eq": "no_trigger",
+              "neq": "no_trigger",
+              "contains": "no_trigger",
+              "not_contains": "no_trigger",
+              "between": "no_trigger",
+              "lt": "no_trigger",
+              "is_set": "no_trigger"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:04:00Z",
+          "event": {
+            "type": "event",
+            "name": "probe"
+          },
+          "expect": {
+            "show": "is_not_set",
+            "reasons": {
+              "eq": "no_trigger",
+              "neq": "no_trigger",
+              "contains": "no_trigger",
+              "not_contains": "no_trigger",
+              "between": "no_trigger",
+              "lt": "no_trigger",
+              "is_set": "no_trigger"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "numbers compare as numbers when both sides are numeric",
+      "campaigns": [
+        {
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "eq",
+                  "value": 2
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "probe",
+            "properties": {
+              "v": "2.0"
+            }
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "probe",
+            "properties": {
+              "v": "two"
+            }
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "no_trigger"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a screen view trigger matches the name without regard to case, or any screen when unnamed",
+      "campaigns": [
+        {
+          "id": "named",
+          "priority": 2,
+          "triggers": [
+            {
+              "type": "screen_view",
+              "name": "Cart"
+            }
+          ]
+        },
+        {
+          "id": "any",
+          "priority": 1,
+          "triggers": [
+            {
+              "type": "screen_view"
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "screen_view",
+            "name": "cart"
+          },
+          "expect": {
+            "show": "named",
+            "reasons": {
+              "any": "lower_priority"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "screen_view",
+            "name": "Home"
+          },
+          "expect": {
+            "show": "any",
+            "reasons": {
+              "named": "no_trigger"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "any one of several triggers fires the campaign",
+      "campaigns": [
+        {
+          "triggers": [
+            {
+              "type": "app_open"
+            },
+            {
+              "type": "event",
+              "name": "checkout"
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "app_open"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "checkout"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T10:02:00Z",
+          "event": {
+            "type": "event",
+            "name": "refund"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "no_trigger"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "every device condition must pass",
+      "campaigns": [
+        {
+          "id": "ios_pro",
+          "priority": 3,
+          "conditions": [
+            {
+              "type": "platform",
+              "op": "eq",
+              "value": "IOS"
+            },
+            {
+              "type": "user_attribute",
+              "key": "plan",
+              "op": "eq",
+              "value": "pro"
+            }
+          ]
+        },
+        {
+          "id": "android",
+          "priority": 2,
+          "conditions": [
+            {
+              "type": "platform",
+              "op": "eq",
+              "value": "android"
+            }
+          ]
+        },
+        {
+          "id": "no_email",
+          "priority": 1,
+          "conditions": [
+            {
+              "type": "user_attribute",
+              "key": "email",
+              "op": "is_not_set"
+            },
+            {
+              "type": "language",
+              "op": "neq",
+              "value": "de"
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "ios_pro",
+            "reasons": {
+              "android": "condition",
+              "no_email": "lower_priority"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "versions compare part by part, not as text",
+      "campaigns": [
+        {
+          "id": "newer",
+          "priority": 4,
+          "conditions": [
+            {
+              "type": "app_version",
+              "op": "gt",
+              "value": "2.0.10"
+            }
+          ]
+        },
+        {
+          "id": "same",
+          "priority": 3,
+          "conditions": [
+            {
+              "type": "app_version",
+              "op": "eq",
+              "value": "2.1"
+            }
+          ]
+        },
+        {
+          "id": "range",
+          "priority": 2,
+          "conditions": [
+            {
+              "type": "os_version",
+              "op": "between",
+              "value": [
+                "16",
+                "17.2.0"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "older",
+          "priority": 1,
+          "conditions": [
+            {
+              "type": "app_version",
+              "op": "lt",
+              "value": "2.1.0"
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "newer",
+            "reasons": {
+              "same": "lower_priority",
+              "range": "lower_priority",
+              "older": "condition"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "first seen conditions",
+      "campaigns": [
+        {
+          "id": "recent",
+          "priority": 3,
+          "conditions": [
+            {
+              "type": "first_seen",
+              "op": "within_days",
+              "value": 30
+            }
+          ]
+        },
+        {
+          "id": "quarter",
+          "priority": 2,
+          "conditions": [
+            {
+              "type": "first_seen",
+              "op": "within_days",
+              "value": 90
+            }
+          ]
+        },
+        {
+          "id": "veteran",
+          "priority": 1,
+          "conditions": [
+            {
+              "type": "first_seen",
+              "op": "before",
+              "value": "2026-09-01T00:00:00Z"
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "quarter",
+            "reasons": {
+              "recent": "condition",
+              "veteran": "lower_priority"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "an event count includes the event being tracked",
+      "campaigns": [
+        {
+          "triggers": [
+            {
+              "type": "event",
+              "name": "checkout"
+            }
+          ],
+          "conditions": [
+            {
+              "type": "event_count",
+              "name": "checkout",
+              "op": "gt",
+              "value": 2
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "checkout"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "condition"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "checkout"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "condition"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:02:00Z",
+          "event": {
+            "type": "event",
+            "name": "checkout"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "start and end dates",
+      "campaigns": [
+        {
+          "schedule": {
+            "start_at": "2026-10-01T12:00:00Z",
+            "end_at": "2026-10-02T12:00:00Z"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T11:59:59Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "schedule"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T12:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-02T11:59:59Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-02T12:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "schedule"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "days and hours use the device's local time",
+      "synced_at": "2026-10-02T20:00:00Z",
+      "device": {
+        "utc_offset_minutes": 120
+      },
+      "campaigns": [
+        {
+          "schedule": {
+            "days": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "from": "09:00",
+            "to": "21:00"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-02T06:59:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "schedule"
+            }
+          }
+        },
+        {
+          "at": "2026-10-02T07:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-02T18:59:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-02T19:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "schedule"
+            }
+          }
+        },
+        {
+          "at": "2026-10-03T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "schedule"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "an hour window can cross midnight",
+      "campaigns": [
+        {
+          "schedule": {
+            "from": "22:00",
+            "to": "06:00"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T21:59:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "schedule"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T22:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-02T05:59:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-02T06:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "schedule"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a session cap resets with a new session",
+      "campaigns": [
+        {
+          "caps": {
+            "session": 1
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "cap_session"
+            }
+          }
+        },
+        {
+          "session_start": true
+        },
+        {
+          "at": "2026-10-01T11:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a day cap follows the local calendar day and survives a new session",
+      "synced_at": "2026-10-01T21:00:00Z",
+      "device": {
+        "utc_offset_minutes": 120
+      },
+      "campaigns": [
+        {
+          "caps": {
+            "day": 1
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T20:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "session_start": true
+        },
+        {
+          "at": "2026-10-01T21:59:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "cap_day"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T22:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a week cap runs Monday to Sunday",
+      "synced_at": "2026-10-04T12:00:00Z",
+      "campaigns": [
+        {
+          "caps": {
+            "week": 2
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-03T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-04T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-04T23:59:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "cap_week"
+            }
+          }
+        },
+        {
+          "at": "2026-10-05T00:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "the global session cap spans campaigns, except those that opt out",
+      "global_caps": {
+        "session": 2,
+        "day": 10
+      },
+      "campaigns": [
+        {
+          "id": "a",
+          "triggers": [
+            {
+              "type": "event",
+              "name": "a"
+            }
+          ]
+        },
+        {
+          "id": "b",
+          "triggers": [
+            {
+              "type": "event",
+              "name": "b"
+            }
+          ]
+        },
+        {
+          "id": "free",
+          "triggers": [
+            {
+              "type": "event",
+              "name": "free"
+            }
+          ],
+          "caps": {
+            "ignore_global": true
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "free"
+          },
+          "expect": {
+            "show": "free",
+            "reasons": {
+              "a": "no_trigger",
+              "b": "no_trigger"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "a"
+          },
+          "expect": {
+            "show": "a",
+            "reasons": {
+              "b": "no_trigger",
+              "free": "no_trigger"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:02:00Z",
+          "event": {
+            "type": "event",
+            "name": "b"
+          },
+          "expect": {
+            "show": "b",
+            "reasons": {
+              "a": "no_trigger",
+              "free": "no_trigger"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:03:00Z",
+          "event": {
+            "type": "event",
+            "name": "a"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "a": "cap_global_session",
+              "b": "no_trigger",
+              "free": "no_trigger"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:04:00Z",
+          "event": {
+            "type": "event",
+            "name": "free"
+          },
+          "expect": {
+            "show": "free",
+            "reasons": {
+              "a": "no_trigger",
+              "b": "no_trigger"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "the highest priority wins and a tie goes to the older campaign",
+      "campaigns": [
+        {
+          "id": "low",
+          "priority": 3
+        },
+        {
+          "id": "young",
+          "priority": 5,
+          "created_at": "2026-09-10T00:00:00Z"
+        },
+        {
+          "id": "old",
+          "priority": 5,
+          "created_at": "2026-09-05T00:00:00Z"
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "old",
+            "reasons": {
+              "low": "lower_priority",
+              "young": "lower_priority"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a campaign that loses on priority is not counted as viewed",
+      "campaigns": [
+        {
+          "id": "high",
+          "priority": 5,
+          "caps": {
+            "session": 1
+          }
+        },
+        {
+          "id": "low",
+          "priority": 1,
+          "caps": {
+            "lifetime": 1
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "high",
+            "reasons": {
+              "low": "lower_priority"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "low",
+            "reasons": {
+              "high": "cap_session"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:02:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "high": "cap_session",
+              "low": "cap_lifetime"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "personalization fills user and event fields and uses fallbacks",
+      "campaigns": [
+        {
+          "content": {
+            "title": "Hi {{ user.first_name | default: \"there\" }}",
+            "message": "{{event.product|default:\"Your item\"}} is waiting, {{ user.nickname | default: \"\" }}",
+            "buttons": [
+              {
+                "id": "b1",
+                "text": "Buy {{ event.product | default: \"now\" }}",
+                "action": {
+                  "type": "close"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed",
+            "properties": {
+              "product": "Red Shoes"
+            }
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {},
+            "title": "Hi Ana",
+            "message": "Red Shoes is waiting, ",
+            "buttons": [
+              "Buy Red Shoes"
+            ]
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {},
+            "title": "Hi Ana",
+            "message": "Your item is waiting, ",
+            "buttons": [
+              "Buy now"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "a field with no value and no fallback stops the campaign for that trigger",
+      "campaigns": [
+        {
+          "content": {
+            "title": "{{ event.product }} is back"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "personalization"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed",
+            "properties": {
+              "product": ""
+            }
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "personalization"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:02:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed",
+            "properties": {
+              "product": 42
+            }
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {},
+            "title": "42 is back"
+          }
+        }
+      ]
+    },
+    {
+      "name": "values placed in links are percent-encoded",
+      "campaigns": [
+        {
+          "content": {
+            "buttons": [
+              {
+                "id": "b1",
+                "text": "Open",
+                "action": {
+                  "type": "open_url",
+                  "url": "https://acme.example/p?name={{ event.product }}&u={{ user.first_name }}"
+                }
+              },
+              {
+                "id": "b2",
+                "text": "App",
+                "action": {
+                  "type": "open_url",
+                  "url": "acme://product/{{ event.product }}"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed",
+            "properties": {
+              "product": "Red Shoes & Co/1"
+            }
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {},
+            "urls": [
+              "https://acme.example/p?name=Red%20Shoes%20%26%20Co%2F1&u=Ana",
+              "acme://product/Red%20Shoes%20%26%20Co%2F1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "unsafe links stop the campaign",
+      "off_schema": [
+        "script",
+        "host",
+        "scheme",
+        "bare"
+      ],
+      "campaigns": [
+        {
+          "id": "script",
+          "content": {
+            "buttons": [
+              {
+                "id": "b1",
+                "text": "Go",
+                "action": {
+                  "type": "open_url",
+                  "url": "JavaScript:alert(1)"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "host",
+          "content": {
+            "tap_action": {
+              "type": "open_url",
+              "url": "https://{{ event.host }}/path"
+            }
+          }
+        },
+        {
+          "id": "scheme",
+          "content": {
+            "tap_action": {
+              "type": "open_url",
+              "url": "{{ event.scheme }}://acme.example"
+            }
+          }
+        },
+        {
+          "id": "bare",
+          "content": {
+            "tap_action": {
+              "type": "open_url",
+              "url": "acme.example/path"
+            }
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed",
+            "properties": {
+              "host": "evil.example",
+              "scheme": "https"
+            }
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "script": "unsafe_link",
+              "host": "unsafe_link",
+              "scheme": "unsafe_link",
+              "bare": "unsafe_link"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a campaign the device cannot handle is skipped",
+      "off_schema": [
+        "future_format",
+        "experiment"
+      ],
+      "device": {
+        "unsupported_templates": [
+          "alert"
+        ],
+        "unsupported_actions": [
+          "request_push_permission",
+          "request_app_rating",
+          "open_store"
+        ]
+      },
+      "campaigns": [
+        {
+          "id": "future_format",
+          "format": 2
+        },
+        {
+          "id": "checked",
+          "delivery_mode": "check_at_trigger"
+        },
+        {
+          "id": "experiment",
+          "variants": [
+            {
+              "id": "a"
+            }
+          ]
+        },
+        {
+          "id": "alert",
+          "template": "alert"
+        },
+        {
+          "id": "primer",
+          "content": {
+            "buttons": [
+              {
+                "id": "b1",
+                "text": "Allow",
+                "action": {
+                  "type": "request_push_permission"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "rating",
+          "content": {
+            "tap_action": {
+              "type": "request_app_rating"
+            }
+          }
+        },
+        {
+          "id": "store",
+          "content": {
+            "buttons": [
+              {
+                "id": "b1",
+                "text": "Update",
+                "action": {
+                  "type": "open_store"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "plain"
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "plain",
+            "reasons": {
+              "future_format": "unsupported",
+              "checked": "unsupported",
+              "experiment": "unsupported",
+              "alert": "unsupported",
+              "primer": "unsupported",
+              "rating": "unsupported",
+              "store": "unsupported"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a campaign whose images are not on the device yet is skipped",
+      "not_ready": [
+        "c1"
+      ],
+      "campaigns": [
+        {
+          "priority": 9
+        },
+        {
+          "id": "c2"
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c2",
+            "reasons": {
+              "c1": "not_ready"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "nothing shows when the last sync is more than 48 hours old",
+      "synced_at": "2026-09-29T10:00:00Z",
+      "campaigns": [
+        {}
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T10:00:01Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "stale"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "values become text the same way on every platform",
+      "campaigns": [
+        {
+          "content": {
+            "title": "{{ event.whole }}|{{ event.part }}|{{ event.flag }}|{{ event.word }}|{{ user.age }}"
+          },
+          "triggers": [
+            {
+              "type": "event",
+              "name": "cart_viewed",
+              "filters": [
+                {
+                  "field": "flag",
+                  "op": "eq",
+                  "value": "TRUE"
+                },
+                {
+                  "field": "whole",
+                  "op": "eq",
+                  "value": "42"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed",
+            "properties": {
+              "whole": 42.0,
+              "part": 42.5,
+              "flag": true,
+              "word": "x"
+            }
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {},
+            "title": "42|42.5|true|x|31"
+          }
+        }
+      ]
+    },
+    {
+      "name": "lists and objects count as no value",
+      "campaigns": [
+        {
+          "id": "set",
+          "priority": 3,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "is_set"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "contains",
+          "priority": 2,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "contains",
+                  "value": "a"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "unset",
+          "priority": 1,
+          "content": {
+            "title": "{{ event.v | default: \"none\" }}"
+          },
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "is_not_set"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "probe",
+            "properties": {
+              "v": {
+                "a": 1
+              }
+            }
+          },
+          "expect": {
+            "show": "unset",
+            "reasons": {
+              "set": "no_trigger",
+              "contains": "no_trigger"
+            },
+            "title": "none"
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "probe",
+            "properties": {
+              "v": [
+                "a",
+                "b"
+              ]
+            }
+          },
+          "expect": {
+            "show": "unset",
+            "reasons": {
+              "set": "no_trigger",
+              "contains": "no_trigger"
+            },
+            "title": "none"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a qualifier after a version number is ignored",
+      "device": {
+        "app_version": "2.1.0-beta",
+        "os_version": "17.4-beta.2"
+      },
+      "campaigns": [
+        {
+          "id": "same",
+          "priority": 3,
+          "conditions": [
+            {
+              "type": "app_version",
+              "op": "eq",
+              "value": "2.1.0"
+            }
+          ]
+        },
+        {
+          "id": "os",
+          "priority": 2,
+          "conditions": [
+            {
+              "type": "os_version",
+              "op": "gt",
+              "value": "17.3"
+            }
+          ]
+        },
+        {
+          "id": "newer",
+          "priority": 1,
+          "conditions": [
+            {
+              "type": "os_version",
+              "op": "gt",
+              "value": "17.4.0"
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "same",
+            "reasons": {
+              "os": "lower_priority",
+              "newer": "condition"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "within days is a length of time, not calendar days",
+      "device": {
+        "first_seen_at": "2026-09-01T10:00:00Z"
+      },
+      "campaigns": [
+        {
+          "conditions": [
+            {
+              "type": "first_seen",
+              "op": "within_days",
+              "value": 30
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T10:00:01Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "condition"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a tie on priority and age goes to the smaller id",
+      "campaigns": [
+        {
+          "id": "b",
+          "priority": 5
+        },
+        {
+          "id": "a",
+          "priority": 5
+        },
+        {
+          "id": "B",
+          "priority": 5
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "B",
+            "reasons": {
+              "a": "lower_priority",
+              "b": "lower_priority"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "links are listed buttons first, then the tap action",
+      "campaigns": [
+        {
+          "content": {
+            "buttons": [
+              {
+                "id": "b1",
+                "text": "One",
+                "action": {
+                  "type": "open_url",
+                  "url": "https://acme.example/one"
+                }
+              },
+              {
+                "id": "b2",
+                "text": "Close",
+                "action": {
+                  "type": "close"
+                }
+              }
+            ],
+            "tap_action": {
+              "type": "open_url",
+              "url": "https://acme.example/tap"
+            }
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {},
+            "buttons": [
+              "One",
+              "Close"
+            ],
+            "urls": [
+              "https://acme.example/one",
+              "https://acme.example/tap"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "a negative offset moves the local day back",
+      "synced_at": "2026-10-05T03:00:00Z",
+      "device": {
+        "utc_offset_minutes": -300
+      },
+      "campaigns": [
+        {
+          "caps": {
+            "day": 1
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-05T03:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-05T04:59:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "cap_day"
+            }
+          }
+        },
+        {
+          "at": "2026-10-05T05:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a negative offset moves the local week back",
+      "synced_at": "2026-10-05T03:00:00Z",
+      "device": {
+        "utc_offset_minutes": -300
+      },
+      "campaigns": [
+        {
+          "caps": {
+            "week": 1
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-05T03:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-05T04:59:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "cap_week"
+            }
+          }
+        },
+        {
+          "at": "2026-10-05T05:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a filter value of the wrong shape makes the campaign unsupported",
+      "off_schema": [
+        "contains",
+        "not_contains",
+        "eq",
+        "neq",
+        "gt",
+        "between_one",
+        "between_three",
+        "between_word"
+      ],
+      "campaigns": [
+        {
+          "id": "contains",
+          "priority": 7,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "contains",
+                  "value": [
+                    "a",
+                    "b"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "not_contains",
+          "priority": 6,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "not_contains",
+                  "value": [
+                    "x",
+                    "y"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "eq",
+          "priority": 5,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "eq",
+                  "value": [
+                    3,
+                    3
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "neq",
+          "priority": 4,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "neq",
+                  "value": [
+                    1,
+                    2
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "gt",
+          "priority": 3,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "gt",
+                  "value": [
+                    1,
+                    2
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "between_one",
+          "priority": 2,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "between",
+                  "value": 5
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "between_three",
+          "priority": 2,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "between",
+                  "value": [
+                    1,
+                    2,
+                    3
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "between_word",
+          "priority": 2,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "between",
+                  "value": [
+                    1,
+                    "many"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "between",
+          "priority": 1,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "between",
+                  "value": [
+                    1,
+                    "5"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "probe",
+            "properties": {
+              "v": 3
+            }
+          },
+          "expect": {
+            "show": "between",
+            "reasons": {
+              "contains": "unsupported",
+              "not_contains": "unsupported",
+              "eq": "unsupported",
+              "neq": "unsupported",
+              "gt": "unsupported",
+              "between_one": "unsupported",
+              "between_three": "unsupported",
+              "between_word": "unsupported"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "numbers are never written with an exponent",
+      "campaigns": [
+        {
+          "content": {
+            "title": "{{ event.tiny }}|{{ event.huge }}|{{ event.sum }}|{{ event.negative }}"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed",
+            "properties": {
+              "tiny": 1e-07,
+              "huge": 1e+21,
+              "sum": 0.30000000000000004,
+              "negative": -2.5
+            }
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {},
+            "title": "0.0000001|1000000000000000000000|0.30000000000000004|-2.5"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a definition the engine cannot read is unsupported, and unknown fields are ignored",
+      "off_schema": [
+        "days_text",
+        "day_count",
+        "instant",
+        "month",
+        "bare_filter",
+        "bare_condition",
+        "bare_button",
+        "no_url",
+        "no_payload",
+        "no_value",
+        "no_key",
+        "no_name",
+        "no_event",
+        "screen_filter",
+        "open_filter",
+        "half_window",
+        "wrong_op",
+        "zero_cap",
+        "no_triggers",
+        "extra"
+      ],
+      "campaigns": [
+        {
+          "id": "days_text",
+          "conditions": [
+            {
+              "type": "first_seen",
+              "op": "within_days",
+              "value": "90"
+            }
+          ]
+        },
+        {
+          "id": "day_count",
+          "conditions": [
+            {
+              "type": "first_seen",
+              "op": "before",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": "instant",
+          "conditions": [
+            {
+              "type": "first_seen",
+              "op": "after",
+              "value": "2026-09-01"
+            }
+          ]
+        },
+        {
+          "id": "month",
+          "conditions": [
+            {
+              "type": "first_seen",
+              "op": "after",
+              "value": "2026-13-01T00:00:00Z"
+            }
+          ]
+        },
+        {
+          "id": "bare_filter",
+          "triggers": [
+            {
+              "type": "event",
+              "name": "cart_viewed",
+              "filters": [
+                5
+              ]
+            }
+          ]
+        },
+        {
+          "id": "bare_condition",
+          "conditions": [
+            "ios"
+          ]
+        },
+        {
+          "id": "bare_button",
+          "content": {
+            "buttons": [
+              null
+            ]
+          }
+        },
+        {
+          "id": "no_url",
+          "content": {
+            "tap_action": {
+              "type": "open_url"
+            }
+          }
+        },
+        {
+          "id": "no_payload",
+          "content": {
+            "tap_action": {
+              "type": "key_value"
+            }
+          }
+        },
+        {
+          "id": "no_value",
+          "conditions": [
+            {
+              "type": "app_version",
+              "op": "neq"
+            }
+          ]
+        },
+        {
+          "id": "no_key",
+          "conditions": [
+            {
+              "type": "user_attribute",
+              "op": "is_not_set"
+            }
+          ]
+        },
+        {
+          "id": "no_name",
+          "conditions": [
+            {
+              "type": "event_count",
+              "op": "lt",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "id": "no_event",
+          "triggers": [
+            {
+              "type": "event"
+            },
+            {
+              "type": "event",
+              "name": "cart_viewed"
+            }
+          ]
+        },
+        {
+          "id": "screen_filter",
+          "triggers": [
+            {
+              "type": "event",
+              "name": "cart_viewed"
+            },
+            {
+              "type": "screen_view",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "is_set"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "open_filter",
+          "triggers": [
+            {
+              "type": "event",
+              "name": "cart_viewed"
+            },
+            {
+              "type": "app_open",
+              "name": "launch"
+            }
+          ]
+        },
+        {
+          "id": "half_window",
+          "schedule": {
+            "from": "09:00"
+          }
+        },
+        {
+          "id": "wrong_op",
+          "conditions": [
+            {
+              "type": "platform",
+              "op": "contains",
+              "value": "i"
+            }
+          ]
+        },
+        {
+          "id": "zero_cap",
+          "caps": {
+            "day": 0
+          }
+        },
+        {
+          "id": "no_triggers",
+          "triggers": []
+        },
+        {
+          "id": "extra",
+          "future_field": {
+            "a": 1
+          },
+          "content": {
+            "subtitle": "New"
+          },
+          "caps": {
+            "month": 3
+          },
+          "schedule": {
+            "zone": "local"
+          },
+          "triggers": [
+            {
+              "type": "event",
+              "name": "cart_viewed",
+              "sample": 0.5
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "extra",
+            "reasons": {
+              "days_text": "unsupported",
+              "day_count": "unsupported",
+              "instant": "unsupported",
+              "month": "unsupported",
+              "bare_filter": "unsupported",
+              "bare_condition": "unsupported",
+              "bare_button": "unsupported",
+              "no_url": "unsupported",
+              "no_payload": "unsupported",
+              "no_value": "unsupported",
+              "no_key": "unsupported",
+              "no_name": "unsupported",
+              "no_event": "unsupported",
+              "screen_filter": "unsupported",
+              "open_filter": "unsupported",
+              "half_window": "unsupported",
+              "wrong_op": "unsupported",
+              "zero_cap": "unsupported",
+              "no_triggers": "unsupported"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a sync resets the 48 hour clock",
+      "synced_at": "2026-09-29T10:00:00Z",
+      "campaigns": [
+        {}
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:01Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "stale"
+            }
+          }
+        },
+        {
+          "sync": {
+            "at": "2026-10-01T10:00:02Z"
+          }
+        },
+        {
+          "at": "2026-10-01T10:00:03Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "view": "d1",
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "everything outside the unreserved set is percent-encoded, fallbacks included",
+      "campaigns": [
+        {
+          "content": {
+            "tap_action": {
+              "type": "open_url",
+              "url": "https://acme.example/s?q={{ event.q }}&d={{ event.missing | default: \"a b\" }}"
+            }
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed",
+            "properties": {
+              "q": "a!'()*+ \u00e9~-._Z9"
+            }
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {},
+            "urls": [
+              "https://acme.example/s?q=a%21%27%28%29%2A%2B%20%C3%A9~-._Z9&d=a%20b"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "a version the device does not report fails every version condition",
+      "device": {
+        "platform": "web",
+        "app_version": "",
+        "os_version": ""
+      },
+      "campaigns": [
+        {
+          "id": "differs",
+          "priority": 3,
+          "conditions": [
+            {
+              "type": "app_version",
+              "op": "neq",
+              "value": "1.0"
+            }
+          ]
+        },
+        {
+          "id": "older",
+          "priority": 2,
+          "conditions": [
+            {
+              "type": "os_version",
+              "op": "lt",
+              "value": "17"
+            }
+          ]
+        },
+        {
+          "id": "plain",
+          "priority": 1
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "plain",
+            "reasons": {
+              "differs": "condition",
+              "older": "condition"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a device with no first seen date fails every first seen condition",
+      "device": {
+        "first_seen_at": null
+      },
+      "campaigns": [
+        {
+          "id": "recent",
+          "priority": 2,
+          "conditions": [
+            {
+              "type": "first_seen",
+              "op": "within_days",
+              "value": 30
+            }
+          ]
+        },
+        {
+          "id": "plain",
+          "priority": 1
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "plain",
+            "reasons": {
+              "recent": "condition"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "after midnight the day that counts is the one the window opened on",
+      "synced_at": "2026-10-02T00:00:00Z",
+      "campaigns": [
+        {
+          "schedule": {
+            "days": [
+              5
+            ],
+            "from": "22:00",
+            "to": "06:00"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-02T02:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "schedule"
+            }
+          }
+        },
+        {
+          "at": "2026-10-02T23:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-03T02:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-03T23:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "schedule"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a push permission request is skipped once permission is granted",
+      "device": {
+        "push_permission": "granted"
+      },
+      "campaigns": [
+        {
+          "id": "primer",
+          "priority": 2,
+          "content": {
+            "buttons": [
+              {
+                "id": "b1",
+                "text": "Allow",
+                "action": {
+                  "type": "request_push_permission"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "plain",
+          "priority": 1
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "plain",
+            "reasons": {
+              "primer": "condition"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a push permission request shows while permission has not been granted",
+      "device": {
+        "push_permission": "denied"
+      },
+      "campaigns": [
+        {
+          "content": {
+            "buttons": [
+              {
+                "id": "b1",
+                "text": "Allow",
+                "action": {
+                  "type": "request_push_permission"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a portrait-only message shows in portrait and a landscape-only one does not",
+      "campaigns": [
+        {
+          "id": "portrait_only",
+          "priority": 3,
+          "content": {
+            "orientation": "portrait"
+          }
+        },
+        {
+          "id": "landscape_only",
+          "priority": 2,
+          "content": {
+            "orientation": "landscape"
+          }
+        },
+        {
+          "id": "any",
+          "priority": 1,
+          "content": {
+            "orientation": "any"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "portrait_only",
+            "reasons": {
+              "landscape_only": "condition",
+              "any": "lower_priority"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a landscape-only message shows in landscape and a portrait-only one does not",
+      "device": {
+        "orientation": "landscape"
+      },
+      "campaigns": [
+        {
+          "id": "portrait_only",
+          "priority": 3,
+          "content": {
+            "orientation": "portrait"
+          }
+        },
+        {
+          "id": "landscape_only",
+          "priority": 2,
+          "content": {
+            "orientation": "landscape"
+          }
+        },
+        {
+          "id": "any",
+          "priority": 1,
+          "content": {
+            "orientation": "any"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "landscape_only",
+            "reasons": {
+              "portrait_only": "condition",
+              "any": "lower_priority"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a message for any orientation, or with none set, shows in both",
+      "off_schema": [
+        "sideways"
+      ],
+      "device": {
+        "orientation": "landscape"
+      },
+      "campaigns": [
+        {
+          "id": "any",
+          "priority": 2,
+          "content": {
+            "orientation": "any"
+          },
+          "caps": {
+            "lifetime": 1
+          }
+        },
+        {
+          "id": "plain",
+          "priority": 1
+        },
+        {
+          "id": "sideways",
+          "priority": 3,
+          "content": {
+            "orientation": "upside_down"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "any",
+            "reasons": {
+              "plain": "lower_priority",
+              "sideways": "unsupported"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "plain",
+            "reasons": {
+              "any": "cap_lifetime",
+              "sideways": "unsupported"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a message for any orientation shows in portrait",
+      "campaigns": [
+        {
+          "id": "any",
+          "content": {
+            "orientation": "any"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "any",
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "campaign ages compare as instants, not as text",
+      "campaigns": [
+        {
+          "id": "a",
+          "priority": 5,
+          "created_at": "2026-09-01T00:00:00.500Z"
+        },
+        {
+          "id": "z",
+          "priority": 5,
+          "created_at": "2026-09-01T00:00:00Z"
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "z",
+            "reasons": {
+              "a": "lower_priority"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a range with its ends reversed never matches",
+      "campaigns": [
+        {
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "between",
+                  "value": [
+                    5,
+                    1
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "probe",
+            "properties": {
+              "v": 3
+            }
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "no_trigger"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "screen views are not counted as events",
+      "campaigns": [
+        {
+          "triggers": [
+            {
+              "type": "event",
+              "name": "checkout"
+            },
+            {
+              "type": "screen_view",
+              "name": "checkout"
+            }
+          ],
+          "conditions": [
+            {
+              "type": "event_count",
+              "name": "checkout",
+              "op": "eq",
+              "value": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "screen_view",
+            "name": "checkout"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "condition"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "checkout"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T10:02:00Z",
+          "event": {
+            "type": "screen_view",
+            "name": "checkout"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T10:03:00Z",
+          "event": {
+            "type": "event",
+            "name": "checkout"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "condition"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "text compares after lowercasing and nothing more",
+      "campaigns": [
+        {
+          "id": "eq",
+          "priority": 3,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "eq",
+                  "value": "STRASSE"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "accent",
+          "priority": 2,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe",
+              "filters": [
+                {
+                  "field": "v",
+                  "op": "eq",
+                  "value": "\u00c9COLE"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "plain",
+          "priority": 1,
+          "triggers": [
+            {
+              "type": "event",
+              "name": "probe"
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "probe",
+            "properties": {
+              "v": "stra\u00dfe"
+            }
+          },
+          "expect": {
+            "show": "plain",
+            "reasons": {
+              "eq": "no_trigger",
+              "accent": "no_trigger"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T10:01:00Z",
+          "event": {
+            "type": "event",
+            "name": "probe",
+            "properties": {
+              "v": "\u00e9cole"
+            }
+          },
+          "expect": {
+            "show": "accent",
+            "reasons": {
+              "eq": "no_trigger",
+              "plain": "lower_priority"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "an offset that is not a whole hour",
+      "synced_at": "2026-10-01T17:00:00Z",
+      "device": {
+        "utc_offset_minutes": 330
+      },
+      "campaigns": [
+        {
+          "caps": {
+            "day": 1
+          },
+          "schedule": {
+            "from": "23:45",
+            "to": "00:15"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T18:14:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "schedule"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T18:15:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T18:29:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "cap_day"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T18:30:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T18:45:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "schedule"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "hours that start and end at the same time cover the whole day",
+      "campaigns": [
+        {
+          "schedule": {
+            "from": "09:00",
+            "to": "09:00"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T08:59:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T09:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a campaign that ends on or before its start is never in schedule",
+      "campaigns": [
+        {
+          "id": "same",
+          "schedule": {
+            "start_at": "2026-10-01T00:00:00Z",
+            "end_at": "2026-10-01T00:00:00Z"
+          }
+        },
+        {
+          "id": "before",
+          "schedule": {
+            "start_at": "2026-10-01T00:00:00Z",
+            "end_at": "2026-09-30T00:00:00Z"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T00:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "same": "schedule",
+              "before": "schedule"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "text that opens braces and is not a field stops the campaign",
+      "campaigns": [
+        {
+          "id": "hyphen",
+          "content": {
+            "title": "Hi {{ user.first-name }}"
+          }
+        },
+        {
+          "id": "quotes",
+          "content": {
+            "message": "Hi {{ user.nickname | default: 'there' }}"
+          }
+        },
+        {
+          "id": "source",
+          "content": {
+            "buttons": [
+              {
+                "id": "b1",
+                "text": "{{ profile.first_name }}",
+                "action": {
+                  "type": "close"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "open",
+          "content": {
+            "title": "50% off {{ today"
+          }
+        },
+        {
+          "id": "link",
+          "content": {
+            "tap_action": {
+              "type": "open_url",
+              "url": "https://acme.example/p?x={{ event.pro-duct }}"
+            }
+          }
+        },
+        {
+          "id": "closing",
+          "priority": 1,
+          "content": {
+            "title": "Use code }} at checkout"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "closing",
+            "reasons": {
+              "hyphen": "personalization",
+              "quotes": "personalization",
+              "source": "personalization",
+              "open": "personalization",
+              "link": "personalization"
+            },
+            "title": "Use code }} at checkout"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a lifetime cap counts every view on this device",
+      "campaigns": [
+        {
+          "caps": {
+            "lifetime": 2
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "view": "d1",
+            "reasons": {}
+          }
+        },
+        {
+          "session_start": true
+        },
+        {
+          "at": "2026-10-02T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "view": "d2",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-03T08:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "cap_lifetime"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "the global day cap counts this device's views today and starts again the next local day",
+      "synced_at": "2026-10-01T20:00:00Z",
+      "global_caps": {
+        "session": null,
+        "day": 2
+      },
+      "device": {
+        "utc_offset_minutes": 120
+      },
+      "campaigns": [
+        {}
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T20:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T21:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T21:59:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "cap_global_day"
+            }
+          }
+        },
+        {
+          "at": "2026-10-01T22:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a sync keeps the views this device recorded",
+      "campaigns": [
+        {
+          "caps": {
+            "lifetime": 1
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "view": "d1",
+            "reasons": {}
+          }
+        },
+        {
+          "sync": {
+            "at": "2026-10-01T10:05:00Z"
+          }
+        },
+        {
+          "at": "2026-10-01T10:10:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "cap_lifetime"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a delayed campaign is decided like any other and says how long to wait",
+      "campaigns": [
+        {
+          "id": "delayed",
+          "priority": 5,
+          "delay_seconds": 5
+        },
+        {
+          "id": "plain"
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "delayed",
+            "delay": 5,
+            "view": "d1",
+            "reasons": {
+              "plain": "lower_priority"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a campaign with no delay waits 0 seconds",
+      "campaigns": [
+        {
+          "id": "plain"
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "plain",
+            "delay": 0,
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a delay that is negative is not a delay",
+      "off_schema": [
+        "backwards"
+      ],
+      "campaigns": [
+        {
+          "id": "backwards",
+          "priority": 9,
+          "delay_seconds": -1
+        },
+        {
+          "id": "plain"
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "plain",
+            "reasons": {
+              "backwards": "unsupported"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a message that cannot be dismissed needs a way out",
+      "off_schema": [
+        "trap",
+        "word"
+      ],
+      "campaigns": [
+        {
+          "id": "trap",
+          "priority": 9,
+          "content": {
+            "dismissible": false
+          }
+        },
+        {
+          "id": "tap",
+          "priority": 8,
+          "content": {
+            "dismissible": false,
+            "tap_action": {
+              "type": "close"
+            }
+          }
+        },
+        {
+          "id": "button",
+          "priority": 7,
+          "content": {
+            "dismissible": false,
+            "buttons": [
+              {
+                "id": "b1",
+                "text": "Update",
+                "action": {
+                  "type": "open_store"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "word",
+          "priority": 6,
+          "content": {
+            "dismissible": "no"
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "tap",
+            "reasons": {
+              "trap": "unsupported",
+              "button": "lower_priority",
+              "word": "unsupported"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "an html message that cannot be dismissed carries its way out in its page",
+      "off_schema": [
+        "trap"
+      ],
+      "campaigns": [
+        {
+          "id": "trap",
+          "priority": 9,
+          "content": {
+            "dismissible": false
+          }
+        },
+        {
+          "id": "page",
+          "priority": 8,
+          "template": "html",
+          "content": {
+            "html": "<div>Hi</div>",
+            "layout": "modal",
+            "dismissible": false
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "page",
+            "reasons": {
+              "trap": "unsupported"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a device that knows its store address opens the store",
+      "campaigns": [
+        {
+          "id": "store",
+          "content": {
+            "buttons": [
+              {
+                "id": "b1",
+                "text": "Update",
+                "action": {
+                  "type": "open_store"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:00Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "store",
+            "buttons": [
+              "Update"
+            ],
+            "urls": [],
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a question that was answered is not asked again, and the next campaign takes its place",
+      "campaigns": [
+        {
+          "content": {
+            "question": {
+              "id": "q1",
+              "type": "stars",
+              "options": [],
+              "comment": null,
+              "thanks": null,
+              "review_from": null
+            }
+          },
+          "priority": 5,
+          "caps": {
+            "session": null
+          }
+        },
+        {
+          "id": "c2",
+          "priority": 1,
+          "caps": {
+            "session": null
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:01Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "view": "d1",
+            "reasons": {
+              "c2": "lower_priority"
+            }
+          }
+        },
+        {
+          "answer": "c1"
+        },
+        {
+          "at": "2026-10-01T10:00:02Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c2",
+            "view": "d2",
+            "reasons": {
+              "c1": "answered"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "an answer outlasts the session and a sync, and is named before any cap",
+      "campaigns": [
+        {
+          "content": {
+            "question": {
+              "id": "q1",
+              "type": "stars",
+              "options": [],
+              "comment": null,
+              "thanks": null,
+              "review_from": null
+            }
+          },
+          "caps": {
+            "session": 1,
+            "lifetime": 1
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:01Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "view": "d1",
+            "reasons": {}
+          }
+        },
+        {
+          "answer": "c1"
+        },
+        {
+          "session_start": true
+        },
+        {
+          "sync": {
+            "at": "2026-10-01T10:00:02Z"
+          }
+        },
+        {
+          "at": "2026-10-01T10:00:03Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "answered"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a question that was shown and closed without an answer is asked again",
+      "campaigns": [
+        {
+          "content": {
+            "question": {
+              "id": "q1",
+              "type": "stars",
+              "options": [],
+              "comment": null,
+              "thanks": null,
+              "review_from": null
+            }
+          },
+          "caps": {
+            "session": null
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:01Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "view": "d1",
+            "reasons": {}
+          }
+        },
+        {
+          "at": "2026-10-01T10:00:02Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "view": "d2",
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a question of a kind the engine does not know, or one that comes with buttons, is unsupported",
+      "off_schema": [
+        "c1",
+        "c2",
+        "c3"
+      ],
+      "campaigns": [
+        {
+          "content": {
+            "question": {
+              "id": "q1",
+              "type": "nps",
+              "options": [],
+              "comment": null,
+              "thanks": null,
+              "review_from": null
+            }
+          }
+        },
+        {
+          "id": "c2",
+          "content": {
+            "question": {
+              "id": "q1",
+              "type": "choice",
+              "options": [
+                {
+                  "id": "a",
+                  "text": "Only one"
+                }
+              ],
+              "comment": null,
+              "thanks": null,
+              "review_from": null
+            }
+          }
+        },
+        {
+          "id": "c3",
+          "content": {
+            "question": {
+              "id": "q1",
+              "type": "stars",
+              "options": [],
+              "comment": null,
+              "thanks": null,
+              "review_from": null
+            },
+            "buttons": [
+              {
+                "id": "b1",
+                "text": "Go",
+                "action": {
+                  "type": "close"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:01Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "unsupported",
+              "c2": "unsupported",
+              "c3": "unsupported"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a choice question with its options, and a message nobody can dismiss but can answer, are shown",
+      "campaigns": [
+        {
+          "content": {
+            "dismissible": false,
+            "question": {
+              "id": "q1",
+              "type": "choice",
+              "options": [
+                {
+                  "id": "a",
+                  "text": "Search"
+                },
+                {
+                  "id": "b",
+                  "text": "A friend"
+                }
+              ],
+              "comment": {
+                "split": null,
+                "low": "Tell us more",
+                "high": null
+              },
+              "thanks": "Thank you",
+              "review_from": null
+            }
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:01Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": "c1",
+            "view": "d1",
+            "reasons": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a question on an alert or a picture-only template is unsupported, so no one is shut in behind it",
+      "off_schema": [
+        "c1",
+        "c2"
+      ],
+      "campaigns": [
+        {
+          "template": "alert",
+          "content": {
+            "question": {
+              "id": "q1",
+              "type": "stars",
+              "options": [],
+              "comment": null,
+              "thanks": null,
+              "review_from": null
+            }
+          }
+        },
+        {
+          "id": "c2",
+          "template": "cover_image",
+          "content": {
+            "question": {
+              "id": "q1",
+              "type": "stars",
+              "options": [],
+              "comment": null,
+              "thanks": null,
+              "review_from": null
+            },
+            "dismissible": false
+          }
+        }
+      ],
+      "steps": [
+        {
+          "at": "2026-10-01T10:00:01Z",
+          "event": {
+            "type": "event",
+            "name": "cart_viewed"
+          },
+          "expect": {
+            "show": null,
+            "reasons": {
+              "c1": "unsupported",
+              "c2": "unsupported"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "html_parsing": [
+    {
+      "name": "html and a known layout parse as valid",
+      "content": {
+        "html": "<div>Hi</div>",
+        "layout": "modal"
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "every layout value parses as valid",
+      "content": {
+        "html": "<div>Hi</div>",
+        "layout": "banner_top"
+      },
+      "expect": "valid"
+    },
+    {
+      "name": "an unknown layout is unsupported",
+      "content": {
+        "html": "<div>Hi</div>",
+        "layout": "fullscreen"
+      },
+      "expect": "unsupported"
+    },
+    {
+      "name": "missing html is unsupported",
+      "content": {
+        "layout": "modal"
+      },
+      "expect": "unsupported"
+    },
+    {
+      "name": "missing layout is unsupported",
+      "content": {
+        "html": "<div>Hi</div>"
+      },
+      "expect": "unsupported"
+    }
+  ],
+  "link_rule": [
+    {
+      "name": "https with a host",
+      "input": "https://acme.example/path",
+      "expect": "allowed"
+    },
+    {
+      "name": "https with no host, only a fragment",
+      "input": "https://#top",
+      "expect": "refused"
+    },
+    {
+      "name": "https with a space for a host",
+      "input": "https:// acme.example",
+      "expect": "refused"
+    },
+    {
+      "name": "only ASCII spaces count: a no-break space is part of the host",
+      "input": "https://\u00a0acme.example",
+      "expect": "allowed"
+    },
+    {
+      "name": "https scheme in uppercase is lowercased",
+      "input": "HTTPS://acme.example/path",
+      "expect": "allowed"
+    },
+    {
+      "name": "https scheme mixed case is lowercased",
+      "input": "HtTpS://acme.example/path",
+      "expect": "allowed"
+    },
+    {
+      "name": "mailto",
+      "input": "mailto:person@acme.example",
+      "expect": "allowed"
+    },
+    {
+      "name": "tel",
+      "input": "tel:+15551234567",
+      "expect": "allowed"
+    },
+    {
+      "name": "sms",
+      "input": "sms:+15551234567",
+      "expect": "allowed"
+    },
+    {
+      "name": "a bare fragment",
+      "input": "#a",
+      "expect": "allowed"
+    },
+    {
+      "name": "a lone hash",
+      "input": "#",
+      "expect": "allowed"
+    },
+    {
+      "name": "a custom app scheme",
+      "input": "myapp://open",
+      "expect": "allowed"
+    },
+    {
+      "name": "a custom scheme with digits dots and plus",
+      "input": "a1b+c.d://x",
+      "expect": "allowed"
+    },
+    {
+      "name": "another custom scheme",
+      "input": "instagram://user?username=acme",
+      "expect": "allowed"
+    },
+    {
+      "name": "a leading space is stripped",
+      "input": " https://acme.example",
+      "expect": "allowed"
+    },
+    {
+      "name": "a trailing space is stripped",
+      "input": "https://acme.example ",
+      "expect": "allowed"
+    },
+    {
+      "name": "a leading C0 control is stripped",
+      "input": "\u0001https://acme.example",
+      "expect": "allowed"
+    },
+    {
+      "name": "a trailing C0 control is stripped",
+      "input": "https://acme.example\u0007",
+      "expect": "allowed"
+    },
+    {
+      "name": "javascript is forbidden",
+      "input": "javascript:alert(1)",
+      "expect": "refused"
+    },
+    {
+      "name": "javascript in uppercase is still forbidden",
+      "input": "JavaScript:alert(1)",
+      "expect": "refused"
+    },
+    {
+      "name": "vbscript is forbidden",
+      "input": "vbscript:msgbox(1)",
+      "expect": "refused"
+    },
+    {
+      "name": "data is forbidden",
+      "input": "data:text/html,hi",
+      "expect": "refused"
+    },
+    {
+      "name": "blob is forbidden",
+      "input": "blob:https://acme.example/uuid",
+      "expect": "refused"
+    },
+    {
+      "name": "file is forbidden",
+      "input": "file:///etc/passwd",
+      "expect": "refused"
+    },
+    {
+      "name": "about is forbidden",
+      "input": "about:blank",
+      "expect": "refused"
+    },
+    {
+      "name": "intent is forbidden",
+      "input": "intent://scan/#Intent;scheme=zxing;end",
+      "expect": "refused"
+    },
+    {
+      "name": "plain http is forbidden",
+      "input": "http://acme.example",
+      "expect": "refused"
+    },
+    {
+      "name": "a relative path is refused",
+      "input": "path/to/page",
+      "expect": "refused"
+    },
+    {
+      "name": "a root relative path is refused",
+      "input": "/path/to/page",
+      "expect": "refused"
+    },
+    {
+      "name": "a protocol relative url is refused",
+      "input": "//acme.example/path",
+      "expect": "refused"
+    },
+    {
+      "name": "https with no host is refused",
+      "input": "https:foo",
+      "expect": "refused"
+    },
+    {
+      "name": "an embedded tab defeats a naive filter but is still caught",
+      "input": "java\tscript:alert(1)",
+      "expect": "refused"
+    },
+    {
+      "name": "an embedded newline defeats a naive filter but is still caught",
+      "input": "java\nscript:alert(1)",
+      "expect": "refused"
+    },
+    {
+      "name": "an embedded carriage return defeats a naive filter but is still caught",
+      "input": "java\rscript:alert(1)",
+      "expect": "refused"
+    },
+    {
+      "name": "a leading C0 control does not hide a forbidden scheme",
+      "input": "\u0000javascript:alert(1)",
+      "expect": "refused"
+    },
+    {
+      "name": "uppercase with an embedded tab is still caught",
+      "input": "JAVA\tSCRIPT:alert(1)",
+      "expect": "refused"
+    },
+    {
+      "name": "a custom scheme cannot start with a digit",
+      "input": "1app://x",
+      "expect": "refused"
+    },
+    {
+      "name": "an empty string has no scheme and is not a fragment",
+      "input": "",
+      "expect": "refused"
+    }
+  ]
+}

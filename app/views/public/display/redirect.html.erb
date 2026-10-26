@@ -14,11 +14,11 @@
             document.getElementById('error-message').style.display = 'none';
             document.getElementById('mobile-view').style.display = 'block';
 
+            // A user-tapped anchor is what lets iOS open an installed app through the universal link;
+            // a script navigation never does. Copy inside the tap, then let the tap navigate.
             document.getElementById('open-app-button').addEventListener('click', function() {
                 if (copyPayload) { grovsCopyPayload = copyPayload; }
-                copyThenGo(function () {
-                  window.location.href = fallbackUrl;
-                });
+                copyThenGo(function () {});
             });
           } else {
             // Show the invalid URL message
@@ -35,8 +35,11 @@
             <h2 id="app-name"><%= @name.present? ? @name : "" %></h2>
             <h3 id="app-details"></h3>
         </div>
-        <div class="button-container">
-            <button id="open-app-button">Open</button>
+        <div class="button-container"<% if @hint_text %> style="flex-direction:column"<% end %>>
+            <a id="open-app-button" href="<%= @redirect_url %>">Open</a>
+            <% if @hint_text %>
+            <p id="in-app-browser-hint" style="margin:12px 0 0;font-size:13px;color:#8a8a8e;text-align:center"><%= @hint_text %></p>
+            <% end %>
         </div>
   </div>
   <p id="error-message" class="error-message">Invalid link</p>

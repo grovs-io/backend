@@ -59,8 +59,7 @@ class CustomDomainLifecycleJob
 
     stripe_ids = StripeSubscription.where(instance_id: instance_ids, active: true)
                                    .pluck(:instance_id)
-    enterprise_ids = EnterpriseSubscription.where(instance_id: instance_ids, active: true)
-                                           .pluck(:instance_id)
+    enterprise_ids = EnterpriseSubscription.current.where(instance_id: instance_ids).pluck(:instance_id)
     Set.new(stripe_ids + enterprise_ids)
   end
 

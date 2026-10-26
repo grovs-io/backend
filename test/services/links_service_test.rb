@@ -9,7 +9,11 @@ class LinksServiceTest < ActiveSupport::TestCase
     @link = links(:basic_link)    # path: "test-path", domain: one
     @project = projects(:one)
     @instance = instances(:one)   # uri_scheme: "testapp"
+    @original_preview_base_url = ENV.fetch("PREVIEW_BASE_URL", nil)
   end
+
+  # Tests below delete PREVIEW_BASE_URL; restore it so later tests in this worker still route.
+  teardown { ENV["PREVIEW_BASE_URL"] = @original_preview_base_url }
 
   # === custom_hostname_for ===
 
@@ -516,5 +520,13 @@ class LinksServiceTest < ActiveSupport::TestCase
   test "link_for_project_and_path returns nil for wrong path" do
     result = LinksService.link_for_project_and_path(@project, "nonexistent")
     assert_nil result
+  end
+
+  test "link_for_url never resolves another project's link" do
+    foreign = links(:second_link)
+    url = "https://#{foreign.domain.subdomain}.#{foreign.domain.domain}/#{foreign.path}"
+
+    assert_equal foreign, LinksService.link_for_url(url, projects(:two))
+    assert_nil LinksService.link_for_url(url, @project)
   end
 end

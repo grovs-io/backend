@@ -1,8 +1,16 @@
 class LinkQueryService
   ALLOWED_SORT_COLUMNS = %w[created_at updated_at name title path active sdk_generated campaign_id ads_platform].freeze
+  DEFAULT_LOOKUP_LIMIT = 20
+  MAX_LOOKUP_LIMIT = 50
 
   def initialize(domain:)
     @domain = domain
+  end
+
+  def lookup(term: nil, limit: nil)
+    links = @domain.links.where(active: true, sdk_generated: false).where(SmartBanner::HIDE_LINKS_SQL)
+    links = filter_by_term(links, term)
+    links.order(created_at: :desc, id: :desc).limit(clamp_lookup_limit(limit))
   end
 
   # Returns paginated, ordered ActiveRecord relation of links.
@@ -40,18 +48,27 @@ class LinkQueryService
     links = @domain.links
     links = links.where(active: active)
     links = links.where(sdk_generated: sdk)
+    links = links.where(SmartBanner::HIDE_LINKS_SQL)
 
     parsed_start = DateParamParser.call(start_date, default: 30.days.ago)
     parsed_end = DateParamParser.call(end_date, default: Time.now)
     links = links.where(created_at: parsed_start.beginning_of_day..parsed_end.end_of_day)
 
     links = links.where(ads_platform: ads_platform) if ads_platform
-    if term
-      links = links.where("name ILIKE ? OR title ILIKE ? OR subtitle ILIKE ? OR path ILIKE ?",
-                           "%#{term}%", "%#{term}%", "%#{term}%", "%#{term}%")
-    end
+    links = filter_by_term(links, term)
     links = links.where(campaign_id: campaign_id) if campaign_id
 
     links
+  end
+
+  def filter_by_term(links, term)
+    return links if term.blank?
+
+    pattern = "%#{ActiveRecord::Base.sanitize_sql_like(term.to_s)}%"
+    links.where("name ILIKE :p OR title ILIKE :p OR subtitle ILIKE :p OR path ILIKE :p", p: pattern)
+  end
+
+  def clamp_lookup_limit(limit)
+    limit.blank? ? DEFAULT_LOOKUP_LIMIT : limit.to_i.clamp(1, MAX_LOOKUP_LIMIT)
   end
 end

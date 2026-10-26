@@ -10,11 +10,24 @@ class DiagnosticsApiTest < ActionDispatch::IntegrationTest
 
   setup do
     @original_key = ENV["DIAGNOSTICS_API_KEY"]
+    @original_test_endpoints = ENV["DIAGNOSTICS_TEST_ENDPOINTS"]
     ENV["DIAGNOSTICS_API_KEY"] = DIAG_KEY
+    ENV["DIAGNOSTICS_TEST_ENDPOINTS"] = "true"
   end
 
   teardown do
     ENV["DIAGNOSTICS_API_KEY"] = @original_key
+    ENV["DIAGNOSTICS_TEST_ENDPOINTS"] = @original_test_endpoints
+  end
+
+  test "test endpoints return 404 unless DIAGNOSTICS_TEST_ENDPOINTS is enabled" do
+    ENV["DIAGNOSTICS_TEST_ENDPOINTS"] = nil
+    %w[test_logs test_exception test_diagnostics].each do |action|
+      get "#{API_PREFIX}/diagnostics/#{action}", headers: { "Host" => api_host, "X-Diagnostics-Key" => DIAG_KEY }
+      assert_response :not_found, action
+    end
+    get "#{API_PREFIX}/diagnostics/health_metrics", headers: { "Host" => api_host, "X-Diagnostics-Key" => DIAG_KEY }
+    assert_response :success
   end
 
   # --- Authentication ---

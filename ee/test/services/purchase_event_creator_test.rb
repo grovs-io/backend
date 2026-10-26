@@ -148,7 +148,7 @@ class PurchaseEventCreatorTest < ActiveSupport::TestCase
     assert_equal 500, dispatched_args[1], "Should pass old_usd_price_cents for correction"
   end
 
-  test "validate_existing does not dispatch job for processed event with same price" do
+  test "validate_existing dispatches the plain (sync) job for a processed event with the same price" do
     processed_event = PurchaseEvent.create!(
       project: @project,
       event_type: Grovs::Purchases::EVENT_BUY,
@@ -164,8 +164,8 @@ class PurchaseEventCreatorTest < ActiveSupport::TestCase
       purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION
     )
 
-    dispatched = false
-    stub = ->(*_args) { dispatched = true }
+    calls = []
+    stub = ->(*args) { calls << args }
 
     ProcessPurchaseEventJob.stub(:perform_async, stub) do
       @creator.validate_existing(processed_event, store_source: Grovs::Webhooks::APPLE,
@@ -180,7 +180,7 @@ class PurchaseEventCreatorTest < ActiveSupport::TestCase
       )
     end
 
-    assert_not dispatched, "Should not dispatch job when price unchanged on processed event"
+    assert_equal [[processed_event.id]], calls, "same price: no correction argument, the job syncs CH"
   end
 
   # --- create_new ---
@@ -268,5 +268,22 @@ class PurchaseEventCreatorTest < ActiveSupport::TestCase
 
       assert_equal first.id, result.id, "Should return existing event on duplicate"
     end
+  end
+
+  test "a processed row with metadata-only changes enqueues the plain processing job" do
+    event = purchase_events(:buy_event)
+    assert event.processed?
+    calls = []
+    ProcessPurchaseEventJob.stub(:perform_async, ->(*args) { calls << args }) do
+      @creator.validate_existing(
+        event, store_source: Grovs::Webhooks::APPLE,
+        identifier: event.identifier, original_transaction_id: event.original_transaction_id,
+        product_id: "com.test.renamed", date: event.date, expires_date: event.expires_date,
+        purchase_type: event.purchase_type, order_id: event.order_id,
+        price_cents: event.price_cents, currency: event.currency
+      )
+    end
+    assert_equal [[event.id]], calls, "no old_usd: the sync branch decides whether to correct"
+    assert_equal event.date, event.reload.date, "full attrs: the ledger's event-time bucket is untouched"
   end
 end

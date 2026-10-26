@@ -12,6 +12,9 @@ module Analytics
     # Purchase columns stay on PG per Billing::ClickhouseParityCheck::ROLLUP_PARITY (uncovered by the CH event rollup).
     REVENUE_COUNTERS = %i[revenue units_sold cancellations first_time_purchases].freeze
 
+    # PG-only purchase metrics carry no event dimensions, so raw (filtered) mode zeroes and names them.
+    UNSUPPORTED_WHEN_FILTERED = %w[revenue units_sold cancellations first_time_purchases arpu arppu].freeze
+
     # End-to-end staleness bound = rollup rebuild cadence + this TTL.
     def self.cache_ttl
       DashboardCacheTtl.value
@@ -27,32 +30,39 @@ module Analytics
       'organic_installs' => :derived,
       'reinstalls' => { table: 'project_daily', event_type: Grovs::Events::REINSTALL },
       'app_opens' => { table: 'project_daily', event_type: Grovs::Events::APP_OPEN },
-      'referred_users' => { table: 'project_daily', event_type: Grovs::Events::USER_REFERRED }
+      'referred_users' => { table: 'project_daily', event_type: Grovs::Events::USER_REFERRED },
+      'revenue' => :revenue
     }.freeze
 
     # Definitions mirror legacy DailyProjectMetrics (installs stay pure — reinstalls reported separately).
-    def self.key_metrics(project_id, start_date:, end_date:, platform: nil)
+    def self.key_metrics(project_id, start_date:, end_date:, platform: nil, filters: nil)
       pid = Integer(project_id)
       sd = sanitize_date(start_date)
       ed = sanitize_date(end_date)
-      pf = platform_where(platform)
+      resolved = OverviewFilters.resolve(filters, platform: platform)
+      pf = platform_where(resolved.platform)
 
-      cache_key = "analytics:key_metrics:v2:#{revenue_source}:#{pid}:#{sd}:#{ed}:p=#{platform}"
+      cache_key = "analytics:key_metrics:v3:#{revenue_source}:#{pid}:#{sd}:#{ed}:p=#{resolved.platform}:f=#{resolved.digest}"
       fresh = false
       metrics = UnavailableCache.fetch(cache_key, ttl: cache_ttl) do
         fresh = true
-        compute_key_metrics(pid, sd, ed, pf, platform)
+        if resolved.raw?
+          compute_key_metrics_raw(pid, sd, ed, pf, resolved.clauses)
+        else
+          compute_key_metrics(pid, sd, ed, pf, resolved.platform)
+        end
       end
       # Degraded (stat-fallback) values cache only briefly (stampede guard, no TTL-long masking).
       if fresh && metrics[:ledger_degraded]
         Rails.cache.write(cache_key, metrics, expires_in: RevenueLedger::DEGRADED_CACHE_TTL)
       end
       metrics.delete(:ledger_degraded)
-      { metrics: metrics }
+      { metrics: metrics, unsupported_metrics: resolved.raw? ? UNSUPPORTED_WHEN_FILTERED : [] }
     rescue StandardError => e
       log_query_failure(:key_metrics, e)
       { metrics: (KEY_METRIC_COUNTERS + REVENUE_COUNTERS).index_with { 0 }
-                   .merge(returning_rate: 0.0, arpu: 0.0, arppu: 0.0) }
+                   .merge(returning_rate: 0.0, arpu: 0.0, arppu: 0.0),
+        unsupported_metrics: [] }
     end
 
     def self.compute_key_metrics(pid, start_day, end_day, platform_sql, platform)
@@ -70,6 +80,17 @@ module Analytics
       metrics
     end
     private_class_method :compute_key_metrics
+
+    # Raw-events path for filters the rollups do not carry: counters, then user classification.
+    def self.compute_key_metrics_raw(pid, start_day, end_day, platform_sql, clauses)
+      metrics = OverviewRawEvents.counters(pid, start_day, end_day, clauses)
+      metrics[:organic_installs] = [metrics[:installs] - metrics[:link_driven_installs], 0].max
+      metrics.merge!(classify_users(pid, start_day, end_day, platform_sql,
+                                    visitor_set_sql: OverviewRawEvents.visitor_set(pid, start_day, end_day, clauses)))
+      metrics.merge!(revenue: 0, units_sold: 0, cancellations: 0, first_time_purchases: 0, arpu: 0.0, arppu: 0.0)
+      metrics
+    end
+    private_class_method :compute_key_metrics_raw
 
     # Revenue totals + ARPU/ARPPU. arpu divides by CH total_users; arppu by the PG distinct-paying-device count.
     def self.revenue_metrics(pid, start_day, end_day, platform, total_users)
@@ -165,11 +186,20 @@ module Analytics
     end
     private_class_method :totals_by_event_type
 
-    def self.classify_users(pid, start_day, end_day, platform_sql)
+    def self.classify_users(pid, start_day, end_day, platform_sql, visitor_set_sql: nil)
       # Platform scopes the WHOLE classification, and the IN pre-filter bounds the history scan.
       range_cond = "event_date >= '#{start_day}' AND event_date <= '#{end_day}'"
       # Countable types only, as the billing tile, PG and visitor_first_seen_daily all count.
       countable = "AND event_type IN #{ClickhouseRollupRebuildService::COUNTABLE_TYPES_SQL}"
+      visitor_set_sql ||= <<~SQL
+        SELECT DISTINCT visitor_id
+        FROM visitor_daily
+        WHERE project_id = #{pid}
+          AND visitor_id > 0
+          #{countable}
+          #{platform_sql}
+          AND #{range_cond}
+      SQL
       users = with_guard(<<~SQL).first || {}
         SELECT
           count()                                                        AS total_users,
@@ -185,15 +215,7 @@ module Analytics
             AND visitor_id > 0
             #{countable}
             #{platform_sql}
-            AND visitor_id IN (
-              SELECT DISTINCT visitor_id
-              FROM visitor_daily
-              WHERE project_id = #{pid}
-                AND visitor_id > 0
-                #{countable}
-                #{platform_sql}
-                AND #{range_cond}
-            )
+            AND visitor_id IN (#{visitor_set_sql})
           GROUP BY visitor_id
         )
       SQL
@@ -209,36 +231,60 @@ module Analytics
     end
     private_class_method :classify_users
 
-    # Daily time series for one key metric, zero-filled over the range.
-    # Returns { metric:, points: [{date:, value:}] }
-    def self.key_metric_series(project_id, metric:, start_date:, end_date:, platform: nil)
+    # Time series for one key metric, zero-filled over range-relative windows (date = window start).
+    def self.key_metric_series(project_id, metric:, start_date:, end_date:, platform: nil,
+                               filters: nil, granularity: 'day')
       src = KEY_METRIC_SOURCES[metric.to_s]
       return { metric: metric.to_s, points: [] } unless src
 
       pid = Integer(project_id)
       start_day = sanitize_date(start_date)
       end_day = sanitize_date(end_date)
-      platform_sql = platform_where(platform)
+      granularity = TimeBuckets::GRANULARITIES.include?(granularity.to_s) ? granularity.to_s : 'day'
+      resolved = OverviewFilters.resolve(filters, platform: platform)
+      return { metric: metric.to_s, points: [], unsupported: true } if src == :revenue && resolved.raw?
 
-      cache_key = "analytics:key_metric_series:v2:#{pid}:#{metric}:#{start_day}:#{end_day}:p=#{platform}"
+      platform_sql = platform_where(resolved.platform)
+
+      cache_key = "analytics:key_metric_series:v4:#{revenue_source}:#{pid}:#{metric}:#{start_day}:#{end_day}" \
+                  ":p=#{resolved.platform}:f=#{resolved.digest}:g=#{granularity}"
+      fresh = false
+      degraded = false
       points = Rails.cache.fetch(cache_key, expires_in: cache_ttl) do
-        by_day =
-          if src == :derived
-            installs = daily_counts('project_daily', Grovs::Events::INSTALL, pid, start_day, end_day, platform_sql)
-            link = daily_counts('link_daily', Grovs::Events::INSTALL, pid, start_day, end_day, platform_sql)
-            installs.to_h { |day, value| [day, [value - link.fetch(day, 0), 0].max] }
-          else
-            daily_counts(src[:table], src[:event_type], pid, start_day, end_day, platform_sql)
-          end
-        (Date.parse(start_day)..Date.parse(end_day)).map do |day|
-          { date: day.to_s, value: by_day.fetch(day.to_s, 0) }
-        end
+        fresh = true
+        by_day, degraded = series_by_day(src, metric.to_s, pid, start_day, end_day, resolved, platform_sql)
+        TimeBuckets.sum_by_window(by_day, TimeBuckets.windows(start_day, end_day, granularity))
       end
+      Rails.cache.write(cache_key, points, expires_in: RevenueLedger::DEGRADED_CACHE_TTL) if fresh && degraded
       { metric: metric.to_s, points: points }
     rescue StandardError => e
       log_query_failure(:key_metric_series, e)
       { metric: metric.to_s, points: [] }
     end
+
+    # [{ 'YYYY-MM-DD' => value }, ledger_degraded]; revenue is USD cents.
+    def self.series_by_day(src, metric, pid, start_day, end_day, resolved, platform_sql)
+      if src == :revenue
+        map, degraded = revenue_daily_map(pid, Date.parse(start_day), Date.parse(end_day), resolved.platform)
+        [map.to_h { |date, cents| [date.to_date.to_s, cents.to_i] }, degraded]
+      elsif resolved.raw?
+        [OverviewRawEvents.metric_by_day(metric, pid, start_day, end_day, resolved.clauses), false]
+      else
+        [rollup_metric_by_day(src, pid, start_day, end_day, platform_sql), false]
+      end
+    end
+    private_class_method :series_by_day
+
+    def self.rollup_metric_by_day(src, pid, start_day, end_day, platform_sql)
+      if src == :derived
+        installs = daily_counts('project_daily', Grovs::Events::INSTALL, pid, start_day, end_day, platform_sql)
+        link = daily_counts('link_daily', Grovs::Events::INSTALL, pid, start_day, end_day, platform_sql)
+        installs.to_h { |day, value| [day, [value - link.fetch(day, 0), 0].max] }
+      else
+        daily_counts(src[:table], src[:event_type], pid, start_day, end_day, platform_sql)
+      end
+    end
+    private_class_method :rollup_metric_by_day
 
     def self.daily_counts(table, event_type, pid, start_day, end_day, platform_sql)
       rows = with_guard(<<~SQL).to_a
@@ -293,22 +339,22 @@ module Analytics
       { platforms: {} }
     end
 
-    # Daily new users: first activity in the selected range plus an install
-    # anywhere in that range, bucketed by the first-activity day.
-    # Returns { points: [{date, new_users, previous_new_users, revenue_usd_cents, previous_revenue_usd_cents}] }
-    # revenue_usd_cents is net revenue for the day in integer USD cents (same
-    # signed convention as link/campaign stats), honoring the same range + platform filter.
-    def self.user_trends(project_id, start_date:, end_date:, platform: nil, cutoff: nil)
+    # New users + revenue per window with previous-period values; raw mode zeroes revenue.
+    def self.user_trends(project_id, start_date:, end_date:, platform: nil, cutoff: nil,
+                         filters: nil, granularity: 'day')
       pid = Integer(project_id)
       sd = sanitize_date(start_date)
       ed = sanitize_date(end_date)
       cutoff ||= ::Analytics::RetentionPolicy.cutoff_for(pid) || Date.current
-      cache_key = "analytics:user_trends:v2:#{revenue_source}:#{pid}:#{sd}:#{ed}:p=#{platform}:cutoff=#{cutoff}"
+      granularity = TimeBuckets::GRANULARITIES.include?(granularity.to_s) ? granularity.to_s : 'day'
+      resolved = OverviewFilters.resolve(filters, platform: platform)
+      cache_key = "analytics:user_trends:v3:#{revenue_source}:#{pid}:#{sd}:#{ed}" \
+                  ":p=#{resolved.platform}:f=#{resolved.digest}:g=#{granularity}:cutoff=#{cutoff}"
 
       fresh = false
       result = Rails.cache.fetch(cache_key, expires_in: cache_ttl) do
         fresh = true
-        compute_user_trends(pid, sd, ed, platform, cutoff)
+        compute_user_trends(pid, sd, ed, resolved, cutoff, granularity)
       end
       # Degraded (stat-fallback) values cache only briefly (stampede guard, no TTL-long masking).
       if fresh && result[:ledger_degraded]
@@ -321,7 +367,8 @@ module Analytics
       { points: [] }
     end
 
-    def self.compute_user_trends(pid, start_day, end_day, platform, cutoff)
+    def self.compute_user_trends(pid, start_day, end_day, resolved, cutoff, granularity)
+      platform = resolved.platform
       platform_filter = platform_where(platform)
 
       start_d = Date.parse(start_day)
@@ -336,13 +383,17 @@ module Analytics
       current_query_sd = cutoff > start_d ? cutoff.strftime('%Y-%m-%d') : start_day
       rev_lower_d = cutoff > prev_start_d ? cutoff : prev_start_d
 
+      # Raw mode: the candidate visitor set comes from filter-matching events over both periods.
+      visitor_set_sql = resolved.raw? ? OverviewRawEvents.visitor_set(pid, query_lower_sd, end_day, resolved.clauses) : nil
+
       current_map, prev_map = daily_new_users(
         pid,
         current_start: current_query_sd,
         current_end: end_day,
         previous_start: query_lower_sd,
         previous_end: prev_ed,
-        platform_filter: platform_filter
+        platform_filter: platform_filter,
+        visitor_set_sql: visitor_set_sql
       )
 
       # Build previous period lookup keyed by offset
@@ -355,7 +406,8 @@ module Analytics
       # Net daily revenue (USD cents) over current + previous span, same platform filter.
       current_rev = {}
       prev_rev_by_offset = {}
-      rev_map, rev_degraded = revenue_daily_map(pid, rev_lower_d, end_d, platform)
+      # Purchase rows carry no event dimensions, so raw mode reports 0 revenue.
+      rev_map, rev_degraded = resolved.raw? ? [{}, false] : revenue_daily_map(pid, rev_lower_d, end_d, platform)
       rev_map.each do |date, cents|
         date_str = date.strftime('%Y-%m-%d')
         if date_str >= start_day
@@ -382,13 +434,28 @@ module Analytics
         }
       end
 
-      { points: points, ledger_degraded: rev_degraded }
+      { points: bucket_trend_points(points, start_d, end_d, granularity), ledger_degraded: rev_degraded }
     end
     private_class_method :compute_user_trends
 
+    TREND_SUM_KEYS = %i[new_users previous_new_users users previous_users
+                        revenue_usd_cents previous_revenue_usd_cents].freeze
+
+    def self.bucket_trend_points(points, start_d, end_d, granularity)
+      return points if granularity == 'day'
+
+      by_date = points.index_by { |p| p[:date] }
+      TimeBuckets.windows(start_d, end_d, granularity).map do |from, to|
+        days = (from..to).filter_map { |d| by_date[d.strftime('%Y-%m-%d')] }
+        TREND_SUM_KEYS.index_with { |k| days.sum { |p| p[k] } }.merge(date: from.strftime('%Y-%m-%d'))
+      end
+    end
+    private_class_method :bucket_trend_points
+
     # Same rows, filter and classification as the key-metrics card — a wider population here
     # moves first_date earlier and drops visitors the tile counts as new.
-    def self.daily_new_users(pid, current_start:, current_end:, previous_start:, previous_end:, platform_filter:)
+    def self.daily_new_users(pid, current_start:, current_end:, previous_start:, previous_end:,
+                             platform_filter:, visitor_set_sql: nil)
       previous_valid = previous_start <= previous_end
       active_start = [current_start, (previous_valid ? previous_start : current_start)].min
       countable = "AND event_type IN #{ClickhouseRollupRebuildService::COUNTABLE_TYPES_SQL}"
@@ -398,6 +465,16 @@ module Analytics
                       else
                         '0'
                       end
+      visitor_set_sql ||= <<~SQL
+        SELECT DISTINCT visitor_id
+        FROM visitor_daily
+        WHERE project_id = #{pid}
+          AND visitor_id > 0
+          #{countable}
+          #{platform_filter}
+          AND event_date >= '#{active_start}'
+          AND event_date <= '#{current_end}'
+      SQL
 
       rows = with_guard(<<~SQL).to_a
         SELECT
@@ -415,16 +492,7 @@ module Analytics
             AND visitor_id > 0
             #{countable}
             #{platform_filter}
-            AND visitor_id IN (
-              SELECT DISTINCT visitor_id
-              FROM visitor_daily
-              WHERE project_id = #{pid}
-                AND visitor_id > 0
-                #{countable}
-                #{platform_filter}
-                AND event_date >= '#{active_start}'
-                AND event_date <= '#{current_end}'
-            )
+            AND visitor_id IN (#{visitor_set_sql})
           GROUP BY visitor_id
         )
         WHERE (first_date >= '#{current_start}' AND first_date <= '#{current_end}')
@@ -580,7 +648,7 @@ module Analytics
             AND toDate(created_at) <= '#{end_day}'
             #{pf}
           GROUP BY version
-          ORDER BY uniq(visitor_id) DESC
+          ORDER BY uniq(visitor_id) DESC, version
           LIMIT #{limit}
         )
         SELECT

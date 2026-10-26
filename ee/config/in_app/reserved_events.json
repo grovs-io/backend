@@ -1,0 +1,26 @@
+{
+  "names": [
+    "app_open",
+    "custom",
+    "in_app_answered",
+    "in_app_clicked",
+    "in_app_commented",
+    "in_app_dismissed",
+    "in_app_held",
+    "in_app_viewed",
+    "install",
+    "journey_entered",
+    "journey_held",
+    "journey_path",
+    "open",
+    "push_delivered",
+    "push_held",
+    "push_open",
+    "reactivation",
+    "reinstall",
+    "screen_view",
+    "time_spent",
+    "user_referred",
+    "view"
+  ]
+}

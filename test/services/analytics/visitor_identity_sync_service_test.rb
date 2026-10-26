@@ -54,7 +54,6 @@ class Analytics::VisitorIdentitySyncServiceTest < ActiveSupport::TestCase
     Analytics::VisitorIdentitySyncService.sync_project(@project.id)
     assert_includes identities(@project.id).map { |r| r['visitor_id'].to_i }, v.id
 
-    NotificationMessage.where(visitor_id: v.id).delete_all
     v.delete
 
     Analytics::VisitorIdentitySyncService.sync_project(@project.id)

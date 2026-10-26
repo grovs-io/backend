@@ -1,0 +1,5 @@
+The event stream destination "<%= @destination.name %>" for project "<%= @destination.project.name %>" was paused after 24 hours of failed deliveries.
+
+Last error: <%= @destination.last_error %>
+
+Fix the endpoint, then resume the destination from the dashboard or the API. Delivery continues from where it stopped; events are retained for 7 days.

@@ -60,6 +60,11 @@ class NestedServerHostRoutingTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "framework registration routes are not mounted" do
+    registration_routes = Rails.application.routes.routes.select { |r| r.defaults[:controller] == "devise/registrations" }
+    assert_empty registration_routes.map { |r| r.path.spec.to_s }
+  end
+
   test "apex of a nested SERVER_HOST is not a public link host" do
     with_nested_main do
       assert_recognizes(

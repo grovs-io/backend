@@ -7,9 +7,11 @@ module StripeService::WebhookHandlers
     subscription_id = event[:data][:object][:subscription]
     customer_id = event[:data][:object][:customer]
     instance_id = event[:data][:object][:client_reference_id]
+    session_id = event[:data][:object][:id]
     return if subscription_id.blank? # mode: "payment" checkout, nothing to hydrate
 
-    payment_intent = StripePaymentIntent.where(instance_id: instance_id).order(id: :desc).first
+    payment_intent = (StripePaymentIntent.find_by(intent_id: session_id) if session_id.present?) ||
+                     StripePaymentIntent.where(instance_id: instance_id).order(id: :desc).first
     unless payment_intent
       Rails.logger.error("No payment intent found for instance #{instance_id}")
       return
@@ -28,11 +30,33 @@ module StripeService::WebhookHandlers
   # subscription.created can land before checkout (and is then already marked processed), so read the truth now.
   def hydrate_from_stripe(subscription, instance)
     remote = Stripe::Subscription.retrieve(subscription.subscription_id)
-    apply_subscription_snapshot(subscription, instance, status: remote[:status], item_id: first_item_id(remote))
+    sync_plan_from_price(subscription, remote)
+    if Billing::Plans.flat?(subscription.product_type)
+      subscription.subscription_item_id = first_item_id(remote)
+      apply_flat_remote(subscription, instance, remote)
+    else
+      apply_subscription_snapshot(subscription, instance, status: remote[:status], item_id: first_item_id(remote))
+    end
   end
 
   def first_item_id(object)
     object[:items]&.[](:data)&.first&.[](:id)
+  end
+
+  def first_price_id(object)
+    object[:items]&.[](:data)&.first&.[](:price)&.[](:id)
+  end
+
+  def sync_plan_from_price(subscription, remote)
+    plan = Billing::Plans.for_price(first_price_id(remote))
+    subscription.product_type = plan if plan
+  end
+
+  # Legacy rows skip Stripe here; flat rows (or one just switched to flat) read current state.
+  def current_flat_remote(subscription, object)
+    return nil unless Billing::Plans.flat?(subscription.product_type) || Billing::Plans.for_price(first_price_id(object))
+
+    Stripe::Subscription.retrieve(subscription.subscription_id)
   end
 
   def apply_subscription_snapshot(subscription, instance, status:, item_id:)
@@ -43,6 +67,21 @@ module StripeService::WebhookHandlers
     subscription.subscription_item_id = item_id
     subscription.save!
 
+    mark_project_enabled(instance, enabled)
+  end
+
+  # Flat rows apply ALL state from the retrieved Stripe subscription, never from the event payload.
+  def apply_flat_remote(subscription, instance, remote)
+    status = remote[:status]
+    paused = remote[:pause_collection].present?
+    enabled = !paused && %w[active trialing].include?(status)
+    subscription.status = paused ? "paused" : status
+    subscription.active = enabled
+    subscription.cancels_at =
+      if status == "canceled" then subscription.cancels_at || DateTime.now
+      elsif remote[:cancel_at] then Time.at(remote[:cancel_at]).to_datetime
+      end
+    subscription.save!
     mark_project_enabled(instance, enabled)
   end
 
@@ -71,17 +110,25 @@ module StripeService::WebhookHandlers
     subscription_id = event[:data][:object][:subscription]
     customer_id = event[:data][:object][:customer]
 
-    subscription = StripeSubscription.find_by(customer_id: customer_id)
-    if subscription
-      subscription.active = false
-      subscription.status = "payment_failed"
-      subscription.save!
+    subscription = StripeSubscription.find_by(subscription_id: subscription_id) if subscription_id.present?
+    subscription ||= StripeSubscription.find_by(customer_id: customer_id)
+    return unless subscription
 
+    if Billing::Plans.flat?(subscription.product_type)
       instance = subscription.instance
-      if instance
-        # Disable planka access
-        mark_project_enabled(instance, false)
-      end
+      return hydrate_from_stripe(subscription, instance) if instance
+
+      return
+    end
+
+    subscription.active = false
+    subscription.status = "payment_failed"
+    subscription.save!
+
+    instance = subscription.instance
+    if instance
+      # Disable planka access
+      mark_project_enabled(instance, false)
     end
   end
 
@@ -110,6 +157,12 @@ module StripeService::WebhookHandlers
 
     # Usage reporting needs the item id; fill it if the created event was missed.
     subscription.subscription_item_id ||= first_item_id(event[:data][:object])
+
+    remote = current_flat_remote(subscription, event[:data][:object])
+    if remote
+      sync_plan_from_price(subscription, remote)
+      return apply_flat_remote(subscription, instance, remote)
+    end
 
     if status == "canceled" || cancel_at || canceled_at || cancel_at_period_end
       if status == "canceled"
@@ -156,6 +209,7 @@ module StripeService::WebhookHandlers
     enabled = %w[active trialing].include?(status)
     subscription.active = enabled
     subscription.status = status || (enabled ? "active" : "inactive")
+    subscription.cancels_at = nil
     subscription.save!
     mark_project_enabled(instance, enabled)
   end

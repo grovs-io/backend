@@ -15,6 +15,10 @@ class Api::V1::Mcp::ConfigurationsController < Api::V1::Mcp::BaseController
     # Unlike show_preview (legacy quirk: applied only alongside default_fallback), these work standalone.
     redirect_config.copy_to_clipboard_ios = params.fetch(:copy_to_clipboard_ios, redirect_config.copy_to_clipboard_ios)
     redirect_config.copy_to_clipboard_android = params.fetch(:copy_to_clipboard_android, redirect_config.copy_to_clipboard_android)
+    # NOT NULL columns: null or "" means "leave unchanged"; not blank?, which would also drop false.
+    %i[in_app_browser_page_ios in_app_browser_page_android].each do |field|
+      redirect_config[field] = params[field] unless params[field].to_s.empty?
+    end
 
     if params[:platforms].present?
       unsupported = params[:platforms].keys.find { |p| !permitted_platform?(p) }
@@ -39,7 +43,9 @@ class Api::V1::Mcp::ConfigurationsController < Api::V1::Mcp::BaseController
 
       audit!("redirect_config.updated", instance_id: @project.instance_id, target: audit_target(redirect_config),
              changes: { "after" => params.to_unsafe_h.slice("default_fallback", "show_preview_ios", "show_preview_android",
-                                                            "copy_to_clipboard_ios", "copy_to_clipboard_android", "platforms") })
+                                                            "copy_to_clipboard_ios", "copy_to_clipboard_android",
+                                                            "in_app_browser_page_ios", "in_app_browser_page_android",
+                                                            "platforms") })
     end
 
     render json: { redirect_config: RedirectConfigSerializer.serialize(redirect_config.reload) }, status: :ok

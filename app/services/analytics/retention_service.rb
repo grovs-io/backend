@@ -17,132 +17,141 @@ module Analytics
       sdk_identifier tracking_source tracking_medium tracking_campaign
     ].freeze
 
-    # Day 1/7/30 retention rates + sparklines + median churn day.
-    # Returns { day_1: Float|nil, day_7: Float|nil, day_30: Float|nil,
-    #           sparkline: [...], median_churn_day: Integer|nil }
+    # Day N = active on exactly day N, among users whose finished day N falls in the range.
     def self.summary(project_id, granularity: 'weekly', platform: nil,
-                     start_date: nil, end_date: nil, filters: [])
+                     start_date: nil, end_date: nil, filters: [], visitor_clause: nil)
       pid = Integer(project_id)
-      platform_filter = platform_where(platform)
       filter_cte, filter_join = visitor_filter_cte(pid, filters)
-      date_filter = cohort_date_filter(start_date, end_date)
+      ctx = { pid: pid, platform: platform, filter_cte: filter_cte, filter_join: filter_join,
+              start_date: start_date, end_date: end_date, visitor_clause: visitor_clause }
 
-      all_rates, sparkline = compute_summary(pid, platform_filter, filter_cte, filter_join, date_filter,
-                                             start_date: start_date, end_date: end_date)
+      rates, sizes, median = compute_rates(ctx)
+      sparkline = compute_sparkline(ctx)
 
-      rates = {
-        day_1: all_rates[1],
-        day_7: all_rates[7],
-        day_30: all_rates[30]
+      {
+        day_1: rates[1], day_7: rates[7], day_30: rates[30],
+        day_1_users: sizes[1], day_7_users: sizes[7], day_30_users: sizes[30],
+        sparkline: sparkline, median_churn_day: median
       }
-
-      # Median churn: first day_n where retention drops below 50%
-      median = [1, 3, 7, 14, 30, 60, 90].find { |d| all_rates[d]&.< 50.0 }
-
-      rates.merge(sparkline: sparkline, median_churn_day: median)
     rescue StandardError => e
       log_query_failure(:summary, e)
-      { day_1: nil, day_7: nil, day_30: nil, sparkline: [], median_churn_day: nil }
+      { day_1: nil, day_7: nil, day_30: nil, day_1_users: 0, day_7_users: 0, day_30_users: 0,
+        sparkline: [], median_churn_day: nil }
     end
-
-    # --- Private helpers ---
 
     ALL_DAY_NS = [1, 3, 7, 14, 30, 60, 90].freeze
 
-    # DRY CTE fragments reused across retention queries.
-    #
-    # user_profiles uses ReplacingMergeTree — FINAL forces in-memory dedup of
-    # every row at query time, which gets expensive at scale (1M+ visitors/day).
-    # Instead we use min(first_seen) GROUP BY, which:
-    #   1. Only reads 2 columns (visitor_id, first_seen) instead of the full row
-    #   2. Uses hash aggregation (O(n), constant overhead)
-    #   3. Is semantically more correct for retention (earliest install, not latest upsert)
-    def self.base_ctes(pid, platform_filter)
+    def self.date_sql(value)
+      "toDate('#{sanitize_date_value(value)}')"
+    end
+    private_class_method :date_sql
+
+    # Users whose day N lands in the range and is a finished day.
+    def self.eligible_sql(day, start_date, end_date)
+      day = Integer(day)
+      clauses = ["up.first_date <= today() - #{day + 1}"]
+      clauses << "up.first_date >= #{date_sql(start_date)} - #{day}" if start_date
+      clauses << "up.first_date <= #{date_sql(end_date)} - #{day}" if end_date
+      clauses.join(' AND ')
+    end
+    private_class_method :eligible_sql
+
+    # min()/GROUP BY instead of FINAL; the cohort comes first so visitor_daily is only read for it.
+    def self.base_ctes(ctx, cohort_having, event_range, dates_until)
+      pid = ctx[:pid]
       <<~SQL
-        WITH visitor_max AS (
-          /* Deliberately NOT countable-filtered: "did they come back" is broader than "billable". */
-          SELECT visitor_id, max(event_date) AS max_event_date
-          FROM visitor_daily
-          WHERE project_id = #{pid} #{platform_filter}
-          GROUP BY visitor_id
-        ), up AS (
-          SELECT visitor_id, min(first_seen) AS first_seen
+        WITH up AS (
+          SELECT visitor_id, toDate(min(first_seen)) AS first_date
           FROM user_profiles
-          WHERE project_id = #{pid} #{platform_filter}
+          WHERE project_id = #{pid} #{platform_where(ctx[:platform])}
           GROUP BY visitor_id
-        )
+          HAVING #{cohort_having.join(' AND ')}
+        ), ret AS (
+          /* Deliberately NOT countable-filtered: "did they come back" is broader than "billable". */
+          SELECT visitor_id, groupUniqArrayIf(event_date, event_date <= #{dates_until}) AS dates,
+                 max(event_date) AS last_date
+          FROM visitor_daily
+          WHERE project_id = #{pid} #{platform_where(ctx[:platform])}
+            AND visitor_id IN (SELECT visitor_id FROM up)
+            AND #{event_range.join(' AND ')}
+          GROUP BY visitor_id
+        )#{ctx[:filter_cte]}
       SQL
     end
     private_class_method :base_ctes
 
-    # Returns [all_rates_hash, sparkline_array].
-    def self.compute_summary(pid, platform_filter, filter_cte = '', filter_join = '', date_filter = '',
-                             start_date: nil, end_date: nil)
-      # countIf, not countDistinctIf: `up` already has one row per visitor and the joins
-      # don't fan out, so it's exact here — and avoids a per-column uniqExact set of every
-      # visitor that OOMs the query at ~7M-profile scale.
-      rate_columns = ALL_DAY_NS.map do |d|
-        <<~COL.squish
-          countIf(
-            up.first_seen <= now() - INTERVAL #{d} DAY
-          ) AS total_#{d},
-          countIf(
-            up.first_seen <= now() - INTERVAL #{d} DAY
-            AND vm.max_event_date >= addDays(toDate(up.first_seen), #{d})
-          ) AS retained_#{d}
-        COL
+    def self.cohort_from_sql(ctx)
+      <<~SQL
+        FROM up
+        LEFT JOIN ret r ON r.visitor_id = up.visitor_id
+        #{ctx[:filter_join]}
+      SQL
+    end
+    private_class_method :cohort_from_sql
+
+    # Returns [{ n => rate|nil }, { n => users }, median churn day|nil].
+    def self.compute_rates(ctx)
+      start_date = ctx[:start_date]
+      end_date = ctx[:end_date]
+      # countIf, not countDistinctIf: `up` has one row per visitor and the joins don't fan out.
+      columns = ALL_DAY_NS.map do |d|
+        elig = eligible_sql(d, start_date, end_date)
+        "countIf(#{elig}) AS total_#{d}, " \
+          "countIf(#{elig} AND has(r.dates, addDays(up.first_date, #{d}))) AS retained_#{d}, " \
+          "countIf(#{elig} AND r.last_date >= addDays(up.first_date, #{d})) AS active_after_#{d}"
       end
 
-      rates_sql = <<~SQL
-        #{base_ctes(pid, platform_filter)}#{filter_cte}
-        SELECT #{rate_columns.join(",\n")}
-        FROM up
-        LEFT JOIN visitor_max vm ON vm.visitor_id = up.visitor_id
-        #{filter_join}
-        WHERE 1=1#{date_filter}
+      having = ["first_date <= today() - #{ALL_DAY_NS.first + 1}"]
+      having << "first_date >= #{date_sql(start_date)} - #{ALL_DAY_NS.last}" if start_date
+      having << "first_date <= #{date_sql(end_date)} - #{ALL_DAY_NS.first}" if end_date
+      # No upper bound: churn counts any later return, today's included.
+      events = [start_date ? "event_date >= #{date_sql(start_date)}" : '1']
+      dates_until = end_date ? date_sql(end_date) : 'today()'
+
+      sql = <<~SQL
+        #{base_ctes(ctx, having, events, dates_until)}
+        SELECT #{columns.join(",\n")}
+        #{cohort_from_sql(ctx)}
+        #{ctx[:visitor_clause] ? "WHERE #{ctx[:visitor_clause]}" : ''}
       SQL
 
-      sparkline_start = start_date ? "toDate('#{sanitize_date_value(start_date)}')" : 'toDate(now() - INTERVAL 30 DAY)'
-      sparkline_end = end_date ? "toDate('#{sanitize_date_value(end_date)}')" : 'toDate(now() - INTERVAL 1 DAY)'
+      row = with_guard(sql).to_a.first || {}
+      sizes = ALL_DAY_NS.index_with { |d| row["total_#{d}"].to_i }
+      rates = ALL_DAY_NS.index_with { |d| percent(row["retained_#{d}"], sizes[d]) }
+      # Churn: first N where under half are active on or after day N.
+      median = ALL_DAY_NS.find { |d| percent(row["active_after_#{d}"], sizes[d])&.< 50.0 }
+      [rates, sizes, median]
+    end
+    private_class_method :compute_rates
 
-      sparkline_sql = <<~SQL
-        #{base_ctes(pid, platform_filter)}#{filter_cte}
-        SELECT
-          toDate(up.first_seen) AS cohort_date,
-          count() AS total,
-          countIf(vm.max_event_date >= addDays(toDate(up.first_seen), 1)) AS retained
-        FROM up
-        LEFT JOIN visitor_max vm ON vm.visitor_id = up.visitor_id
-        #{filter_join}
-        WHERE toDate(up.first_seen) >= #{sparkline_start}
-          AND toDate(up.first_seen) <= #{sparkline_end}
+    def self.percent(part, total)
+      total.to_i.zero? ? nil : (part.to_f / total.to_i * 100).round(1)
+    end
+    private_class_method :percent
+
+    # Day-1 rate per first day in the range; the last 30 days when no range is given.
+    def self.compute_sparkline(ctx)
+      from = ctx[:start_date] ? date_sql(ctx[:start_date]) : 'today() - 30'
+      to = "least(#{ctx[:end_date] ? date_sql(ctx[:end_date]) : 'today()'}, today() - 2)"
+      having = ["first_date >= #{from}", "first_date <= #{to}"]
+      events = ["event_date >= #{from}", "event_date <= #{to} + 1"]
+      dates_until = "#{to} + 1"
+
+      sql = <<~SQL
+        #{base_ctes(ctx, having, events, dates_until)}
+        SELECT up.first_date AS cohort_date, count() AS total,
+               countIf(has(r.dates, addDays(up.first_date, 1))) AS retained
+        #{cohort_from_sql(ctx)}
+        #{ctx[:visitor_clause] ? "WHERE #{ctx[:visitor_clause]}" : ''}
         GROUP BY cohort_date
         ORDER BY cohort_date
       SQL
 
-      rates_row = with_guard(rates_sql).to_a.first
-      sparkline_rows = with_guard(sparkline_sql).to_a
-
-      all_rates = if rates_row
-                    ALL_DAY_NS.each_with_object({}) do |d, h|
-                      total = rates_row["total_#{d}"].to_i
-                      retained = rates_row["retained_#{d}"].to_i
-                      h[d] = total.zero? ? nil : (retained.to_f / total * 100).round(1)
-                    end
-                  else
-                    ALL_DAY_NS.index_with { nil }
-                  end
-
-      sparkline = sparkline_rows.map do |r|
-        total = r['total'].to_i
-        retained = r['retained'].to_i
-        rate = total.zero? ? nil : (retained.to_f / total * 100).round(1)
-        { date: r['cohort_date'].to_s, rate: rate }
+      with_guard(sql).to_a.map do |r|
+        { date: r['cohort_date'].to_s, rate: percent(r['retained'], r['total']) }
       end
-
-      [all_rates, sparkline]
     end
-    private_class_method :compute_summary
+    private_class_method :compute_sparkline
 
     # Builds a filtered_visitors CTE + INNER JOIN when filters are present.
     # Returns ["", ""] when no filters — zero overhead on unfiltered queries.
@@ -164,15 +173,5 @@ module Analytics
       [cte, join]
     end
     private_class_method :visitor_filter_cte
-
-    def self.cohort_date_filter(start_date, end_date)
-      return '' if start_date.nil? && end_date.nil?
-
-      clauses = []
-      clauses << "toDate(up.first_seen) >= '#{sanitize_date_value(start_date)}'" if start_date
-      clauses << "toDate(up.first_seen) <= '#{sanitize_date_value(end_date)}'" if end_date
-      " AND #{clauses.join(' AND ')}"
-    end
-    private_class_method :cohort_date_filter
   end
 end

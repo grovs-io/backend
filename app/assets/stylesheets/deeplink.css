@@ -98,6 +98,22 @@ button:last-child {
   margin-right: 0;
 }
 
+a#open-app-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  text-decoration: none;
+  padding: 10px 20px;
+  background-color: #007bff;
+  color: #ffffff;
+  font-size: 1em;
+  border-radius: 4px;
+  font-weight: 500;
+  height: 50px;
+  width: 100%;
+}
+
 /* DESKTOP  */
 body {
   margin: 0;

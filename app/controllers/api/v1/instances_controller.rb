@@ -55,7 +55,8 @@ class Api::V1::InstancesController < Api::V1::ProjectsBaseController
     skip_authorization
     instances = current_user.instances.with_both_projects
                             .includes(:stripe_subscriptions, :enterprise_subscription, production: :domain, test: :domain)
-    render json: {instances: InstanceSerializer.serialize(instances)}, status: :ok
+    instances = instances.to_a
+    render json: {instances: InstanceSerializer.serialize(instances, icons: ProjectIcons.for(instances))}, status: :ok
   end
 
   def edit_instance

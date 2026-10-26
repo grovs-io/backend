@@ -13,7 +13,6 @@ Rails.application.routes.draw do
     get '.well-known/assetlinks.json',to: "public/verification#generate_android_file"
     get '.well-known/grovs-domain-verification', to: "public/verification#domain_verification"
 
-    get '/mm/*value', to: "public/marketing_messages#open_marketing_message"
     get '/*value', to: "public/links#open_app_link"
     get '/', to: "public/links#open_app_link"
     post '/', to: "public/device_data#store_device_data"
@@ -52,11 +51,44 @@ Rails.application.routes.draw do
         post 'mcp/campaigns', to: "mcp/campaigns#create"
         post 'mcp/campaigns/search', to: "mcp/campaigns#index"
         delete 'mcp/campaigns/:campaign_id', to: "mcp/campaigns#archive"
+
+        # Dashboard controllers reused through McpProjectController; POST so the client sends JSON bodies.
+        scope 'mcp/projects/:id', module: :mcp, as: :mcp_project do
+          post 'analytics/query', to: 'analytics/query#show'
+          post 'analytics/key-metrics', to: 'analytics/overview#key_metrics'
+          post 'analytics/retention', to: 'analytics/retention#summary'
+          post 'analytics/events', to: 'analytics/events_explorer#index'
+          post 'analytics/events/fields', to: 'analytics/events_explorer#fields'
+          post 'analytics/events/field-values', to: 'analytics/events_explorer#field_values'
+          post 'dashboards/list', to: 'dashboards#index'
+          post 'dashboards', to: 'dashboards#create'
+
+          if Grovs.ee?
+            post 'segments/list', to: 'segments#index'
+            post 'segments/fields', to: 'segments#fields'
+            post 'segments/estimate', to: 'segments#estimate'
+            post 'segments', to: 'segments#create'
+            post 'segments/:segment_id/breakdown', to: 'segments#breakdown'
+            post 'push_campaigns/list', to: 'push_campaigns#index'
+            post 'push_campaigns/:campaign_id', to: 'push_campaigns#show'
+            post 'push_campaigns/:campaign_id/experiment', to: 'push_campaigns#experiment'
+            post 'in_app_campaigns/list', to: 'in_app_campaigns#index'
+            post 'in_app_campaigns/:campaign_id', to: 'in_app_campaigns#show'
+            post 'in_app_campaigns/:campaign_id/report', to: 'in_app_campaigns#report'
+            post 'in_app_campaigns/:campaign_id/experiment', to: 'in_app_campaigns#experiment'
+            post 'in_app_campaigns/:campaign_id/comments', to: 'in_app_campaigns#comments'
+            post 'journeys/list', to: 'journeys#index'
+            post 'journeys/:journey_id/report', to: 'journeys#report'
+          end
+        end
       end
     end
   end
 
   constraints(ApiSubdomain) do
+    # The dashboard builds this from config.apiUrl's bare origin, not under /api/v1.
+    get '/in_app/preview', to: "public/in_app_preview#show" if Grovs.ee?
+
     namespace :api, defaults: {format: :json} do
       namespace :v1 do
 
@@ -95,6 +127,16 @@ Rails.application.routes.draw do
         put 'projects/:id/redirect_config', to: "redirects#set_redirect_config"
         put 'projects/:id/redirect_config/redirect', to: "redirects#set_redirect"
 
+        # Smart banners
+        patch  'projects/:id/smart_banners/reorder', to: "smart_banners#reorder"
+        get    'projects/:id/smart_banners/status', to: "smart_banners#status"
+        get    'projects/:id/smart_banners', to: "smart_banners#index"
+        post   'projects/:id/smart_banners', to: "smart_banners#create"
+        post   'projects/:id/smart_banners/:banner_id/duplicate', to: "smart_banners#duplicate"
+        get    'projects/:id/smart_banners/:banner_id', to: "smart_banners#show"
+        patch  'projects/:id/smart_banners/:banner_id', to: "smart_banners#update"
+        delete 'projects/:id/smart_banners/:banner_id', to: "smart_banners#destroy"
+
         # Domains
         get 'projects/:id/domain', to: "domains#current_project_domain"
         get 'projects/:id/domain/defaults', to: "domains#domain_defaults"
@@ -115,6 +157,90 @@ Rails.application.routes.draw do
         get    'projects/:id/custom_domains/preflight', to: "domains#preflight_custom_domain"
         post   'projects/:id/custom_domains/verify', to: "domains#verify_custom_domain"
 
+        # Event stream (Enterprise)
+        if Grovs.ee?
+          get    'projects/:id/event_destinations', to: "event_destinations#index"
+          post   'projects/:id/event_destinations', to: "event_destinations#create"
+          patch  'projects/:id/event_destinations/:destination_id', to: "event_destinations#update"
+          delete 'projects/:id/event_destinations/:destination_id', to: "event_destinations#destroy"
+          post   'projects/:id/event_destinations/:destination_id/pause', to: "event_destinations#pause"
+          post   'projects/:id/event_destinations/:destination_id/resume', to: "event_destinations#resume"
+          post   'projects/:id/event_destinations/:destination_id/rewind', to: "event_destinations#rewind"
+          post   'projects/:id/event_destinations/:destination_id/test', to: "event_destinations#test"
+          post   'projects/:id/event_exports', to: "event_destinations#create_export"
+
+          get    'projects/:id/segments', to: "segments#index"
+          post   'projects/:id/segments', to: "segments#create"
+          get    'projects/:id/segments/fields', to: "segments#fields"
+          post   'projects/:id/segments/estimate', to: "segments#estimate"
+          post   'projects/:id/segments/:segment_id/count', to: "segments#count"
+          post   'projects/:id/segments/:segment_id/identifier_list', to: "segments#identifier_list"
+          get    'projects/:id/segments/:segment_id/identifier_list', to: "segments#identifier_list_preview"
+          get    'projects/:id/segments/:segment_id/identifier_list/download', to: "segments#identifier_list_download"
+          post   'projects/:id/segments/:segment_id/breakdown', to: "segments#breakdown"
+          post   'projects/:id/segments/:segment_id/users', to: "segments#users"
+          post   'projects/:id/segments/:segment_id/export', to: "segments#export"
+          get    'projects/:id/segment_exports', to: "segments#exports"
+          get    'projects/:id/segment_exports/:export_id', to: "segments#export_status"
+          get    'projects/:id/segments/:segment_id/size_history', to: "segments#size_history"
+          get    'projects/:id/segments/:segment_id', to: "segments#show"
+          patch  'projects/:id/segments/:segment_id', to: "segments#update"
+          delete 'projects/:id/segments/:segment_id', to: "segments#destroy"
+          get    'projects/:id/push_campaigns', to: "push_campaigns#index"
+          post   'projects/:id/push_campaigns', to: "push_campaigns#create"
+          post   'projects/:id/push_campaigns/estimate', to: "push_campaigns#estimate_audience"
+          get    'projects/:id/push_campaigns/:campaign_id', to: "push_campaigns#show"
+          patch  'projects/:id/push_campaigns/:campaign_id', to: "push_campaigns#update"
+          post   'projects/:id/push_campaigns/:campaign_id/send', to: "push_campaigns#send_now"
+          post   'projects/:id/push_campaigns/:campaign_id/cancel', to: "push_campaigns#cancel"
+          post   'projects/:id/push_campaigns/:campaign_id/send_winner', to: "push_campaigns#send_winner"
+          get    'projects/:id/push_campaigns/:campaign_id/experiment', to: "push_campaigns#experiment"
+          post   'projects/:id/push_campaigns/:campaign_id/estimate', to: "push_campaigns#estimate"
+          get    'projects/:id/push_campaigns/:campaign_id/deliveries', to: "push_campaigns#deliveries"
+          delete 'projects/:id/push_campaigns/:campaign_id/image', to: "push_campaigns#remove_image"
+
+          get    'projects/:id/in_app_settings', to: "in_app_settings#show"
+          patch  'projects/:id/in_app_settings', to: "in_app_settings#update"
+          get    'projects/:id/in_app_campaigns', to: "in_app_campaigns#index"
+          post   'projects/:id/in_app_campaigns', to: "in_app_campaigns#create"
+          get    'projects/:id/in_app_campaigns/:campaign_id', to: "in_app_campaigns#show"
+          patch  'projects/:id/in_app_campaigns/:campaign_id', to: "in_app_campaigns#update"
+          delete 'projects/:id/in_app_campaigns/:campaign_id', to: "in_app_campaigns#destroy"
+          post   'projects/:id/in_app_campaigns/:campaign_id/launch', to: "in_app_campaigns#launch"
+          post   'projects/:id/in_app_campaigns/:campaign_id/pause', to: "in_app_campaigns#pause"
+          post   'projects/:id/in_app_campaigns/:campaign_id/resume', to: "in_app_campaigns#resume"
+          post   'projects/:id/in_app_campaigns/:campaign_id/end', to: "in_app_campaigns#finish"
+          post   'projects/:id/in_app_campaigns/:campaign_id/duplicate', to: "in_app_campaigns#duplicate"
+          post   'projects/:id/in_app_campaigns/:campaign_id/update_audience', to: "in_app_campaigns#update_audience"
+          post   'projects/:id/in_app_campaigns/:campaign_id/test', to: "in_app_campaigns#test"
+          get    'projects/:id/in_app_campaigns/:campaign_id/report', to: "in_app_campaigns#report"
+          get    'projects/:id/in_app_campaigns/:campaign_id/answers', to: "in_app_campaigns#answers"
+          get    'projects/:id/in_app_campaigns/:campaign_id/comments', to: "in_app_campaigns#comments"
+          get    'projects/:id/in_app_campaigns/:campaign_id/experiment', to: "in_app_campaigns#experiment"
+          post   'projects/:id/in_app_campaigns/:campaign_id/images/:slot', to: "in_app_campaigns#upload_image"
+          delete 'projects/:id/in_app_campaigns/:campaign_id/images/:slot', to: "in_app_campaigns#remove_image"
+          get    'projects/:id/in_app_campaigns/:campaign_id/media', to: "in_app_campaigns#media_index"
+          post   'projects/:id/in_app_campaigns/:campaign_id/media', to: "in_app_campaigns#upload_media"
+          delete 'projects/:id/in_app_campaigns/:campaign_id/media/:media_id', to: "in_app_campaigns#remove_media"
+          get    'projects/:id/journeys', to: "journeys#index"
+          post   'projects/:id/journeys', to: "journeys#create"
+          get    'projects/:id/journeys/:journey_id', to: "journeys#show"
+          patch  'projects/:id/journeys/:journey_id', to: "journeys#update"
+          delete 'projects/:id/journeys/:journey_id', to: "journeys#destroy"
+          post   'projects/:id/journeys/:journey_id/launch', to: "journeys#launch"
+          post   'projects/:id/journeys/:journey_id/pause', to: "journeys#pause"
+          post   'projects/:id/journeys/:journey_id/resume', to: "journeys#resume"
+          post   'projects/:id/journeys/:journey_id/end', to: "journeys#finish"
+          post   'projects/:id/journeys/:journey_id/duplicate', to: "journeys#duplicate"
+          get    'projects/:id/journeys/:journey_id/report', to: "journeys#report"
+          post   'projects/:id/journeys/:journey_id/images', to: "journeys#upload_image"
+
+          get    'projects/:id/event_stream', to: "event_stream#index"
+          get    'projects/:id/event_stream_tokens', to: "event_stream#tokens"
+          post   'projects/:id/event_stream_tokens', to: "event_stream#create_token"
+          delete 'projects/:id/event_stream_tokens/:token_id', to: "event_stream#destroy_token"
+        end
+
         # Combined CH + MigrationSource creation (atomic). Standalone create on
         # /migration_source was removed because every legitimate flow needs both rows.
         post   'projects/:id/migrations', to: "migrations#create"
@@ -132,8 +258,10 @@ Rails.application.routes.draw do
         post 'projects/:id/links/search_v2', to: "links#current_project_links_v2"
         post 'projects/:id/links/by_ids', to: "links#links_by_ids"
         post 'projects/:id/links/check_path', to: "links#is_path_available"
+        get 'projects/:id/links/lookup', to: "links#lookup"
         patch 'projects/:id/links/:link_id', to: "links#update_link"
         delete 'projects/:id/links/:link_id', to: "links#remove_link"
+        get 'projects/:id/links/:link_id/last_open', to: "links#last_open"
         get 'projects/:id/links/random_path', to: "links#generate_path"
 
         # Campaigns
@@ -147,6 +275,16 @@ Rails.application.routes.draw do
         post 'projects/:id/campaigns/search_v2', to: "campaigns#current_project_campaigns_v2"
         # DEPRECATED (2026-07-25): unused by grovs-web-app — remove after zero-traffic check
         post 'projects/:id/campaigns/metrics_overview', to: "campaigns#metrics_for_overview"
+
+        # Dashboards (custom widget boards)
+        get 'projects/:id/dashboards', to: "dashboards#index"
+        post 'projects/:id/dashboards', to: "dashboards#create"
+        patch 'projects/:id/dashboards/:dashboard_id', to: "dashboards#update"
+        delete 'projects/:id/dashboards/:dashboard_id', to: "dashboards#destroy"
+        post 'projects/:id/dashboards/:dashboard_id/widgets', to: "dashboards#create_widget"
+        patch 'projects/:id/dashboards/:dashboard_id/widgets/:widget_id', to: "dashboards#update_widget"
+        delete 'projects/:id/dashboards/:dashboard_id/widgets/:widget_id', to: "dashboards#destroy_widget"
+        get 'projects/:id/sdk_status', to: "sdk_status#show"
 
         # Events
         post 'projects/:id/events/search', to: "events#events_for_search_params"
@@ -212,13 +350,11 @@ Rails.application.routes.draw do
           # scope's project :id param.
           get 'sessions', to: 'analytics/sessions#index'
           get 'sessions/:session_key', to: 'analytics/sessions#show'
+
+          # Generic metric query (breakdowns, series, widgets)
+          get 'query', to: 'analytics/query#show'
         end
 
-        # Notifications
-        get 'notifications/test'
-        post 'projects/:project_id/notifications', to: "notifications#create"
-        post 'projects/:project_id/notifications/search', to: "notifications#notifications"
-        delete 'projects/:project_id/notifications/:id', to: "notifications#archive_notification"
 
         # Instances
         post 'instances', to: "instances#create_instance"
@@ -254,6 +390,7 @@ Rails.application.routes.draw do
         post 'instances/:id/billing/subscriptions', to: "payments#create_subscription_session"
         get 'instances/:id/billing/stripe_portal', to: "payments#stripe_dashboard_url"
         delete 'instances/:id/billing/subscription', to: "payments#cancel_subscription"
+        post 'instances/:id/billing/subscription/resume', to: "payments#resume_subscription"
         get 'instances/:id/billing/subscription', to: "payments#subscription_details"
         get 'instances/:id/billing/mau', to: "payments#current_mau"
         get 'instances/:id/billing/usage', to: "payments#current_usage"
@@ -332,13 +469,18 @@ Rails.application.routes.draw do
         post 'sdk/clipboard_status', to: "sdk/links#clipboard_status"
         post 'sdk/create_link', to: "sdk/links#create_link"
 
+        # Smart banners
+        get 'sdk/smart_banners', to: "sdk/smart_banners#index"
+        post 'sdk/smart_banners/:banner_id/link', to: "sdk/smart_banners#link"
+
         # Events
         post 'sdk/event', to: "sdk/events#add_event"
         post 'sdk/event/custom', to: "sdk/events#add_custom_event"
         post 'sdk/events/batch', to: "sdk/events#add_batch"
 
-        # Notifications
+        # The removed messages inbox: kept, and answering empty, for the apps already released
         post 'sdk/notifications_for_device', to: "sdk/notifications#notifications_for_device"
+        post 'sdk/push_open', to: "sdk/push#open"
         get 'sdk/number_of_unread_notifications', to: "sdk/notifications#number_of_unread_notifications"
         post 'sdk/mark_notification_as_read', to: "sdk/notifications#mark_notification_as_read"
         get 'sdk/notifications_to_display_automatically', to: "sdk/notifications#notifications_to_display_automatically"
@@ -353,6 +495,7 @@ Rails.application.routes.draw do
         # Payments (Enterprise)
         if Grovs.ee?
           post 'sdk/add_payment_event', to: "sdk/payments#add_payment_event"
+          post 'sdk/in_app/sync', to: "sdk/in_app#sync"
         end
 
         # SERVER
@@ -360,6 +503,34 @@ Rails.application.routes.draw do
         get 'sdk/link/:path', to: "server_sdk#link_details"
         get 'sdk/metrics_for_link/:path', to: 'server_sdk#metrics_for_link'
         get 'sdk/metrics_for_project', to: 'server_sdk#metrics_for_project'
+        post 'sdk/server/push', to: 'server_sdk#push'
+        get 'sdk/server/push/:campaign_id', to: 'server_sdk#push_status'
+
+        # Dashboard controllers behind the instance API key; only these actions are reachable.
+        if Grovs.ee?
+          scope 'sdk/server', module: :server, as: :server_api do
+            get    'segments', to: 'segments#index'
+            post   'segments', to: 'segments#create'
+            get    'segments/fields', to: 'segments#fields'
+            post   'segments/estimate', to: 'segments#estimate'
+            get    'segments/:segment_id', to: 'segments#show'
+            patch  'segments/:segment_id', to: 'segments#update'
+            delete 'segments/:segment_id', to: 'segments#destroy'
+            post   'segments/:segment_id/count', to: 'segments#count'
+            post   'segments/:segment_id/identifier_list', to: 'segments#identifier_list'
+            get    'in_app_campaigns', to: 'in_app_campaigns#index'
+            post   'in_app_campaigns', to: 'in_app_campaigns#create'
+            get    'in_app_campaigns/:campaign_id', to: 'in_app_campaigns#show'
+            patch  'in_app_campaigns/:campaign_id', to: 'in_app_campaigns#update'
+            delete 'in_app_campaigns/:campaign_id', to: 'in_app_campaigns#destroy'
+            post   'in_app_campaigns/:campaign_id/launch', to: 'in_app_campaigns#launch'
+            post   'in_app_campaigns/:campaign_id/pause', to: 'in_app_campaigns#pause'
+            post   'in_app_campaigns/:campaign_id/resume', to: 'in_app_campaigns#resume'
+            post   'in_app_campaigns/:campaign_id/end', to: 'in_app_campaigns#finish'
+            post   'in_app_campaigns/:campaign_id/test', to: 'in_app_campaigns#test'
+            get    'in_app_campaigns/:campaign_id/report', to: 'in_app_campaigns#report'
+          end
+        end
 
       end
     end
@@ -402,7 +573,7 @@ Rails.application.routes.draw do
     get '/', to: "links#open_app_link"
   end
 
-  devise_for :users
+  devise_for :users, skip: [:registrations]
   use_doorkeeper do
     controllers tokens: 'custom_tokens'
     skip_controllers :authorizations, :applications, :authorized_applications

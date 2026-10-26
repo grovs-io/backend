@@ -553,6 +553,28 @@ class McpLinksTest < ActionDispatch::IntegrationTest
     assert_response :not_found
   end
 
+  test "update_link returns 422 for a smart banner link and does not change it" do
+    @link.update_column(:tags, ["smart_banner", "smart_banner:1"])
+
+    patch "#{MCP_PREFIX}/links/#{@link.id}",
+      params: { project_id: @project.hashid, title: "Hacked" },
+      headers: @admin_headers
+    assert_response :unprocessable_entity
+    assert json_response.key?("error")
+    assert_not_equal "Hacked", @link.reload.title
+  end
+
+  test "archive_link returns 422 for a smart banner link and does not archive it" do
+    @link.update_column(:tags, ["smart_banner", "smart_banner:1"])
+
+    delete "#{MCP_PREFIX}/links/#{@link.id}",
+      params: { project_id: @project.hashid },
+      headers: @admin_headers
+    assert_response :unprocessable_entity
+    assert json_response.key?("error")
+    assert @link.reload.active
+  end
+
   # ==========================================================================
   # Member User Access
   # ==========================================================================

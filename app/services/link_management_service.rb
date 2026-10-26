@@ -14,6 +14,10 @@ class LinkManagementService
     end
 
     link = Link.new(link_attrs)
+    if link.path.blank?
+      link.errors.add(:path, :blank)
+      raise ActiveRecord::RecordInvalid, link
+    end
     link.generated_from_platform = "dashboard"
     link.domain = domain
     link.active = true
@@ -34,6 +38,8 @@ class LinkManagementService
   # Returns Link. Handles image swap, path change validation, preview flags.
   def update(link:, link_attrs:, tags: nil, data: nil, image: nil,
              campaign_id: nil, custom_redirects: {})
+    refuse_smart_banner_link!(link)
+
     if link_attrs[:path] && link.path != link_attrs[:path]
       new_link = Link.new(domain: link.domain, path: link_attrs[:path])
       raise ActiveRecord::RecordInvalid.new(new_link), "The path is not valid" unless new_link.valid_path?
@@ -68,6 +74,7 @@ class LinkManagementService
 
   # Soft-deletes link (active=false). Returns Link.
   def archive(link:)
+    refuse_smart_banner_link!(link)
     link.active = false
     link.save!
     link
@@ -97,13 +104,22 @@ class LinkManagementService
 
   private
 
+  # Smart banner links are system-owned; these paths must not touch them at all.
+  def refuse_smart_banner_link!(link)
+    return unless Array(link.tags).any? { |tag| SmartBanner.reserved_tag?(tag) }
+
+    link.errors.add(:base, "This link is managed by a smart banner and can't be changed here")
+    raise ActiveRecord::RecordInvalid, link
+  end
+
   def apply_tags(link, tags)
     return unless tags
 
     parsed_tags = json_param(tags)
     raise ArgumentError, "Tags must be a JSON array" unless parsed_tags.is_a?(Array)
 
-    link.tags = parsed_tags
+    # Smart banner tags are system-owned: customers can neither add nor remove them.
+    link.tags = SmartBanner.without_reserved_tags(parsed_tags) + Array(link.tags).select { |t| SmartBanner.reserved_tag?(t) }
   end
 
   def apply_data(link, data)

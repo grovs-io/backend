@@ -25,6 +25,126 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
     Api::V1::AuditExportTokensController#index
     Api::V1::AuditExportTokensController#create
     Api::V1::AuditExportTokensController#destroy
+    Api::V1::SsoConnectionsController#show
+    Api::V1::SsoConnectionsController#upsert
+    Api::V1::SsoConnectionsController#destroy
+    Api::V1::SsoConnectionsController#verify_domains
+    Api::V1::SsoConnectionsController#create_scim_token
+    Api::V1::SsoConnectionsController#destroy_scim_token
+    Api::V1::EventDestinationsController#index
+    Api::V1::EventDestinationsController#create
+    Api::V1::EventDestinationsController#update
+    Api::V1::EventDestinationsController#destroy
+    Api::V1::EventDestinationsController#pause
+    Api::V1::EventDestinationsController#resume
+    Api::V1::EventDestinationsController#rewind
+    Api::V1::EventDestinationsController#test
+    Api::V1::EventDestinationsController#create_export
+    Api::V1::EventStreamController#index
+    Api::V1::EventStreamController#tokens
+    Api::V1::EventStreamController#create_token
+    Api::V1::EventStreamController#destroy_token
+    Api::V1::SegmentsController#index
+    Api::V1::SegmentsController#fields
+    Api::V1::SegmentsController#show
+    Api::V1::SegmentsController#create
+    Api::V1::SegmentsController#update
+    Api::V1::SegmentsController#destroy
+    Api::V1::SegmentsController#estimate
+    Api::V1::SegmentsController#count
+    Api::V1::SegmentsController#identifier_list
+    Api::V1::SegmentsController#identifier_list_preview
+    Api::V1::SegmentsController#identifier_list_download
+    Api::V1::SegmentsController#breakdown
+    Api::V1::SegmentsController#users
+    Api::V1::SegmentsController#export
+    Api::V1::SegmentsController#exports
+    Api::V1::SegmentsController#export_status
+    Api::V1::SegmentsController#size_history
+    Api::V1::PushCampaignsController#index
+    Api::V1::PushCampaignsController#show
+    Api::V1::PushCampaignsController#create
+    Api::V1::PushCampaignsController#update
+    Api::V1::PushCampaignsController#send_now
+    Api::V1::PushCampaignsController#cancel
+    Api::V1::PushCampaignsController#send_winner
+    Api::V1::PushCampaignsController#experiment
+    Api::V1::PushCampaignsController#estimate
+    Api::V1::PushCampaignsController#estimate_audience
+    Api::V1::PushCampaignsController#deliveries
+    Api::V1::PushCampaignsController#remove_image
+    Api::V1::InAppCampaignsController#index
+    Api::V1::InAppCampaignsController#show
+    Api::V1::InAppCampaignsController#create
+    Api::V1::InAppCampaignsController#update
+    Api::V1::InAppCampaignsController#destroy
+    Api::V1::InAppCampaignsController#launch
+    Api::V1::InAppCampaignsController#pause
+    Api::V1::InAppCampaignsController#resume
+    Api::V1::InAppCampaignsController#finish
+    Api::V1::InAppCampaignsController#duplicate
+    Api::V1::InAppCampaignsController#update_audience
+    Api::V1::InAppCampaignsController#test
+    Api::V1::InAppCampaignsController#report
+    Api::V1::InAppCampaignsController#answers
+    Api::V1::InAppCampaignsController#comments
+    Api::V1::InAppCampaignsController#experiment
+    Api::V1::InAppCampaignsController#upload_image
+    Api::V1::InAppCampaignsController#remove_image
+    Api::V1::InAppCampaignsController#media_index
+    Api::V1::InAppCampaignsController#upload_media
+    Api::V1::InAppCampaignsController#remove_media
+    Api::V1::InAppSettingsController#show
+    Api::V1::InAppSettingsController#update
+    Public::InAppPreviewController#show
+    Api::V1::Sdk::InAppController#sync
+    Api::V1::JourneysController#index
+    Api::V1::JourneysController#show
+    Api::V1::JourneysController#create
+    Api::V1::JourneysController#update
+    Api::V1::JourneysController#destroy
+    Api::V1::JourneysController#launch
+    Api::V1::JourneysController#pause
+    Api::V1::JourneysController#resume
+    Api::V1::JourneysController#finish
+    Api::V1::JourneysController#duplicate
+    Api::V1::JourneysController#report
+    Api::V1::JourneysController#upload_image
+    Api::V1::Mcp::SegmentsController#index
+    Api::V1::Mcp::SegmentsController#fields
+    Api::V1::Mcp::SegmentsController#estimate
+    Api::V1::Mcp::SegmentsController#create
+    Api::V1::Mcp::SegmentsController#breakdown
+    Api::V1::Mcp::PushCampaignsController#index
+    Api::V1::Mcp::PushCampaignsController#show
+    Api::V1::Mcp::PushCampaignsController#experiment
+    Api::V1::Mcp::InAppCampaignsController#index
+    Api::V1::Mcp::InAppCampaignsController#show
+    Api::V1::Mcp::InAppCampaignsController#report
+    Api::V1::Mcp::InAppCampaignsController#experiment
+    Api::V1::Mcp::InAppCampaignsController#comments
+    Api::V1::Mcp::JourneysController#index
+    Api::V1::Mcp::JourneysController#report
+    Api::V1::Server::SegmentsController#index
+    Api::V1::Server::SegmentsController#fields
+    Api::V1::Server::SegmentsController#estimate
+    Api::V1::Server::SegmentsController#create
+    Api::V1::Server::SegmentsController#show
+    Api::V1::Server::SegmentsController#update
+    Api::V1::Server::SegmentsController#destroy
+    Api::V1::Server::SegmentsController#count
+    Api::V1::Server::SegmentsController#identifier_list
+    Api::V1::Server::InAppCampaignsController#index
+    Api::V1::Server::InAppCampaignsController#create
+    Api::V1::Server::InAppCampaignsController#show
+    Api::V1::Server::InAppCampaignsController#update
+    Api::V1::Server::InAppCampaignsController#destroy
+    Api::V1::Server::InAppCampaignsController#launch
+    Api::V1::Server::InAppCampaignsController#pause
+    Api::V1::Server::InAppCampaignsController#resume
+    Api::V1::Server::InAppCampaignsController#finish
+    Api::V1::Server::InAppCampaignsController#test
+    Api::V1::Server::InAppCampaignsController#report
   ].freeze
 
   # No endpoint may sit outside the contract registry. If an endpoint cannot be
@@ -52,6 +172,8 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
     "Api::V1::AdminController#update_enterprise_subscription 200 response.properties.subscription.additionalProperties",
     "Api::V1::AuditEventsController#index 200 response.properties.events.items.properties.changes",
     "Api::V1::AuditEventsController#index 200 response.properties.events.items.properties.target",
+    "Api::V1::SmartBannersController#create request.properties.smart_banner.properties.icon",
+    "Api::V1::SmartBannersController#update request.properties.smart_banner.properties.icon",
     "Api::V1::SsoConnectionsController#upsert request.properties.sso_connection",
     "Api::V1::AutomationController#details_for_link 200 response.properties.link.properties.data",
     "Api::V1::AutomationController#details_for_link 200 response.properties.link.properties.image",
@@ -69,13 +191,15 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
     "Api::V1::DiagnosticsController#test_exception 404 response.oneOf[1].properties.traces",
     "Api::V1::DiagnosticsController#test_exception 500 response.properties.traces",
     "Api::V1::DomainsController#set_project_domain request.properties.generic_image",
+    "Api::V1::EventDestinationsController#create request.properties.credentials.properties.headers",
+    "Api::V1::EventDestinationsController#update request.properties.credentials.properties.headers",
+    "Api::V1::EventStreamController#index 200 response.properties.events.items",
     "Api::V1::EventsController#events_sorted_by_param 200 response.oneOf[0].items.properties.link.properties.data",
     "Api::V1::EventsController#events_sorted_by_param 200 response.oneOf[1].properties.result.items.properties.link.properties.data",
     "Api::V1::EventsController#events_for_search_params 400 response.oneOf[1].properties.traces",
     "Api::V1::EventsController#events_sorted_by_param 400 response.oneOf[1].properties.traces",
     "Api::V1::LinksController#create_link 200 response.properties.link.properties.data",
     "Api::V1::LinksController#create_link 200 response.properties.link.properties.image",
-    "Api::V1::LinksController#create_link 422 response.properties.traces",
     "Api::V1::LinksController#create_link request.properties.android_custom_redirect",
     "Api::V1::LinksController#create_link request.properties.data",
     "Api::V1::LinksController#create_link request.properties.desktop_custom_redirect",
@@ -86,6 +210,8 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
     "Api::V1::LinksController#current_project_links_v2 400 response.oneOf[1].properties.traces",
     "Api::V1::LinksController#links_by_ids 200 response.properties.links.items.properties.data",
     "Api::V1::LinksController#links_by_ids 200 response.properties.links.items.properties.image",
+    "Api::V1::LinksController#lookup 200 response.properties.links.items.properties.data",
+    "Api::V1::LinksController#lookup 200 response.properties.links.items.properties.image",
     "Api::V1::LinksController#update_link 200 response.properties.link.properties.data",
     "Api::V1::LinksController#update_link 200 response.properties.link.properties.image",
     "Api::V1::LinksController#update_link request.properties.android_custom_redirect",
@@ -93,6 +219,7 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
     "Api::V1::LinksController#update_link request.properties.desktop_custom_redirect",
     "Api::V1::LinksController#update_link request.properties.image",
     "Api::V1::LinksController#update_link request.properties.ios_custom_redirect",
+    "Api::V1::Mcp::DashboardsController#create request.properties.widgets",
     "Api::V1::Mcp::AnalyticsController#link_stats 200 response.properties.metrics",
     "Api::V1::Mcp::AnalyticsController#link_stats 400 response.oneOf[1].properties.traces",
     "Api::V1::Mcp::AnalyticsController#project_metrics 200 response.properties.metrics",
@@ -125,11 +252,109 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
     "Api::V1::Mcp::LinksController#update request.properties.data",
     "Api::V1::Mcp::LinksController#update request.properties.image",
     "Api::V1::Mcp::ProjectsController#create 400 response.oneOf[1].properties.traces",
-    "Api::V1::NotificationsController#notifications 400 response.properties.traces",
     "Api::V1::PaymentsController#subscription_details 200 response.oneOf[0].properties.stripe_subscription.additionalProperties",
     "Api::V1::RedirectsController#redirect_config 200 response.properties.redirect_config.additionalProperties",
     "Api::V1::RedirectsController#set_redirect 200 response.properties.config.additionalProperties",
     "Api::V1::RedirectsController#set_redirect_config 200 response.properties.redirect_config.additionalProperties",
+    "Api::V1::SegmentsController#create 201 response.properties.segment.properties.definition",
+    "Api::V1::SegmentsController#create request.properties.definition",
+    "Api::V1::SegmentsController#fields 200 response.properties.conditions.items",
+    "Api::V1::SegmentsController#estimate request.properties.definition",
+    "Api::V1::SegmentsController#identifier_list request.properties.identifiers",
+    "Api::V1::SegmentsController#identifier_list request.properties.file",
+    "Api::V1::SegmentsController#identifier_list 200 response.properties.segment.properties.definition",
+    "Api::V1::SegmentsController#index 200 response.properties.segments.items.properties.definition",
+    "Api::V1::SegmentsController#show 200 response.properties.segment.properties.definition",
+    "Api::V1::SegmentsController#update 200 response.properties.segment.properties.definition",
+    "Api::V1::SegmentsController#update request.properties.definition",
+    "Api::V1::PushCampaignsController#cancel 200 response.properties.push_campaign.properties.data",
+    "Api::V1::PushCampaignsController#cancel 200 response.properties.push_campaign.properties.report.properties.error_counts",
+    "Api::V1::PushCampaignsController#send_winner 202 response.properties.push_campaign.properties.data",
+    "Api::V1::PushCampaignsController#send_winner 202 response.properties.push_campaign.properties.report.properties.error_counts",
+    "Api::V1::PushCampaignsController#create 201 response.properties.push_campaign.properties.data",
+    "Api::V1::PushCampaignsController#create 201 response.properties.push_campaign.properties.report.properties.error_counts",
+    "Api::V1::PushCampaignsController#send_now 202 response.properties.push_campaign.properties.data",
+    "Api::V1::PushCampaignsController#send_now 202 response.properties.push_campaign.properties.report.properties.error_counts",
+    "Api::V1::PushCampaignsController#show 200 response.properties.push_campaign.properties.data",
+    "Api::V1::PushCampaignsController#show 200 response.properties.push_campaign.properties.report.properties.error_counts",
+    "Api::V1::PushCampaignsController#update 200 response.properties.push_campaign.properties.data",
+    "Api::V1::PushCampaignsController#update 200 response.properties.push_campaign.properties.report.properties.error_counts",
+    "Api::V1::PushCampaignsController#index 200 response.properties.push_campaigns.items.properties.data",
+    "Api::V1::PushCampaignsController#index 200 response.properties.push_campaigns.items.properties.report.properties.error_counts",
+    "Api::V1::PushCampaignsController#create request.properties.data",
+    "Api::V1::PushCampaignsController#update request.properties.data",
+    "Api::V1::PushCampaignsController#create request.properties.image",
+    "Api::V1::PushCampaignsController#update request.properties.image",
+    "Api::V1::PushCampaignsController#remove_image 200 response.properties.push_campaign.properties.data",
+    "Api::V1::PushCampaignsController#remove_image 200 response.properties.push_campaign.properties.report.properties.error_counts",
+    "Api::V1::InAppCampaignsController#create 201 response.properties.in_app_campaign.properties.caps",
+    "Api::V1::InAppCampaignsController#create 201 response.properties.in_app_campaign.properties.content",
+    "Api::V1::InAppCampaignsController#create 201 response.properties.in_app_campaign.properties.schedule",
+    "Api::V1::InAppCampaignsController#duplicate 201 response.properties.in_app_campaign.properties.caps",
+    "Api::V1::InAppCampaignsController#duplicate 201 response.properties.in_app_campaign.properties.content",
+    "Api::V1::InAppCampaignsController#duplicate 201 response.properties.in_app_campaign.properties.schedule",
+    "Api::V1::InAppCampaignsController#finish 200 response.properties.in_app_campaign.properties.caps",
+    "Api::V1::InAppCampaignsController#finish 200 response.properties.in_app_campaign.properties.content",
+    "Api::V1::InAppCampaignsController#finish 200 response.properties.in_app_campaign.properties.schedule",
+    "Api::V1::InAppCampaignsController#launch 202 response.properties.in_app_campaign.properties.caps",
+    "Api::V1::InAppCampaignsController#launch 202 response.properties.in_app_campaign.properties.content",
+    "Api::V1::InAppCampaignsController#launch 202 response.properties.in_app_campaign.properties.schedule",
+    "Api::V1::InAppCampaignsController#pause 200 response.properties.in_app_campaign.properties.caps",
+    "Api::V1::InAppCampaignsController#pause 200 response.properties.in_app_campaign.properties.content",
+    "Api::V1::InAppCampaignsController#pause 200 response.properties.in_app_campaign.properties.schedule",
+    "Api::V1::InAppCampaignsController#resume 200 response.properties.in_app_campaign.properties.caps",
+    "Api::V1::InAppCampaignsController#resume 200 response.properties.in_app_campaign.properties.content",
+    "Api::V1::InAppCampaignsController#resume 200 response.properties.in_app_campaign.properties.schedule",
+    "Api::V1::InAppCampaignsController#update_audience 202 response.properties.in_app_campaign.properties.caps",
+    "Api::V1::InAppCampaignsController#update_audience 202 response.properties.in_app_campaign.properties.content",
+    "Api::V1::InAppCampaignsController#update_audience 202 response.properties.in_app_campaign.properties.schedule",
+    "Api::V1::InAppCampaignsController#show 200 response.properties.in_app_campaign.properties.caps",
+    "Api::V1::InAppCampaignsController#show 200 response.properties.in_app_campaign.properties.content",
+    "Api::V1::InAppCampaignsController#show 200 response.properties.in_app_campaign.properties.schedule",
+    "Api::V1::InAppCampaignsController#update 200 response.properties.in_app_campaign.properties.caps",
+    "Api::V1::InAppCampaignsController#update 200 response.properties.in_app_campaign.properties.content",
+    "Api::V1::InAppCampaignsController#update 200 response.properties.in_app_campaign.properties.schedule",
+    "Api::V1::InAppCampaignsController#index 200 response.properties.in_app_campaigns.items.properties.caps",
+    "Api::V1::InAppCampaignsController#index 200 response.properties.in_app_campaigns.items.properties.content",
+    "Api::V1::InAppCampaignsController#index 200 response.properties.in_app_campaigns.items.properties.schedule",
+    "Api::V1::InAppCampaignsController#create request.properties.lock_version",
+    "Api::V1::InAppCampaignsController#update request.properties.lock_version",
+    "Api::V1::InAppCampaignsController#create request.properties.caps",
+    "Api::V1::InAppCampaignsController#create request.properties.conditions",
+    "Api::V1::InAppCampaignsController#create request.properties.content",
+    "Api::V1::InAppCampaignsController#create request.properties.schedule",
+    "Api::V1::InAppCampaignsController#create request.properties.triggers",
+    "Api::V1::InAppCampaignsController#update request.properties.caps",
+    "Api::V1::InAppCampaignsController#update request.properties.conditions",
+    "Api::V1::InAppCampaignsController#update request.properties.content",
+    "Api::V1::InAppCampaignsController#update request.properties.schedule",
+    "Api::V1::InAppCampaignsController#update request.properties.triggers",
+    "Api::V1::PushCampaignsController#create request.properties.conversion",
+    "Api::V1::PushCampaignsController#create request.properties.variants",
+    "Api::V1::PushCampaignsController#update request.properties.conversion",
+    "Api::V1::PushCampaignsController#update request.properties.variants",
+    "Api::V1::InAppCampaignsController#create request.properties.conversion",
+    "Api::V1::InAppCampaignsController#create request.properties.variants",
+    "Api::V1::InAppCampaignsController#update request.properties.conversion",
+    "Api::V1::InAppCampaignsController#update request.properties.variants",
+    "Api::V1::InAppCampaignsController#remove_image 200 response.properties.in_app_campaign.properties.caps",
+    "Api::V1::InAppCampaignsController#remove_image 200 response.properties.in_app_campaign.properties.content",
+    "Api::V1::InAppCampaignsController#remove_image 200 response.properties.in_app_campaign.properties.schedule",
+    "Api::V1::InAppCampaignsController#upload_image 200 response.properties.in_app_campaign.properties.caps",
+    "Api::V1::InAppCampaignsController#upload_image 200 response.properties.in_app_campaign.properties.content",
+    "Api::V1::InAppCampaignsController#upload_image 200 response.properties.in_app_campaign.properties.schedule",
+    "Api::V1::InAppCampaignsController#upload_image request.properties.image",
+    "Api::V1::InAppCampaignsController#upload_media request.properties.file",
+    "Api::V1::JourneysController#upload_image request.properties.image",
+    "Api::V1::JourneysController#upload_image request.properties.lock_version",
+    "Api::V1::Sdk::InAppController#sync 200 response.oneOf[1].properties.campaigns.items",
+    "Api::V1::Sdk::InAppController#sync 200 response.oneOf[1].properties.test_messages.items",
+    "Api::V1::ServerSdkController#push 202 response.properties.campaign.properties.data",
+    "Api::V1::ServerSdkController#push 202 response.properties.campaign.properties.report.properties.error_counts",
+    "Api::V1::ServerSdkController#push request.properties.data",
+    "Api::V1::ServerSdkController#push_status 200 response.properties.campaign.properties.data",
+    "Api::V1::ServerSdkController#push_status 200 response.properties.campaign.properties.report.properties.error_counts",
+    "Api::V1::SegmentsController#users request.properties.limit",
     "Api::V1::Sdk::LinksController#create_link request.properties.android_custom_redirect",
     "Api::V1::Sdk::LinksController#create_link request.properties.data",
     "Api::V1::Sdk::LinksController#create_link request.properties.desktop_custom_redirect",
@@ -140,6 +365,8 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
     "Api::V1::Sdk::LinksController#data_for_device_details_and_url 200 response.properties.data",
     "Api::V1::Sdk::LinksController#link_details 200 response.properties.data",
     "Api::V1::Sdk::LinksController#link_details 200 response.properties.image",
+    "Api::V1::Sdk::SmartBannersController#link request.properties.data",
+    "Api::V1::Sdk::SmartBannersController#link request.properties.page_path",
     "Api::V1::ServerSdkController#generate_link request.properties.android_custom_redirect",
     "Api::V1::ServerSdkController#generate_link request.properties.data",
     "Api::V1::ServerSdkController#generate_link request.properties.desktop_custom_redirect",
@@ -150,6 +377,13 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
     "Api::V1::ServerSdkController#metrics_for_link 200 response.properties.metrics.properties.data",
     "Api::V1::ServerSdkController#metrics_for_project 200 response.items.properties.data",
     "Api::V1::UsersController#change_password request.properties.user",
+    "Api::V1::DashboardsController#create_widget request.properties.query",
+    "Api::V1::DashboardsController#create_widget 200 response.properties.widget.properties.query",
+    "Api::V1::DashboardsController#update_widget request.properties.query",
+    "Api::V1::DashboardsController#update_widget 200 response.properties.widget.properties.query",
+    "Api::V1::DashboardsController#create 200 response.properties.dashboard.properties.widgets.items.properties.query",
+    "Api::V1::DashboardsController#index 200 response.properties.dashboards.items.properties.widgets.items.properties.query",
+    "Api::V1::DashboardsController#update 200 response.properties.dashboard.properties.widgets.items.properties.query",
     "Public::PublicLinkController#create request.properties.data",
     "Public::PublicLinkController#create request.properties.image"
   ].freeze
@@ -185,7 +419,7 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
   # without a schema mapping fails here.
   test "every analytics endpoint has an INPUT_SCHEMA mapping" do
     mapped = AnalyticsSchemaContractTest::INPUT_SCHEMA_TO_ACTION.values.to_set
-    unmapped = analytics_endpoints.reject { |klass, action| mapped.include?([klass, action]) }
+    unmapped = analytics_endpoints.reject { |klass, action| mapped.include?([klass, action]) || mapped.include?([klass.superclass, action]) }
 
     assert unmapped.empty?, <<~MSG
       Analytics endpoint(s) with no INPUT_SCHEMA mapping. The api/v1/analytics/
@@ -244,7 +478,9 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
     end.sort
 
     expected = active_allowlist(NESTED_FLEXIBLE_SCHEMA_ALLOWLIST)
-    unreviewed = flexible - expected
+    # An MCP or server API subclass inherits its parent's schema, so the parent's review covers it.
+    inherited = flexible.select { |e| expected.include?(e.sub(/\AApi::V1::(Mcp|Server)::/, "Api::V1::")) }
+    unreviewed = flexible - expected - inherited
     stale = expected - flexible
 
     assert unreviewed.empty? && stale.empty?, <<~MSG
@@ -268,7 +504,8 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
   # those endpoints are excluded here. The separate guard test below
   # ("every analytics endpoint has an INPUT_SCHEMA mapping") ensures the
   # analytics namespace cannot hide an untracked endpoint.
-  ANALYTICS_CONTROLLER_PREFIX = "api/v1/analytics/"
+  # MCP analytics controllers subclass these and inherit their schemas, so they share the delegation.
+  ANALYTICS_CONTROLLER_PREFIXES = %w[api/v1/analytics/ api/v1/mcp/analytics/].freeze
 
   def app_endpoints
     Rails.application.routes.routes.filter_map do |route|
@@ -277,7 +514,7 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
       action = defaults[:action]
       next if controller.nil? || action.nil?
       next unless controller.start_with?("api/", "public/")
-      next if controller.start_with?(ANALYTICS_CONTROLLER_PREFIX)
+      next if controller.start_with?(*ANALYTICS_CONTROLLER_PREFIXES)
 
       klass = controller.split("/").map(&:camelize).join("::") + "Controller"
       "#{klass}##{action}"
@@ -294,7 +531,7 @@ class ApiContractCoverageTest < ActiveSupport::TestCase
       controller = defaults[:controller]
       action = defaults[:action]
       next if controller.nil? || action.nil?
-      next unless controller.start_with?(ANALYTICS_CONTROLLER_PREFIX)
+      next unless controller.start_with?(*ANALYTICS_CONTROLLER_PREFIXES)
 
       klass = (controller.split("/").map(&:camelize).join("::") + "Controller").constantize
       [klass, action.to_sym]

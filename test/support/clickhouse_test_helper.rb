@@ -63,6 +63,7 @@ module ClickhouseTestHelper
     mv_purchase_project_daily mv_visitor_daily mv_link_daily
     mv_project_daily mv_screen_daily mv_billing_active_visitors_daily
     mv_project_version_daily mv_project_source_daily mv_project_property_daily
+    mv_events_outbox mv_purchase_events_outbox
   ].freeze
 
   LEGACY_PHYSICAL_TABLES = %w[screen_daily].freeze
@@ -96,13 +97,14 @@ module ClickhouseTestHelper
 
     raw_url = ENV.fetch('CLICKHOUSE_URL', 'http://localhost:8123')
     uri = URI.parse(raw_url)
+    variables = ClickHouse::Client.configuration.databases.fetch(:main).uri.query_values.except('database').symbolize_keys
     ClickHouse::Client.configuration.databases.delete(:main)
     ClickHouse::Client.configuration.register_database(:main,
       database: database,
       url: "#{uri.scheme}://#{uri.host}:#{uri.port || 8123}",
       username: uri.user || 'default',
       password: uri.password || '',
-      variables: TEST_CLICKHOUSE_VARIABLES
+      variables: variables.merge(TEST_CLICKHOUSE_VARIABLES)
     )
     Clickhouse.reset_connection!
   end
@@ -193,6 +195,8 @@ module ClickhouseTestHelper
     visitor_identity_map visitor_identities
     visitor_acquisition visitor_last_touch_daily visitor_dimension_daily
     visitor_first_seen_daily link_dimensions
+    egress_projects events_outbox purchase_events_outbox segment_results
+    segment_identifier_entries
   ].freeze
 
   # Truncate all ClickHouse tables. Call in test setup for a clean slate.

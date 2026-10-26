@@ -4,9 +4,7 @@ module Api
   module V1
     module Analytics
       class EventsExplorerController < BaseController
-        MAX_AGGREGATE_RANGE_DAYS = Integer(ENV.fetch('ANALYTICS_MAX_AGGREGATE_RANGE_DAYS', 90))
-
-        HEAVY_FILTER_OPERATORS = %w[contains is_not not_contains].freeze
+        MAX_AGGREGATE_RANGE_DAYS = ::Analytics::Config::RAW_MAX_RANGE_DAYS
 
         def index
           # Cap = the plan's queryable window (free 365 / paid 730 / enterprise custom).
@@ -35,7 +33,8 @@ module Api
             sort_order: params[:sort_order],
             search: params[:search],
             filters: params[:filters],
-            include_count: include_count
+            include_count: include_count,
+            visitor_clause: segment_clause
           )
 
           annotate_visitor_uuids(result[:data])
@@ -67,7 +66,8 @@ module Api
             bucket: params[:bucket],
             search: params[:search],
             filters: params[:filters],
-            timezone: params[:timezone]
+            timezone: params[:timezone],
+            visitor_clause: segment_clause
           )
 
           render json: result, status: :ok
@@ -78,9 +78,15 @@ module Api
             render json: { error: 'field parameter is required' }, status: :bad_request
             return
           end
-          unless ALLOWED_FIELD_VALUES_FIELDS.include?(params[:field].to_s) ||
-                 ::Analytics::EventsQueryService.user_attribute_field?(params[:field])
-            render json: { error: "Invalid field: must be one of #{ALLOWED_FIELD_VALUES_FIELDS.join(', ')}, or user.<key>" },
+          field_str = params[:field].to_s
+          # user./purchase. own their namespace: an unknown suffix 400s, never becomes a bare property key.
+          namespaced = field_str.start_with?('user.', 'purchase.')
+          unless ALLOWED_FIELD_VALUES_FIELDS.include?(field_str) ||
+                 ::Analytics::EventsQueryService.user_attribute_field?(field_str) ||
+                 ::Analytics::EventsQueryService.purchase_field?(field_str) ||
+                 (!namespaced && ::Analytics::EventsQueryService.valid_property_key?(field_str))
+            render json: { error: "Invalid field: must be one of #{ALLOWED_FIELD_VALUES_FIELDS.join(', ')}, " \
+                                   'user.<key>, or purchase.<key>, or a property key' },
                    status: :bad_request
             return
           end
@@ -172,26 +178,6 @@ module Api
         rescue ArgumentError, JSON::ParserError
           render json: { error: 'Invalid cursor' }, status: :bad_request
           true
-        end
-
-        # Heavy = free-text search or a substring/negation filter operator.
-        def heavy_shape_requested?
-          return true if params[:search].present?
-
-          ::Analytics::QueryHelpers.parse_filters(params[:filters]).any? do |f|
-            HEAVY_FILTER_OPERATORS.include?(f['operator'].to_s)
-          end
-        end
-
-        def exceeded_date_range?(max_days)
-          days = (parsed_end_date - parsed_start_date).to_i
-          if days > max_days
-            render json: { error: "Date range cannot exceed #{max_days} days for this query", error_code: 'query_too_heavy' },
-                   status: :unprocessable_entity
-            true
-          else
-            false
-          end
         end
       end
     end

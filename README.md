@@ -35,13 +35,14 @@ Grovs gives you full control over your mobile app's growth stack:
 
 - **Deep Linking** — Short links with deferred deep linking across iOS, Android, and web, including clipboard-assisted matching
 - **Attribution** — Track installs, opens, reinstalls, and referrals back to their source
-- **Revenue Tracking** — In-app purchase tracking with Apple/Google webhook integration and revenue attribution
 - **Analytics** — Real-time dashboards with daily metrics, visitor stats, campaign performance, sessions and retention, optionally backed by ClickHouse
 - **Custom Domains** — Serve links from your own domain via Cloudflare for SaaS, or with a manual DNS setup when self-hosting
 - **Migration** — Move existing Branch.io or AppsFlyer links over; the first click on an old link resolves it upstream and mints a native Grovs link
-- **Push Notifications** — Send targeted messages to your users via APNs and FCM
+- **Smart Banners** — App download banners for your website that deep link into the app
+- **Custom Dashboards** — Saved analytics dashboards built from any metric, filter and breakdown
+- **MCP Server** — Read your links and analytics from AI assistants over the Model Context Protocol
 - **Multi-tenant** — One instance serves multiple apps across platforms
-- **Enterprise** — Tamper-evident audit log with SIEM export, and enterprise SSO (OIDC) with SCIM 2.0 user provisioning (see [Enterprise Edition](#enterprise-edition))
+- **Enterprise** — Segments, push campaigns, in-app messages, journeys, event streaming, revenue tracking, audit log, and enterprise SSO with SCIM (see [Enterprise Edition](#enterprise-edition))
 
 ## Tech Stack
 
@@ -202,6 +203,11 @@ Enable the flags in order: writes first, then reads, then the rollup and attribu
 
 Everything under `ee/` loads when `GROVS_EE=true`. Without it the core edition runs unchanged and the enterprise routes do not exist.
 
+- **Segments** — Audiences built from events, attributes, devices and purchases, with live size estimates and CSV exports
+- **Push campaigns** — Targeted APNs and FCM campaigns to segments, scheduled or immediate, with delivery and open reporting
+- **In-app messages** — Templates, surveys and custom HTML shown by the SDKs, with targeting, frequency caps and reports
+- **Journeys** — Multi-step flows across push and in-app messages, with waits, branches and A/B paths
+- **Event streaming** — Raw events delivered to your own destinations (S3-compatible storage, webhooks) or pulled from a feed
 - **IAP revenue tracking** — Apple and Google webhooks, purchase validation, revenue attribution
 - **Audit log** — Tamper-evident, hash-chained record of every administrative action. Instance admins issue read-only export tokens and a SIEM pulls `GET /api/v1/instances/:id/audit_events`. Verify a chain with `bin/rails audit:verify[<instance_id>]`
 - **Enterprise SSO** — Per-instance OIDC connections with verified email domains, configured at `PUT /api/v1/instances/:id/sso_connection`
@@ -282,7 +288,7 @@ app/
   services/            # Business logic (events, devices, attribution, ClickHouse reads)
   jobs/                # Sidekiq background jobs
   mailers/             # Transactional emails
-ee/                    # Enterprise features (IAP/revenue, audit log, SSO/SCIM) — see license below
+ee/                    # Enterprise features (segments, push, in-app, journeys, event streaming, revenue, audit log, SSO/SCIM) — see license below
   app/                 # Controllers, models, services, jobs
   test/                # EE test suite
 config/
@@ -302,7 +308,7 @@ lib/
 
 ### Docker Compose (self-hosted)
 
-`ghcr.io/grovs-io/backend` is the Community Edition image: built from `Dockerfile` with `GROVS_EE=false`, which deletes `ee/` at build time, so the Enterprise Edition (IAP revenue, audit log, OIDC/SCIM) is not present and cannot be switched on by environment. It runs as a non-root user with precompiled assets; `docker-compose.yml` runs every role from that one image. Upgrade with:
+`ghcr.io/grovs-io/backend` is the Community Edition image: built from `Dockerfile` with `GROVS_EE=false`, which deletes `ee/` at build time, so the Enterprise Edition (segments, push, in-app, journeys, event streaming, revenue, audit log, OIDC/SCIM) is not present and cannot be switched on by environment. It runs as a non-root user with precompiled assets; `docker-compose.yml` runs every role from that one image. Upgrade with:
 
 ```bash
 # bump GROVS_IMAGE in .env, then
@@ -350,6 +356,6 @@ Please open an issue first for major changes to discuss the approach.
 Grovs uses a dual license model:
 
 - **Core (MIT)** — Everything outside the `ee/` directory is licensed under the [MIT License](LICENSE). You can freely use, modify, and distribute it.
-- **Enterprise** — The `ee/` directory contains enterprise features (IAP/revenue tracking, audit log, enterprise SSO and SCIM) under the [Grovs Enterprise License](ee/LICENSE). Production use of enterprise features requires a valid subscription.
+- **Enterprise** — The `ee/` directory contains enterprise features (segments, push campaigns, in-app messages, journeys, event streaming, revenue tracking, audit log, enterprise SSO and SCIM) under the [Grovs Enterprise License](ee/LICENSE). Production use of enterprise features requires a valid subscription.
 
 See [LICENSE](LICENSE) and [ee/LICENSE](ee/LICENSE) for full terms.

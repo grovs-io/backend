@@ -73,6 +73,71 @@ class Analytics::KeyMetricSeriesTest < ActiveSupport::TestCase
     assert_equal [], result[:points]
   end
 
+  test 'revenue series sums daily project metric cents per day and zero-fills' do
+    DailyProjectMetric.where(project_id: @project.id).delete_all
+    DailyProjectMetric.create!(project_id: @project.id, event_date: @today - 2, platform: 'ios', revenue: 1500)
+    DailyProjectMetric.create!(project_id: @project.id, event_date: @today - 2, platform: 'android', revenue: 500)
+    DailyProjectMetric.create!(project_id: @project.id, event_date: @today, platform: 'ios', revenue: 700)
+    DailyProjectMetric.create!(project_id: projects(:two).id, event_date: @today, platform: 'ios', revenue: 9999)
+
+    result = call_series(metric: 'revenue', start_date: @today - 3, end_date: @today)
+
+    assert_equal 'revenue', result[:metric]
+    assert_equal [0, 2000, 0, 700], result[:points].map { |p| p[:value] }
+    assert_equal ((@today - 3)..@today).map(&:to_s), result[:points].map { |p| p[:date] }
+  end
+
+  test 'revenue series serves the previous range for compare and respects platform' do
+    DailyProjectMetric.where(project_id: @project.id).delete_all
+    DailyProjectMetric.create!(project_id: @project.id, event_date: @today - 3, platform: 'ios', revenue: 400)
+    DailyProjectMetric.create!(project_id: @project.id, event_date: @today - 3, platform: 'android', revenue: 100)
+    DailyProjectMetric.create!(project_id: @project.id, event_date: @today, platform: 'ios', revenue: 900)
+
+    current = call_series(metric: 'revenue', start_date: @today - 1, end_date: @today)
+    previous = call_series(metric: 'revenue', start_date: @today - 3, end_date: @today - 2)
+    ios_previous = call_series(metric: 'revenue', start_date: @today - 3, end_date: @today - 2, platform: 'ios')
+
+    assert_equal [0, 900], current[:points].map { |p| p[:value] }
+    assert_equal [500, 0], previous[:points].map { |p| p[:value] }
+    assert_equal [400, 0], ios_previous[:points].map { |p| p[:value] }
+  end
+
+  test 'revenue series buckets by week' do
+    DailyProjectMetric.where(project_id: @project.id).delete_all
+    DailyProjectMetric.create!(project_id: @project.id, event_date: @today - 10, platform: 'ios', revenue: 300)
+    DailyProjectMetric.create!(project_id: @project.id, event_date: @today - 1, platform: 'ios', revenue: 200)
+    DailyProjectMetric.create!(project_id: @project.id, event_date: @today, platform: 'ios', revenue: 100)
+
+    points = Analytics::OverviewStatsService.key_metric_series(
+      @project.id, metric: 'revenue', start_date: @today - 13, end_date: @today, granularity: 'week'
+    )[:points]
+
+    assert_equal [300, 300], points.map { |p| p[:value] }
+  end
+
+  test 'revenue series reads the ledger when flagged' do
+    Rails.application.config.revenue_reads_from_ledger = true
+    ledger = { @today => 1234 }
+
+    result = RevenueLedgerQuery.stub(:daily_series, ledger) do
+      call_series(metric: 'revenue', start_date: @today - 1, end_date: @today)
+    end
+
+    assert_equal [0, 1234], result[:points].map { |p| p[:value] }
+  end
+
+  test 'revenue series is flagged unsupported with no points under non-platform filters' do
+    DailyProjectMetric.where(project_id: @project.id).delete_all
+    DailyProjectMetric.create!(project_id: @project.id, event_date: @today, platform: 'ios', revenue: 700)
+
+    result = Analytics::OverviewStatsService.key_metric_series(
+      @project.id, metric: 'revenue', start_date: @today, end_date: @today,
+                   filters: '[{"field":"country","operator":"is","value":"RO"}]'
+    )
+
+    assert_equal({ metric: 'revenue', points: [], unsupported: true }, result)
+  end
+
   private
 
   def call_series(metric:, start_date:, end_date:, platform: nil)

@@ -31,6 +31,19 @@ class OauthTokenTest < ActionDispatch::IntegrationTest
     assert json["refresh_token"].present?
   end
 
+  test "login returns the serialized user, never the 2FA secret or SCIM columns" do
+    @user.update_columns(otp_secret: "JBSWY3DPEHPK3PXP", consumed_timestep: 42, scim_external_id: "ext-1", scim_user_name: "scim-1")
+    post "/oauth/token", params: {
+      grant_type: "password", email: @user.email, password: @password,
+      client_id: @client_app.uid, client_secret: @client_app.secret
+    }
+    assert_response :ok
+    user = JSON.parse(response.body)["user"]
+    assert_equal UserSerializer.serialize(@user.reload).keys.sort, user.keys.sort
+    assert_equal [@user.id, @user.email], user.values_at("id", "email")
+    refute_includes response.body, "JBSWY3DPEHPK3PXP"
+  end
+
   test "login with wrong password returns invalid_grant" do
     post "/oauth/token", params: {
       grant_type: "password",

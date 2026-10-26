@@ -36,8 +36,8 @@ class LinkAssetDefaultsTest < ActiveSupport::TestCase
       "SERVER_HOST_PROTOCOL" => "https"
     ) do
       assert_equal(
-        "https://api.example.com/assets/logo-large-black.png",
-        Grovs.configured_link_asset_url("DEFAULT_SOCIAL_PREVIEW_URL", "logo-large-black.png")
+        "https://api.example.com/assets/social-media-placeholder.jpg",
+        Grovs.configured_link_asset_url("DEFAULT_SOCIAL_PREVIEW_URL", "social-media-placeholder.jpg")
       )
     end
   end

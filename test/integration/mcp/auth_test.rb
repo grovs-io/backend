@@ -245,6 +245,17 @@ class McpAuthTest < ActionDispatch::IntegrationTest
     assert_equal true, test_proj["test"]
   end
 
+  test "status reports which tool families the instance can use" do
+    Clickhouse.stub(:read_enabled?, true) { get "#{MCP_PREFIX}/status", headers: @admin_headers }
+    assert_response :ok
+    features = json_response["instances"].find { |i| i["id"] == @instance.hashid }["features"]
+    assert_equal true, features["analytics"]
+    assert_equal Grovs.ee?, features["push_campaigns"]
+    assert_equal Grovs.ee?, features["in_app"]
+    assert_equal Grovs.ee?, features["journeys"]
+    assert_equal Grovs.ee? && Segments.available?, features["segments"]
+  end
+
   test "status includes usage block with mau data" do
     get "#{MCP_PREFIX}/status", headers: @admin_headers
     assert_response :ok

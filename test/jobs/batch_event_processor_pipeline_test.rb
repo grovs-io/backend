@@ -58,18 +58,20 @@ module PipelineTestHelpers
     end
   end
 
-  def push_event(type:, device:, link: nil, created_at:, engagement_time: nil,
+  def push_event(type:, device:, created_at:, link: nil, engagement_time: nil,
                  data: nil, event_name: nil, session_id: nil, tags: nil)
-    REDIS.with { |conn| conn.lpush(BatchEventProcessorJob::REDIS_KEY,
-                                   event_json(type: type, device: device, link: link,
-                                              created_at: created_at, engagement_time: engagement_time,
-                                              data: data, event_name: event_name,
-                                              session_id: session_id, tags: tags)) }
+    REDIS.with do |conn|
+      conn.lpush(BatchEventProcessorJob::REDIS_KEY,
+                 event_json(type: type, device: device, link: link,
+                            created_at: created_at, engagement_time: engagement_time,
+                            data: data, event_name: event_name,
+                            session_id: session_id, tags: tags))
+    end
   end
 
   # Returns a JSON string matching the format EventIngestionService.enqueue_event produces.
   # Used by push_event (Redis path) and directly by tests that call process_batch.
-  def event_json(type:, device:, link: nil, created_at:, engagement_time: nil,
+  def event_json(type:, device:, created_at:, link: nil, engagement_time: nil,
                  data: nil, event_name: nil, session_id: nil, tags: nil)
     payload = {
       type: type,
@@ -87,7 +89,6 @@ module PipelineTestHelpers
   end
 end
 
-# rubocop:disable Metrics/ClassLength
 class BatchEventProcessorPipelinePgTest < ActiveSupport::TestCase
   include PipelineTestHelpers
   fixtures :instances, :projects, :devices, :visitors, :links, :domains, :redirect_configs, :events,
@@ -476,14 +477,57 @@ class BatchEventProcessorPipelinePgTest < ActiveSupport::TestCase
     assert_equal 1, link_stat.views
   end
 
+  test "link app_opens and opens are counted independently in one batch" do
+    date = "2026-07-21T12:00:00Z"
+    push_event(type: Grovs::Events::OPEN, device: @device, link: @link, created_at: date)
+    3.times { push_event(type: Grovs::Events::APP_OPEN, device: @device, link: @link, created_at: date) }
+
+    perform_fast(@job)
+
+    link_stat = LinkDailyStatistic.find_by!(project_id: @project.id, link_id: @link.id,
+                                            event_date: Date.parse("2026-07-21"),
+                                            platform: @device.platform_for_metrics)
+    assert_equal 1, link_stat.opens
+    assert_equal 3, link_stat.app_opens
+  end
+
+  test "opening a referral link credits no referral and sets no inviter" do
+    @link.update_column(:visitor_id, @android_visitor.id)
+    date = "2026-07-22T12:00:00Z"
+    push_event(type: Grovs::Events::OPEN, device: @device, link: @link, created_at: date)
+
+    assert_difference "Event.count", 1 do
+      perform_fast(@job)
+    end
+
+    assert_not Event.exists?(project_id: @project.id, event: Grovs::Events::USER_REFERRED)
+    assert_nil @visitor.reload.inviter_id
+    referrer_stat = VisitorDailyStatistic.find_by(project_id: @project.id, visitor_id: @android_visitor.id,
+                                                  event_date: Date.parse("2026-07-22"))
+    assert_equal 0, referrer_stat&.user_referred.to_i
+  end
+
+  test "a referral install stamps the installer's last seen but not the referrer's" do
+    @link.update_column(:visitor_id, @android_visitor.id)
+    referrer_seen_at = Time.utc(2026, 7, 1, 9)
+    DeviceLastSeen.where(project_id: @project.id, device_id: [@device.id, @android_device.id]).delete_all
+    DeviceLastSeen.stamp_batch!({ [@project.id, @android_device.id] => referrer_seen_at })
+
+    date = "2026-07-23T12:00:00Z"
+    push_event(type: Grovs::Events::INSTALL, device: @device, link: @link, created_at: date)
+    perform_fast(@job)
+
+    assert Event.exists?(project_id: @project.id, device_id: @android_device.id, event: Grovs::Events::USER_REFERRED)
+    seen = DeviceLastSeen.where(project_id: @project.id).pluck(:device_id, :last_seen_at).to_h
+    assert_equal Time.parse(date), seen[@device.id]
+    assert_equal referrer_seen_at, seen[@android_device.id]
+  end
 end
-# rubocop:enable Metrics/ClassLength
 
 # =============================================================================
 # CH pipeline tests: same Redis → perform() flow, also verifies ClickHouse
 # =============================================================================
 
-# rubocop:disable Metrics/ClassLength
 class BatchEventProcessorPipelineChTest < ActiveSupport::TestCase
   include ClickhouseTestHelper
   include PipelineTestHelpers
@@ -756,4 +800,3 @@ class BatchEventProcessorPipelineChTest < ActiveSupport::TestCase
     assert_equal 2, ch_views, "Deduped ios VIEWs should not appear in CH (1 ios + 1 android = 2)"
   end
 end
-# rubocop:enable Metrics/ClassLength

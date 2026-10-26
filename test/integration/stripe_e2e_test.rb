@@ -97,6 +97,14 @@ class StripeE2eTest < ActiveSupport::TestCase
       puts "[stripe-e2e] portal step skipped: no test-mode portal configuration saved"
     end
 
+    # cancel_at_period_end / resume_cancellation round-trip
+    Stripe::Subscription.update(subscription.subscription_id, { cancel_at_period_end: true })
+    assert Stripe::Subscription.retrieve(subscription.subscription_id).cancel_at_period_end
+    StripeService.resume_cancellation(subscription)
+    resumed = Stripe::Subscription.retrieve(subscription.subscription_id)
+    assert_not resumed.cancel_at_period_end
+    assert_nil resumed.cancel_at
+
     # cancel — terminal state
     StripeService.cancel_subscription(subscription)
     assert_equal "canceled", Stripe::Subscription.retrieve(@stripe_sub.id).status
@@ -104,14 +112,72 @@ class StripeE2eTest < ActiveSupport::TestCase
   end
 
   test "checkout session creation against real Stripe" do
-    price_id = ENV.fetch("STRIPE_STANDARD_PRICE_ID")
-    user = users(:admin_user)
+    price_id = real_price!
 
-    session = StripeService.create_checkout_session_for_product(price_id, user, "scale_up", @instance)
+    session = StripeService.create_checkout_session_for_product(price_id, users(:admin_user), "growth_250k", @instance)
 
-    assert session[:url].start_with?("https://checkout.stripe.com/"), "got: #{session[:url]}"
-    intent = StripePaymentIntent.order(:id).last
+    assert_equal "elements", session.ui_mode
+    assert session.client_secret.present?, "elements session must return a client_secret"
+    assert_nil session.url
+    intent = StripePaymentIntent.find_by!(intent_id: session.id)
     assert_equal @instance.id, intent.instance_id
-    assert_equal "scale_up", intent.product_type
+    assert_equal "growth_250k", intent.product_type
+  end
+
+  def deliver_update(stripe_sub)
+    event = Stripe::Event.construct_from(id: "evt_e2e_#{SecureRandom.hex(4)}", type: "customer.subscription.updated",
+                                         data: { object: stripe_sub.to_hash })
+    StripeService.handle_webhook(event)
+  end
+
+  def real_price!(var = "STRIPE_PRICE_GROWTH_250K_MONTHLY")
+    price = ENV[var].to_s
+    skip "real #{var} required" if price.blank? || price.start_with?("price_test_")
+    price
+  end
+  private :real_price!
+
+  test "flat plan lifecycle against real Stripe" do
+    price = real_price!
+
+    @customer = Stripe::Customer.create(email: "e2e-flat-#{SecureRandom.hex(4)}@grovs-test.invalid",
+                                        payment_method: "pm_card_visa", invoice_settings: { default_payment_method: "pm_card_visa" })
+    @stripe_sub = Stripe::Subscription.create(customer: @customer.id, items: [{ price: price, quantity: 1 }])
+    StripeSubscription.where(instance: @instance).delete_all
+    intent = StripePaymentIntent.create!(user: users(:admin_user), instance: @instance, intent_id: "cs_e2e_#{SecureRandom.hex(4)}", product_type: "growth_250k")
+    sub = StripeSubscription.create!(instance: @instance, subscription_id: @stripe_sub.id, subscription_item_id: @stripe_sub.items.data[0].id,
+                                     customer_id: @customer.id, active: true, status: "active", product_type: "growth_250k", stripe_payment_intent: intent)
+    billing = -> { SubscriptionBillingService.new(instance: Instance.find(@instance.id)) } # fresh per call, like a new request
+
+    assert_nil StripeService.set_usage(@instance), "flat plans never report usage"
+    details = billing.call.subscription_details
+    assert_equal "growth_250k", details[:plan]
+    assert_equal 250_000, details[:mau_cap]
+    assert details[:amount_cents].positive?
+
+    assert StripeService.cancel_subscription(sub)
+    deliver_update(Stripe::Subscription.retrieve(@stripe_sub.id))
+    assert sub.reload.cancels_at.present?, "cancel at period end persisted"
+    assert sub.active
+    assert_nil billing.call.subscription_details[:next_payment_attempt], "no upcoming invoice once cancelling"
+
+    deliver_update(Stripe::Subscription.update(@stripe_sub.id, { cancel_at_period_end: false }))
+    assert_nil sub.reload.cancels_at, "undo persisted"
+
+    deliver_update(Stripe::Subscription.update(@stripe_sub.id, { items: [{ id: sub.subscription_item_id, price: ENV["STRIPE_PRICE_GROWTH_500K_MONTHLY"] }] }))
+    assert_equal "growth_500k", sub.reload.product_type
+    assert_equal 500_000, billing.call.subscription_details[:mau_cap]
+  end
+
+  test "a second checkout expires the first session" do
+    price = real_price!
+    StripeSubscription.where(instance: @instance).delete_all
+    billing = SubscriptionBillingService.new(instance: @instance)
+
+    assert billing.create_checkout_session(user: users(:admin_user), plan: "scale_1m", interval: "monthly")[:client_secret].present?
+    first = StripePaymentIntent.where(instance: @instance).order(:id).last
+    billing.create_checkout_session(user: users(:admin_user), plan: "growth_250k", interval: "monthly")
+
+    assert_equal "expired", Stripe::Checkout::Session.retrieve(first.intent_id, stripe_version: StripeService::CHECKOUT_API_VERSION).status
   end
 end

@@ -244,6 +244,8 @@ class LinkStatisticsQuery
     query = query.where(active: active)
     query = query.where(links: { id: link_id }) if link_id
     query = query.where(ads_platform: ads_platform) if ads_platform
+    # A specific link_id is a direct lookup (SDK/automation metrics), not a list — never hide it.
+    query = query.where(SmartBanner::HIDE_LINKS_SQL) unless link_id
 
     if term.present?
       sanitized_term = "%#{ActiveRecord::Base.sanitize_sql_like(term)}%"
@@ -401,6 +403,8 @@ class LinkStatisticsQuery
     query = query.where(active: active)
     query = query.where(links: { id: link_id }) if link_id
     query = query.where(ads_platform: ads_platform) if ads_platform
+    # A specific link_id is a direct lookup (SDK/automation metrics), not a list — never hide it.
+    query = query.where(SmartBanner::HIDE_LINKS_SQL) unless link_id
 
     if term.present?
       sanitized_term = "%#{ActiveRecord::Base.sanitize_sql_like(term)}%"

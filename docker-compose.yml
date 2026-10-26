@@ -92,6 +92,14 @@ services:
     <<: *worker
     command: bundle exec sidekiq -C config/sidekiq_device_updates.yml
 
+  worker_egress:
+    <<: *worker
+    command: bundle exec sidekiq -C config/sidekiq_egress.yml
+
+  rpush:
+    <<: *worker
+    command: bash -c "GROVS_ROLE=rpush exec bin/rpush-cluster"
+
   clickhouse:
     image: clickhouse/clickhouse-server:25.3
     environment:

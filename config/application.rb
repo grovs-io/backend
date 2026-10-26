@@ -16,8 +16,10 @@ require "sprockets/railtie"
 require "rails/test_unit/railtie"
 require 'rack'
 require 'rack/cors'
+require 'rack/deflater'
 require_relative '../app/middleware/active_storage_error_handler'
 require_relative '../app/middleware/trusted_client_ip'
+require_relative '../lib/grovs/proxy_ips'
 # Required before the environment files so cache_store can use it.
 require_relative '../lib/grovs/redis_ssl'
 
@@ -54,13 +56,15 @@ module Linksquared
 
     # Enterprise Edition: conditionally load IAP/revenue and audit-log features from ee/
     if ENV.fetch("GROVS_EE", "false") == "true"
-      %w[controllers jobs models services serializers].each do |subdir|
+      %w[controllers jobs mailers models services serializers].each do |subdir|
         path = Rails.root.join("ee", "app", subdir)
         if Dir.exist?(path)
           config.autoload_paths << path.to_s
           config.eager_load_paths << path.to_s
         end
       end
+      ee_views = Rails.root.join("ee/app/views")
+      config.paths["app/views"] << ee_views.to_s if Dir.exist?(ee_views)
       ee_tasks = Rails.root.join("ee/lib/tasks")
       config.paths["lib/tasks"] << ee_tasks.to_s if Dir.exist?(ee_tasks)
     end
@@ -82,28 +86,9 @@ module Linksquared
     config.middleware.use ActionDispatch::Cookies
     config.middleware.use ActionDispatch::Session::CookieStore, key: '_linksquared', secure: !Rails.env.local?, same_site: :lax
 
-    # Make sure CloudFlare IP addresses are
-    # removed from the X-Forwarded-For header
-    # before our app sees them
+    # Cloudflare plus any CUSTOMER_GATEWAY_IPS are stripped from X-Forwarded-For before request.ip is read.
     config.middleware.insert_before(Rails::Rack::Logger,
-      RemoteIpProxyScrubber.filter_middleware, 
-      %w[
-        173.245.48.0/20
-        103.21.244.0/22
-        103.22.200.0/22
-        103.31.4.0/22
-        141.101.64.0/18
-        108.162.192.0/18
-        190.93.240.0/20
-        188.114.96.0/20
-        197.234.240.0/22
-        198.41.128.0/17
-        162.158.0.0/15
-        104.16.0.0/13
-        104.24.0.0/14
-        172.64.0.0/13
-        131.0.72.0/22
-    ])
+      RemoteIpProxyScrubber.filter_middleware, Grovs::ProxyIps.scrubbed)
 
     # Make sure the customer's real IP address (remote_ip)
     # is used in our Rails logs.
@@ -123,6 +108,9 @@ module Linksquared
     config.app_store_server = config_for :app_store_server
 
     config.middleware.use ActiveStorageErrorHandler
+
+    # In-app sync HTML shrinks ~5x; scoped to this path since Cloudflare already compresses in production.
+    config.middleware.use Rack::Deflater, if: ->(env, *) { env["PATH_INFO"] == "/api/v1/sdk/in_app/sync" }
 
     # This is not necessarly good, but we want to have the source of the IP address for the user
     config.action_dispatch.trusted_proxies = [IPAddr.new("0.0.0.0/0")]

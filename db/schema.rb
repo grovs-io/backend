@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_22_090000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -214,6 +214,33 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.index ["project_id", "event_date", "platform"], name: "idx_dpm_on_project_date_platform", unique: true
   end
 
+  create_table "dashboard_widgets", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.bigint "dashboard_id", null: false
+    t.jsonb "filters", default: [], null: false
+    t.string "kind", default: "metric", null: false
+    t.string "panel"
+    t.integer "position", default: 0, null: false
+    t.jsonb "query", default: {}, null: false
+    t.string "size", default: "md", null: false
+    t.string "subtitle"
+    t.string "title", null: false
+    t.datetime "updated_at", null: false
+    t.string "viz", default: "bar", null: false
+    t.index ["dashboard_id", "position"], name: "index_dashboard_widgets_on_dashboard_id_and_position"
+  end
+
+  create_table "dashboards", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.bigint "created_by_id"
+    t.string "name", null: false
+    t.integer "position", default: 0, null: false
+    t.bigint "project_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["created_by_id"], name: "index_dashboards_on_created_by_id"
+    t.index ["project_id", "position"], name: "index_dashboards_on_project_id_and_position"
+  end
+
   create_table "desktop_configurations", force: :cascade do |t|
     t.bigint "application_id"
     t.datetime "created_at", null: false
@@ -234,6 +261,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.bigint "project_id", null: false
     t.datetime "updated_at", null: false
     t.index ["project_id", "device_id"], name: "uniq_dls_on_project_and_device", unique: true
+    t.index ["project_id", "last_seen_at"], name: "index_device_last_seens_on_project_id_and_last_seen_at"
   end
 
   create_table "device_product_purchases", force: :cascade do |t|
@@ -315,6 +343,52 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.index ["instance_id"], name: "index_enterprise_subscriptions_on_instance_id"
   end
 
+  create_table "event_destinations", force: :cascade do |t|
+    t.datetime "backoff_until"
+    t.integer "batch_size", default: 100, null: false
+    t.integer "concurrency", default: 4, null: false
+    t.integer "consecutive_failures", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.bigint "created_by_user_id"
+    t.text "credentials"
+    t.bigint "delivered_count", default: 0, null: false
+    t.string "event_types", default: [], null: false, array: true
+    t.datetime "events_cursor_at", precision: 3
+    t.string "events_cursor_id", default: "", null: false
+    t.datetime "failing_since"
+    t.boolean "include_ip", default: false, null: false
+    t.string "kind", null: false
+    t.datetime "last_attempt_at"
+    t.datetime "last_delivered_at"
+    t.text "last_error"
+    t.integer "lock_version", default: 0, null: false
+    t.string "name", null: false
+    t.datetime "next_delivery_at"
+    t.text "paused_reason"
+    t.bigint "project_id", null: false
+    t.datetime "purchases_cursor_at", precision: 3
+    t.string "purchases_cursor_id", default: "", null: false
+    t.jsonb "settings", default: {}, null: false
+    t.text "signing_secret"
+    t.string "status", default: "enabled", null: false
+    t.datetime "updated_at", null: false
+    t.index ["project_id"], name: "index_event_destinations_on_project_id"
+    t.index ["status", "backoff_until"], name: "index_event_destinations_on_status_and_backoff_until"
+  end
+
+  create_table "event_stream_tokens", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.bigint "created_by_user_id"
+    t.datetime "last_used_at"
+    t.string "name", null: false
+    t.bigint "project_id", null: false
+    t.datetime "revoked_at"
+    t.string "token_digest", null: false
+    t.datetime "updated_at", null: false
+    t.index ["project_id"], name: "index_event_stream_tokens_on_project_id"
+    t.index ["token_digest"], name: "index_event_stream_tokens_on_token_digest", unique: true
+  end
+
   create_table "events", force: :cascade do |t|
     t.string "app_version"
     t.string "build"
@@ -374,6 +448,45 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.index ["project_id"], name: "index_iap_webhook_messages_on_project_id"
   end
 
+  create_table "in_app_campaigns", force: :cascade do |t|
+    t.string "audience_type", default: "all", null: false
+    t.jsonb "caps", default: {}, null: false
+    t.jsonb "conditions", default: [], null: false
+    t.jsonb "content", default: {}, null: false
+    t.integer "control_group"
+    t.jsonb "conversion"
+    t.datetime "created_at", null: false
+    t.bigint "created_by_id"
+    t.integer "delay_seconds", default: 0, null: false
+    t.datetime "end_at"
+    t.datetime "ended_at"
+    t.string "failure_reason"
+    t.datetime "launched_at"
+    t.integer "lock_version", default: 0, null: false
+    t.string "name", null: false
+    t.integer "priority", default: 1, null: false
+    t.bigint "project_id", null: false
+    t.integer "revision", default: 1, null: false
+    t.jsonb "schedule", default: {}, null: false
+    t.jsonb "segment_definition"
+    t.string "segment_definition_hash"
+    t.bigint "segment_id"
+    t.string "segment_key"
+    t.string "segment_list_generation"
+    t.datetime "start_at"
+    t.string "status", default: "draft", null: false
+    t.string "template", default: "interstitial", null: false
+    t.jsonb "triggers", default: [], null: false
+    t.datetime "updated_at", null: false
+    t.jsonb "variants"
+    t.index ["created_by_id"], name: "index_in_app_campaigns_on_created_by_id"
+    t.index ["end_at"], name: "index_in_app_campaigns_on_end_at", where: "(((status)::text = ANY ((ARRAY['scheduled'::character varying, 'live'::character varying, 'paused'::character varying])::text[])) AND (end_at IS NOT NULL))"
+    t.index ["project_id", "status"], name: "index_in_app_campaigns_on_project_id_and_status"
+    t.index ["segment_id"], name: "index_in_app_campaigns_on_segment_id"
+    t.index ["segment_key"], name: "index_in_app_campaigns_on_segment_key", where: "(segment_key IS NOT NULL)"
+    t.index ["start_at"], name: "index_in_app_campaigns_on_start_at", where: "((status)::text = 'scheduled'::text)"
+  end
+
   create_table "in_app_product_daily_statistics", force: :cascade do |t|
     t.integer "canceled_events", default: 0, null: false
     t.datetime "created_at", null: false
@@ -401,6 +514,30 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.datetime "updated_at", null: false
     t.index ["project_id", "platform", "product_id"], name: "idx_in_app_products_on_project_platform_product", unique: true
     t.index ["project_id", "product_id"], name: "index_in_app_products_on_project_id_and_product_id"
+  end
+
+  create_table "in_app_settings", force: :cascade do |t|
+    t.integer "control_group", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.integer "day_cap", default: 10, null: false
+    t.boolean "enabled", default: true, null: false
+    t.bigint "project_id", null: false
+    t.integer "push_daily_cap"
+    t.integer "session_cap", default: 10, null: false
+    t.jsonb "test_visitor_ids", default: [], null: false
+    t.datetime "updated_at", null: false
+    t.index ["project_id"], name: "index_in_app_settings_on_project_id", unique: true
+  end
+
+  create_table "in_app_views", primary_key: ["in_app_campaign_id", "person_key"], force: :cascade do |t|
+    t.datetime "answered_at"
+    t.bigint "in_app_campaign_id", null: false
+    t.string "person_key", null: false
+    t.bigint "project_id", null: false
+    t.jsonb "recent", default: [], null: false
+    t.integer "total", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.index ["project_id", "person_key"], name: "index_in_app_views_on_project_id_and_person_key"
   end
 
   create_table "installed_apps", force: :cascade do |t|
@@ -470,6 +607,63 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.text "private_key", null: false
     t.datetime "updated_at", null: false
     t.index ["ios_configuration_id"], name: "index_ios_server_api_keys_on_ios_configuration_id"
+  end
+
+  create_table "journey_counts", force: :cascade do |t|
+    t.string "branch", null: false
+    t.date "day", null: false
+    t.bigint "journey_id", null: false
+    t.bigint "people", default: 0, null: false
+    t.string "step_id", null: false
+    t.index ["journey_id", "step_id", "branch", "day"], name: "index_journey_counts_unique", unique: true
+  end
+
+  create_table "journey_people", force: :cascade do |t|
+    t.datetime "claimed_at"
+    t.datetime "due_at"
+    t.datetime "entered_at", null: false
+    t.boolean "goal_hit", default: false, null: false
+    t.bigint "journey_id", null: false
+    t.datetime "left_at"
+    t.string "left_reason"
+    t.string "person_key", null: false
+    t.string "state", default: "active", null: false
+    t.string "step_id"
+    t.string "until_event"
+    t.boolean "until_hit", default: false, null: false
+    t.bigint "visitor_id", null: false
+    t.index ["journey_id", "claimed_at"], name: "index_journey_people_claimed", where: "((state)::text = 'claimed'::text)"
+    t.index ["journey_id", "due_at"], name: "index_journey_people_due", where: "((state)::text = 'active'::text)"
+    t.index ["journey_id", "left_at"], name: "index_journey_people_left", where: "((state)::text = 'left'::text)"
+    t.index ["journey_id", "person_key"], name: "index_journey_people_on_journey_id_and_person_key", unique: true
+    t.index ["journey_id", "until_event"], name: "index_journey_people_until", where: "(((state)::text = 'active'::text) AND (until_event IS NOT NULL))"
+  end
+
+  create_table "journeys", force: :cascade do |t|
+    t.integer "control_group"
+    t.datetime "created_at", null: false
+    t.bigint "created_by_id"
+    t.datetime "end_at"
+    t.datetime "ended_at"
+    t.jsonb "entry", default: {}, null: false
+    t.datetime "entry_opened_at"
+    t.datetime "finished_at"
+    t.string "first_step"
+    t.jsonb "goals", default: [], null: false
+    t.datetime "launched_at"
+    t.integer "lock_version", default: 0, null: false
+    t.string "name", null: false
+    t.bigint "project_id", null: false
+    t.jsonb "re_entry", default: {"days" => nil, "mode" => "once"}, null: false
+    t.integer "revision", default: 1, null: false
+    t.jsonb "segment_keys", default: {}, null: false
+    t.datetime "start_at"
+    t.string "status", default: "draft", null: false
+    t.jsonb "steps", default: {}, null: false
+    t.datetime "updated_at", null: false
+    t.index ["created_by_id"], name: "index_journeys_on_created_by_id"
+    t.index ["project_id"], name: "index_journeys_on_project_id"
+    t.index ["status"], name: "index_journeys_running", where: "((status)::text = ANY (ARRAY[('live'::character varying)::text, ('paused'::character varying)::text, ('ended'::character varying)::text]))"
   end
 
   create_table "link_daily_statistics", id: false, force: :cascade do |t|
@@ -616,7 +810,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.check_constraint "provider::text = ANY (ARRAY['branch'::character varying, 'appsflyer'::character varying]::text[])", name: "migration_sources_provider_check"
   end
 
-  create_table "notification_messages", force: :cascade do |t|
+  create_table "notification_messages", comment: "LEGACY, unused since 2026-09-29: the messages inbox was replaced by in-app messages. No code reads or writes this table. Drop it in the release after the one that removed the code.", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.bigint "notification_id", null: false
     t.boolean "read", default: false
@@ -628,7 +822,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.index ["visitor_id"], name: "index_notification_messages_on_visitor_id"
   end
 
-  create_table "notification_targets", force: :cascade do |t|
+  create_table "notification_targets", comment: "LEGACY, unused since 2026-09-29: the messages inbox was replaced by in-app messages. No code reads or writes this table. Drop it in the release after the one that removed the code.", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.boolean "existing_users", default: false
     t.boolean "new_users", default: false
@@ -638,7 +832,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.index ["notification_id"], name: "index_notification_targets_on_notification_id"
   end
 
-  create_table "notifications", force: :cascade do |t|
+  create_table "notifications", comment: "LEGACY, unused since 2026-09-29: the messages inbox was replaced by in-app messages. No code reads or writes this table. Drop it in the release after the one that removed the code.", force: :cascade do |t|
     t.boolean "archived", default: false
     t.boolean "auto_display", default: false
     t.datetime "created_at", null: false
@@ -697,6 +891,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.string "name", null: false
     t.boolean "test", default: false
     t.datetime "updated_at", null: false
+    t.datetime "web_sdk_last_seen_at"
     t.index ["identifier"], name: "index_projects_on_identifier", unique: true
     t.index ["instance_id"], name: "index_projects_on_instance_id"
   end
@@ -747,6 +942,97 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.index ["transaction_id"], name: "index_purchase_events_on_transaction_id"
   end
 
+  create_table "push_campaign_counters", primary_key: ["push_campaign_id", "shard"], force: :cascade do |t|
+    t.bigint "delivered", default: 0, null: false
+    t.jsonb "error_counts", default: {}, null: false
+    t.bigint "failed", default: 0, null: false
+    t.bigint "push_campaign_id", null: false
+    t.bigint "queued", default: 0, null: false
+    t.integer "shard", limit: 2, null: false
+  end
+
+  create_table "push_campaigns", force: :cascade do |t|
+    t.integer "audience_devices"
+    t.boolean "audience_incomplete", default: false, null: false
+    t.integer "audience_persons"
+    t.string "audience_type", null: false
+    t.string "body", null: false
+    t.integer "busy_attempts", default: 0, null: false
+    t.integer "cancelled", default: 0, null: false
+    t.integer "control_group"
+    t.jsonb "conversion"
+    t.datetime "created_at", null: false
+    t.bigint "created_by_id"
+    t.jsonb "data", default: {}, null: false
+    t.integer "delivered", default: 0, null: false
+    t.jsonb "error_counts", default: {}, null: false
+    t.datetime "evaluated_at"
+    t.integer "failed", default: 0, null: false
+    t.string "failure_reason"
+    t.datetime "finished_at"
+    t.integer "held", default: 0, null: false
+    t.string "image_url"
+    t.bigint "link_id"
+    t.boolean "local_time", default: false, null: false
+    t.integer "lock_version", default: 0, null: false
+    t.string "name", null: false
+    t.integer "no_channel", default: 0, null: false
+    t.integer "not_found", default: 0, null: false
+    t.integer "opened", default: 0, null: false
+    t.bigint "project_id", null: false
+    t.integer "queued", default: 0, null: false
+    t.jsonb "recipients", default: [], null: false
+    t.datetime "scheduled_at"
+    t.jsonb "segment_definition"
+    t.string "segment_definition_hash"
+    t.bigint "segment_id"
+    t.string "segment_list_generation"
+    t.string "sound"
+    t.string "source", default: "dashboard", null: false
+    t.datetime "started_at"
+    t.string "status", default: "draft", null: false
+    t.integer "targeted", default: 0, null: false
+    t.integer "test_share"
+    t.string "timezone"
+    t.string "title", null: false
+    t.datetime "updated_at", null: false
+    t.jsonb "variants"
+    t.integer "waiting", default: 0, null: false
+    t.string "winner", limit: 1
+    t.integer "winner_after_minutes"
+    t.string "winner_by", limit: 16
+    t.datetime "winner_due_at"
+    t.index ["created_by_id"], name: "index_push_campaigns_on_created_by_id"
+    t.index ["id"], name: "index_push_campaigns_sending", where: "((status)::text = 'sending'::text)"
+    t.index ["link_id"], name: "index_push_campaigns_on_link_id"
+    t.index ["project_id", "created_at"], name: "index_push_campaigns_on_project_id_and_created_at", order: { created_at: :desc }
+    t.index ["scheduled_at"], name: "index_push_campaigns_on_scheduled_at", where: "((status)::text = 'scheduled'::text)"
+    t.index ["segment_id"], name: "index_push_campaigns_on_segment_id"
+    t.index ["winner_due_at"], name: "index_push_campaigns_on_winner_due_at", where: "((winner_due_at IS NOT NULL) AND ((status)::text = 'sent'::text))"
+  end
+
+  create_table "push_deliveries", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.bigint "device_id"
+    t.datetime "due_at"
+    t.string "error"
+    t.bigint "journey_person_id"
+    t.datetime "opened_at"
+    t.string "platform"
+    t.bigint "push_campaign_id", null: false
+    t.string "recipient"
+    t.bigint "rpush_notification_id"
+    t.string "status", default: "pending", null: false
+    t.datetime "updated_at", null: false
+    t.string "variant", limit: 1
+    t.bigint "visitor_id"
+    t.index ["created_at"], name: "index_push_deliveries_journey_age", where: "(journey_person_id IS NOT NULL)"
+    t.index ["push_campaign_id", "status", "due_at", "id"], name: "index_push_deliveries_claim"
+    t.index ["push_campaign_id", "visitor_id"], name: "index_push_deliveries_on_campaign_and_visitor", unique: true, where: "((visitor_id IS NOT NULL) AND (journey_person_id IS NULL))"
+    t.index ["rpush_notification_id"], name: "index_push_deliveries_on_rpush_notification_id", where: "(rpush_notification_id IS NOT NULL)"
+    t.index ["updated_at"], name: "index_push_deliveries_queued_age", where: "((status)::text = 'queued'::text)"
+  end
+
   create_table "quick_links", force: :cascade do |t|
     t.string "android_phone"
     t.string "android_tablet"
@@ -771,6 +1057,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.boolean "copy_to_clipboard_ios", default: false, null: false
     t.datetime "created_at", null: false
     t.string "default_fallback"
+    t.boolean "in_app_browser_page_android", default: true, null: false
+    t.boolean "in_app_browser_page_ios", default: true, null: false
     t.bigint "project_id"
     t.boolean "show_preview_android"
     t.boolean "show_preview_ios"
@@ -860,6 +1148,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.datetime "updated_at", null: false
     t.string "uri"
     t.text "url_args"
+    t.index ["app_id"], name: "index_rpush_notifications_on_app_id"
+    t.index ["created_at"], name: "index_rpush_notifications_settled_created_at", where: "(delivered OR failed)"
     t.index ["delivered", "failed", "processing", "deliver_after", "created_at"], name: "index_rpush_notifications_multi", where: "((NOT delivered) AND (NOT failed))"
   end
 
@@ -873,6 +1163,60 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.index ["project_id"], name: "index_screen_aliases_on_project_id"
   end
 
+  create_table "segment_exports", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.jsonb "definition", default: {}, null: false
+    t.string "definition_hash", null: false
+    t.string "error"
+    t.string "identifier_list_generation"
+    t.bigint "project_id", null: false
+    t.integer "rows"
+    t.bigint "segment_id", null: false
+    t.string "status", default: "pending", null: false
+    t.datetime "updated_at", null: false
+    t.bigint "user_id"
+    t.index ["project_id", "created_at"], name: "index_segment_exports_on_project_id_and_created_at"
+    t.index ["segment_id"], name: "index_segment_exports_on_segment_id"
+    t.index ["user_id"], name: "index_segment_exports_on_user_id"
+  end
+
+  create_table "segment_memberships", primary_key: ["visitor_id", "segment_key"], force: :cascade do |t|
+    t.datetime "confirmed_at", null: false
+    t.bigint "project_id", null: false
+    t.string "segment_key", null: false
+    t.bigint "visitor_id", null: false
+    t.index ["project_id", "segment_key", "visitor_id"], name: "index_segment_memberships_on_project_key_visitor"
+  end
+
+  create_table "segment_size_snapshots", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.date "date", null: false
+    t.string "definition_hash", null: false
+    t.bigint "devices", default: 0, null: false
+    t.boolean "incomplete", default: false, null: false
+    t.bigint "persons", default: 0, null: false
+    t.bigint "segment_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["segment_id", "date"], name: "index_segment_size_snapshots_on_segment_id_and_date", unique: true
+  end
+
+  create_table "segments", force: :cascade do |t|
+    t.boolean "archived", default: false, null: false
+    t.datetime "created_at", null: false
+    t.bigint "created_by_id"
+    t.jsonb "definition", default: {}, null: false
+    t.string "definition_hash", null: false
+    t.text "description"
+    t.integer "identifier_list_count"
+    t.string "identifier_list_generation"
+    t.datetime "identifier_list_updated_at"
+    t.string "name", null: false
+    t.bigint "project_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["created_by_id"], name: "index_segments_on_created_by_id"
+    t.index ["project_id", "archived"], name: "index_segments_on_project_id_and_archived"
+  end
+
   create_table "setup_progress_steps", force: :cascade do |t|
     t.string "category", null: false
     t.datetime "completed_at"
@@ -882,6 +1226,43 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.datetime "updated_at", null: false
     t.index ["instance_id", "category", "step_identifier"], name: "idx_setup_progress_unique", unique: true
     t.index ["instance_id", "category"], name: "idx_setup_progress_instance_category"
+  end
+
+  create_table "smart_banner_links", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "data_hash", null: false
+    t.bigint "link_id", null: false
+    t.bigint "smart_banner_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["link_id"], name: "index_smart_banner_links_on_link_id"
+    t.index ["smart_banner_id", "data_hash"], name: "index_smart_banner_links_on_smart_banner_id_and_data_hash", unique: true
+  end
+
+  create_table "smart_banners", force: :cascade do |t|
+    t.string "background_color", default: "#FFFFFF", null: false
+    t.string "button_color", default: "#4F46E5", null: false
+    t.string "button_text", default: "Open", null: false
+    t.string "button_text_color", default: "#FFFFFF", null: false
+    t.datetime "created_at", null: false
+    t.bigint "default_link_id"
+    t.integer "dismiss_days", default: 7, null: false
+    t.integer "links_count", default: 0, null: false
+    t.string "name", null: false
+    t.integer "open_hide_days", default: 30, null: false
+    t.string "platforms", default: ["ios", "android"], null: false, array: true
+    t.string "position", default: "top", null: false
+    t.integer "priority", default: 0, null: false
+    t.bigint "project_id", null: false
+    t.string "status", default: "draft", null: false
+    t.string "subtitle"
+    t.string "text_color", default: "#111827", null: false
+    t.string "title", null: false
+    t.datetime "updated_at", null: false
+    t.string "url_exclude", default: [], null: false, array: true
+    t.string "url_include", default: [], null: false, array: true
+    t.index ["default_link_id"], name: "index_smart_banners_on_default_link_id"
+    t.index ["project_id", "priority"], name: "index_smart_banners_on_project_id_and_priority"
+    t.index ["project_id", "status"], name: "index_smart_banners_on_project_id_and_status"
   end
 
   create_table "sso_connection_domains", force: :cascade do |t|
@@ -1062,6 +1443,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
     t.index ["device_id"], name: "index_visitors_on_device_id"
     t.index ["inviter_id"], name: "index_visitors_on_inviter_id"
     t.index ["project_id", "created_at"], name: "idx_visitors_project_created_desc", order: { created_at: :desc }
+    t.index ["project_id", "sdk_identifier"], name: "index_visitors_on_project_id_and_sdk_identifier", where: "(sdk_identifier IS NOT NULL)"
     t.index ["project_id"], name: "index_visitors_on_project_id"
     t.index ["uuid"], name: "index_visitors_on_uuid", unique: true
     t.index ["web_visitor"], name: "index_visitors_on_web_visitor"
@@ -1092,8 +1474,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
   add_foreign_key "custom_hostnames", "domains"
   add_foreign_key "custom_hostnames", "projects"
   add_foreign_key "custom_redirects", "links"
+  add_foreign_key "dashboard_widgets", "dashboards", on_delete: :cascade
+  add_foreign_key "dashboards", "projects"
+  add_foreign_key "dashboards", "users", column: "created_by_id", on_delete: :nullify
   add_foreign_key "domains", "projects"
   add_foreign_key "iap_webhook_messages", "projects"
+  add_foreign_key "in_app_campaigns", "projects"
+  add_foreign_key "in_app_campaigns", "segments", on_delete: :nullify
+  add_foreign_key "in_app_campaigns", "users", column: "created_by_id", on_delete: :nullify
+  add_foreign_key "in_app_settings", "projects"
+  add_foreign_key "in_app_views", "in_app_campaigns", on_delete: :cascade
   add_foreign_key "installed_apps", "devices"
   add_foreign_key "installed_apps", "projects"
   add_foreign_key "instance_roles", "instances"
@@ -1101,6 +1491,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
   add_foreign_key "ios_configurations", "applications"
   add_foreign_key "ios_push_configurations", "ios_configurations"
   add_foreign_key "ios_server_api_keys", "ios_configurations"
+  add_foreign_key "journey_counts", "journeys", on_delete: :cascade
+  add_foreign_key "journey_people", "journeys", on_delete: :cascade
+  add_foreign_key "journeys", "projects"
+  add_foreign_key "journeys", "users", column: "created_by_id"
   add_foreign_key "links", "campaigns"
   add_foreign_key "links", "domains"
   add_foreign_key "links", "visitors"
@@ -1109,19 +1503,31 @@ ActiveRecord::Schema[8.1].define(version: 2026_09_05_120000) do
   add_foreign_key "migrated_links", "links", on_delete: :nullify
   add_foreign_key "migrated_links", "migration_sources", on_delete: :cascade
   add_foreign_key "migration_sources", "projects", on_delete: :cascade
-  add_foreign_key "notification_messages", "notifications"
-  add_foreign_key "notification_messages", "visitors"
-  add_foreign_key "notification_targets", "notifications"
-  add_foreign_key "notifications", "projects"
   add_foreign_key "oauth_access_tokens", "oauth_applications", column: "application_id"
   add_foreign_key "projects", "instances"
   add_foreign_key "purchase_events", "devices"
   add_foreign_key "purchase_events", "projects"
+  add_foreign_key "push_campaign_counters", "push_campaigns", on_delete: :cascade
+  add_foreign_key "push_campaigns", "links", on_delete: :nullify
+  add_foreign_key "push_campaigns", "projects"
+  add_foreign_key "push_campaigns", "segments", on_delete: :nullify
+  add_foreign_key "push_campaigns", "users", column: "created_by_id", on_delete: :nullify
+  add_foreign_key "push_deliveries", "push_campaigns", on_delete: :cascade
   add_foreign_key "redirect_configs", "projects"
   add_foreign_key "redirects", "applications"
   add_foreign_key "redirects", "redirect_configs"
   add_foreign_key "screen_aliases", "projects"
+  add_foreign_key "segment_exports", "projects"
+  add_foreign_key "segment_exports", "segments"
+  add_foreign_key "segment_exports", "users", on_delete: :nullify
+  add_foreign_key "segment_size_snapshots", "segments", on_delete: :cascade
+  add_foreign_key "segments", "projects"
+  add_foreign_key "segments", "users", column: "created_by_id", on_delete: :nullify
   add_foreign_key "setup_progress_steps", "instances"
+  add_foreign_key "smart_banner_links", "links"
+  add_foreign_key "smart_banner_links", "smart_banners"
+  add_foreign_key "smart_banners", "links", column: "default_link_id"
+  add_foreign_key "smart_banners", "projects"
   add_foreign_key "sso_connection_domains", "sso_connections", on_delete: :cascade
   add_foreign_key "sso_connections", "instances"
   add_foreign_key "stripe_subscriptions", "instances"

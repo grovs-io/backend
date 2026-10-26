@@ -1,0 +1,28 @@
+{
+  "ignored_warnings": [
+    {
+      "warning_type": "SQL Injection",
+      "warning_code": 0,
+      "fingerprint": "4100008b4b23dd153623005f16a8f8bce158d06982af40207e2b8fa210c45b97",
+      "check_name": "SQL",
+      "message": "Possible SQL injection",
+      "file": "ee/app/services/journeys/entry.rb",
+      "line": 65,
+      "link": "https://brakemanscanner.org/docs/warning_types/sql_injection/",
+      "code": "JourneyPerson.connection.exec_query(\"INSERT INTO journey_people (#{COLUMNS}) VALUES #{people.sort_by do\n person[1]\n end.map do\n scope = held_scope(visitor_id)\n@held[key] = held_scope(visitor_id) if held_scope(visitor_id)\nstate, due, left, reason = if held_scope(visitor_id) then\n  [\"left\", nil, now, \"held\"]\nelse\n  [\"active\", now, nil, nil]\nend\n\"(#{[journey.id, key, visitor_id, nil, due, nil, false, false, state, (at or now), left, reason, nil].map do\n JourneyPerson.connection.quote(v)\n end.join(\", \")})\"\n end.join(\", \")} #{on_conflict(JourneyPerson.connection, now)} RETURNING id, person_key, visitor_id, state\")",
+      "render_path": null,
+      "location": {
+        "type": "method",
+        "class": "Journeys::Entry",
+        "method": "upsert"
+      },
+      "user_input": "JourneyPerson.connection.quote(v)",
+      "confidence": "High",
+      "cwe_id": [
+        89
+      ],
+      "note": "Every value is passed through connection.quote; COLUMNS, RESET and LEFT_NOT_HELD are constants and re_entry days is cast with to_i. The batch insert with ON CONFLICT ... RETURNING is built as SQL on purpose."
+    }
+  ],
+  "brakeman_version": "8.0.6"
+}

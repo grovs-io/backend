@@ -82,7 +82,7 @@ class Api::V1::MigrationsController < Api::V1::ProjectsBaseController
       # Release via the provisioning service so Cloudflare is freed too, else the slot wedges.
       destroyed = CustomDomainProvisioningService.destroy(custom_hostname)
       if destroyed == false
-        # 502 (not 422): partial-cleanup failure, swept later by reap_orphaned_suspended.
+        # 424 (not 422, not 502 which Cloudflare masks): cleanup failed, reap_orphaned_suspended sweeps it.
         Rails.logger.warn(message: "migrations_create_cleanup_failed",
                           project_id: @project.id,
                           custom_hostname_id: custom_hostname.id,
@@ -90,7 +90,7 @@ class Api::V1::MigrationsController < Api::V1::ProjectsBaseController
         return render(json: {
           error: "Cloudflare cleanup failed after a partial setup; the migration slot " \
                  "will be released automatically within a few minutes. If this persists, contact support."
-        }, status: :bad_gateway)
+        }, status: :failed_dependency)
       end
 
       render json: { error: e.record.errors.full_messages.join(", ") }, status: :unprocessable_entity
@@ -189,12 +189,6 @@ class Api::V1::MigrationsController < Api::V1::ProjectsBaseController
     return if Grovs.migrations_enabled?
     render json: { error: "Migrations are not enabled in this deployment" },
            status: :service_unavailable
-  end
-
-  def require_admin_for_project
-    role = InstanceRole.find_by(instance_id: @project.instance_id, user_id: current_user.id)
-    return if role && role.role == Grovs::Roles::ADMIN
-    render json: { error: "Forbidden" }, status: :forbidden
   end
 
   CREDENTIALS_ALLOWED_KEYS = {

@@ -303,14 +303,7 @@ class Analytics::EventsFilterCoverageTest < ActiveSupport::TestCase
     assert_includes ids, 'evt_filter_B'
   end
 
-  # --- Native JSON subcolumn parity (Task 8) ---
-  # Proves CAST(properties.`k` AS String) is a faithful drop-in for the old
-  # JSONExtractString(properties,'k') across every key class, against REAL CH.
-  # For each key we assert: (1) SQL-level parity -- a raw query using the CAST
-  # subcolumn returns the SAME event_ids as one using JSONExtractString over the
-  # identical scope; and (2) end-to-end the service's filter path returns that
-  # same set. This is the picker-vs-filter legitimacy test.
-
+  # Serializing native JSON keeps the independent extraction oracle compatible with ClickHouse 25.3.
   PARITY_KEYS = {
     'plan'    => 'pro',   # plain identifier
     'a.b'     => 'x',     # nested object -> flattened leaf path a.b
@@ -324,7 +317,8 @@ class Analytics::EventsFilterCoverageTest < ActiveSupport::TestCase
 
     PARITY_KEYS.each do |key, val|
       cast = "CAST(properties.`#{key}` AS String)"
-      ext  = "JSONExtractString(properties, '#{key}')"
+      path = key.split(".").map { |part| "'#{part}'" }.join(", ")
+      ext = "JSONExtractString(toJSONString(properties), #{path})"
 
       # (1) is: equality. CAST set == JSONExtractString set == service set.
       via_cast = ids_raw(cast, '=', val)
@@ -344,9 +338,6 @@ class Analytics::EventsFilterCoverageTest < ActiveSupport::TestCase
     end
   end
 
-  # Parity for NON-string property values (numbers, booleans). Proves the CAST
-  # subcolumn drop-in matches JSONExtractString for count=5 / flag=true, not just
-  # strings -- against REAL ClickHouse.
   test 'CAST subcolumn matches JSONExtractString for numeric and boolean values' do
     insert_ch_events([
       { event_id: 'nonstr', project_id: @project.id, event_type: 'VIEW',
@@ -360,7 +351,7 @@ class Analytics::EventsFilterCoverageTest < ActiveSupport::TestCase
                        "WHERE project_id = #{@project.id} AND event_id = 'nonstr'")
       end
       ext_val = Clickhouse.with do |c|
-        c.select_value("SELECT JSONExtractString(properties, '#{key}') FROM events " \
+        c.select_value("SELECT JSONExtractString(toJSONString(properties), '#{key}') FROM events " \
                        "WHERE project_id = #{@project.id} AND event_id = 'nonstr'")
       end
       assert_equal ext_val, cast_val, "non-string parity broke for #{key}"
@@ -370,10 +361,8 @@ class Analytics::EventsFilterCoverageTest < ActiveSupport::TestCase
   test 'missing key yields empty string identically through both paths' do
     insert_parity_events
 
-    # No event has a 'plan' value except parity_match -> every other in-scope row
-    # reads ''. field='' (is '') and field!='nonsense' must agree across paths.
     cast = 'CAST(properties.`plan` AS String)'
-    ext  = "JSONExtractString(properties, 'plan')"
+    ext  = "JSONExtractString(toJSONString(properties), 'plan')"
 
     empties_cast = ids_raw(cast, '=', '')
     empties_ext  = ids_raw(ext, '=', '')
@@ -385,8 +374,6 @@ class Analytics::EventsFilterCoverageTest < ActiveSupport::TestCase
     # The known missing-key rows are present (proves it is not vacuously empty).
     assert_includes empties_svc, 'parity_other'
 
-    # field != 'nonsense' returns the SAME rows as field = '' here (all rows read
-    # '' except parity_match, which is also != 'nonsense'): both include everyone.
     not_nonsense = event_ids(query_with_filter('plan', 'is_not', 'nonsense'))
     assert_includes not_nonsense, 'parity_match'
     assert_includes not_nonsense, 'parity_other'
@@ -410,13 +397,6 @@ class Analytics::EventsFilterCoverageTest < ActiveSupport::TestCase
     assert_equal ['u42'], uid_vals
   end
 
-  # IN / is-array parity: CAST(properties.`plan`) IN (...) must select the same
-  # rows as JSONExtractString(properties,'plan') IN (...), against REAL CH, both
-  # for the positive (IN) and negative (NOT IN) membership tests. The reference
-  # set is computed with a DIFFERENT SQL function (JSONExtractString) than the
-  # service path (CAST subcolumn), so equality here proves drop-in parity rather
-  # than a tautology -- if CAST emitted a different string representation for any
-  # value the two sets would diverge and these asserts would fail.
   test 'CAST subcolumn IN matches JSONExtractString IN row-for-row (array is/is_not)' do
     insert_plan_events(
       'plan_pro'        => { 'plan' => 'pro' },
@@ -429,36 +409,26 @@ class Analytics::EventsFilterCoverageTest < ActiveSupport::TestCase
 
     # --- IN ('pro','enterprise') ---
     in_cast = ids_pred("CAST(properties.`plan` AS String) IN #{set}")
-    in_ext  = ids_pred("JSONExtractString(properties, 'plan') IN #{set}")
+    in_ext  = ids_pred("JSONExtractString(toJSONString(properties), 'plan') IN #{set}")
     in_svc  = event_ids(query_with_filter('plan', 'is', %w[pro enterprise]))
 
     assert_equal in_ext, in_cast, 'IN parity broke (CAST vs JSONExtractString)'
     assert_equal in_ext, in_svc, "service 'is' array diverged from JSONExtractString IN"
-    # Concrete: exactly the two membership rows, nothing else (proves it is a real
-    # filter, not a pass-through that returns every scoped row).
     assert_equal %w[plan_enterprise plan_pro], in_svc
 
     # --- NOT IN ('pro','enterprise') ---
     not_cast = ids_pred("CAST(properties.`plan` AS String) NOT IN #{set}")
-    not_ext  = ids_pred("JSONExtractString(properties, 'plan') NOT IN #{set}")
+    not_ext  = ids_pred("JSONExtractString(toJSONString(properties), 'plan') NOT IN #{set}")
     not_svc  = event_ids(query_with_filter('plan', 'is_not', %w[pro enterprise]))
 
     assert_equal not_ext, not_cast, 'NOT IN parity broke (CAST vs JSONExtractString)'
     assert_equal not_ext, not_svc, "service 'is_not' array diverged from JSONExtractString NOT IN"
-    # free and the missing-key row (reads '') are NOT IN the set -> included;
-    # the two membership rows are excluded.
     assert_includes not_svc, 'plan_free'
     assert_includes not_svc, 'plan_missing'
     assert_not_includes not_svc, 'plan_pro'
     assert_not_includes not_svc, 'plan_enterprise'
   end
 
-  # LIKE / contains parity: lower(CAST(properties.`plan`)) LIKE '%pro%' must select
-  # the same rows as lower(JSONExtractString(properties,'plan')) LIKE '%pro%',
-  # against REAL CH. Substring values ('pro-monthly','pro-annual','free-tier')
-  # ensure the match is a genuine contains, not equality. Reference uses a
-  # different extraction function than the service path -> real parity, not a
-  # self-comparison.
   test 'CAST subcolumn LIKE matches JSONExtractString LIKE row-for-row (contains)' do
     insert_plan_events(
       'plan_pro_monthly' => { 'plan' => 'pro-monthly' },
@@ -467,13 +437,11 @@ class Analytics::EventsFilterCoverageTest < ActiveSupport::TestCase
     )
 
     like_cast = ids_pred("lower(CAST(properties.`plan` AS String)) LIKE '%pro%'")
-    like_ext  = ids_pred("lower(JSONExtractString(properties, 'plan')) LIKE '%pro%'")
+    like_ext  = ids_pred("lower(JSONExtractString(toJSONString(properties), 'plan')) LIKE '%pro%'")
     like_svc  = event_ids(query_with_filter('plan', 'contains', 'pro'))
 
     assert_equal like_ext, like_cast, 'LIKE parity broke (CAST vs JSONExtractString)'
     assert_equal like_ext, like_svc, "service 'contains' diverged from JSONExtractString LIKE"
-    # Concrete: the two 'pro-*' rows match; 'free-tier' (and the property-less
-    # setup rows, which read '') do not.
     assert_equal %w[plan_pro_annual plan_pro_monthly], like_svc
     assert_not_includes like_svc, 'plan_free_tier'
   end

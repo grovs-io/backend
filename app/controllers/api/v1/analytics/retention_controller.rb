@@ -14,7 +14,8 @@ module Api
             platform: platform_filter,
             start_date: parsed_start_date,
             end_date: parsed_end_date,
-            filters: params[:filters] || []
+            filters: params[:filters] || [],
+            visitor_clause: segment_clause('up.visitor_id', effective: true)
           )
           render json: result, status: :ok
         end

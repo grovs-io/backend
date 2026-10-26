@@ -81,9 +81,8 @@ class GooglePurchaseValidator
         currency: currency,
         purchase_type: Grovs::Purchases::TYPE_SUBSCRIPTION
       }
-      update_attrs[:project_id] = correct_project.id if correct_project
 
-      event.update!(update_attrs)
+      apply_and_move(event, update_attrs, correct_project)
     end
 
     def update_from_google_one_time(event, verified, product_details, package_name, instance)
@@ -98,14 +97,13 @@ class GooglePurchaseValidator
         date: start_date,
         purchase_type: Grovs::Purchases::TYPE_ONE_TIME
       }
-      update_attrs[:project_id] = correct_project.id if correct_project
 
       if (event.price_cents.nil? || event.price_cents == 0) && product_details&.default_price
         update_attrs[:price_cents] = IapUtils.convert_google_micros_to_cents(product_details.default_price.price_micros)
         update_attrs[:currency] = product_details.default_price.currency
       end
 
-      event.update!(update_attrs)
+      apply_and_move(event, update_attrs, correct_project)
     end
 
     def acknowledge_google_purchase(service, package_name, product_id, purchase_token)
@@ -116,6 +114,26 @@ class GooglePurchaseValidator
 
     def fetch_google_product_details(service, package_name, product_id)
       IapUtils.fetch_google_product_details(service, package_name, product_id)
+    end
+
+    # One transaction: a validated flag without the move would leave every retry skipping it.
+    def apply_and_move(event, update_attrs, project)
+      PurchaseEvent.transaction do
+        event.update!(update_attrs)
+        move_to_verified_project(event, project)
+      end
+    end
+
+    # Only an unprocessed row may change project: a processed one is already counted where it is.
+    def move_to_verified_project(event, project)
+      return if project.nil? || event.project_id == project.id
+
+      moved = PurchaseEvent.where(id: event.id, processed: false).update_all(project_id: project.id) == 1
+      if moved
+        event.reload
+      else
+        Rails.logger.warn("GooglePurchaseValidator: project move suppressed, purchase #{event.id} already processed")
+      end
     end
   end
 end

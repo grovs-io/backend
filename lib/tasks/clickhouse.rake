@@ -571,4 +571,32 @@ namespace :clickhouse do
       puts "Shadow pass complete. 0 instances divergent (exact vs PG)."
     end
   end
+
+  desc 'PROJECT_ID required. Re-sync user_profiles.properties from PG visitors.sdk_attributes ' \
+       'on the device_updates queue. [START_AFTER_ID=.. resume cursor] [LIMIT=.. cap this run]'
+  task reconcile_profile_properties: :environment do
+    project_id = ENV['PROJECT_ID']
+    if project_id.blank?
+      abort "PROJECT_ID is required — this can enqueue tens of millions of jobs. " \
+            "Usage: PROJECT_ID=.. [START_AFTER_ID=.. LIMIT=..]"
+    end
+
+    scope = Visitor.where.not(sdk_attributes: nil).where(project_id: Integer(project_id)).order(:id)
+    scope = scope.where(Visitor.arel_table[:id].gt(Integer(ENV['START_AFTER_ID']))) if ENV['START_AFTER_ID']
+    scope = scope.limit(Integer(ENV['LIMIT'])) if ENV['LIMIT']
+
+    total = 0
+    last_id = nil
+    scope.select(:id).find_in_batches(batch_size: 1_000) do |batch|
+      ActiveJob.perform_all_later(batch.map { |v| SyncVisitorProfileJob.new(v.id).set(queue: :device_updates) })
+      total += batch.size
+      last_id = batch.last.id
+      puts "  enqueued=#{total} last_id=#{last_id}"
+    end
+    if total.zero?
+      puts "Done. nothing to enqueue."
+    else
+      puts "Done. #{total} visitor(s) enqueued on the device_updates queue. Resume with START_AFTER_ID=#{last_id}."
+    end
+  end
 end

@@ -77,6 +77,40 @@ class RedirectsApiTest < ActionDispatch::IntegrationTest
     assert_equal false, config.copy_to_clipboard_android
   end
 
+  test "update redirect config sets in-app browser page toggles" do
+    put "#{API_PREFIX}/projects/#{@project.id}/redirect_config",
+        params: { in_app_browser_page_ios: true, in_app_browser_page_android: false },
+        headers: @headers
+    assert_response :ok
+
+    config = @project.redirect_config.reload
+    assert_equal true, config.in_app_browser_page_ios
+    assert_equal false, config.in_app_browser_page_android
+  end
+
+  test "update without in-app browser fields leaves them unchanged" do
+    @project.redirect_config.update_columns(in_app_browser_page_ios: true, in_app_browser_page_android: true)
+
+    put "#{API_PREFIX}/projects/#{@project.id}/redirect_config",
+        params: { show_preview_ios: false }, headers: @headers
+    assert_response :ok
+
+    config = @project.redirect_config.reload
+    assert_equal true, config.in_app_browser_page_ios
+    assert_equal true, config.in_app_browser_page_android
+  end
+
+  test "get redirect config returns in-app browser fields" do
+    @project.redirect_config.update_columns(in_app_browser_page_ios: true, in_app_browser_page_android: false)
+
+    get "#{API_PREFIX}/projects/#{@project.id}/redirect_config", headers: @headers
+    assert_response :ok
+
+    config = JSON.parse(response.body)["redirect_config"]
+    assert_equal true, config["in_app_browser_page_ios"]
+    assert_equal false, config["in_app_browser_page_android"]
+  end
+
   # --- Set Platform Redirect ---
 
   test "set redirect for iOS phone with fallback URL persists in DB" do

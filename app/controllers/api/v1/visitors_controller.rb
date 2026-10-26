@@ -71,11 +71,18 @@ start_date: start_date, end_date: end_date, term: term_param, visitor_id: visito
     render json: {
       visitor: VisitorSerializer.serialize(visitor), metrics: metrics,
       aggregated_metrics: aggregated_metrics, number_of_generated_links: number_of_links,
-      metrics_since: metrics_since
+      metrics_since: metrics_since, push: push_status(visitor.device)
     }, status: :ok
   end
 
   private
+
+  # Whether the device can get a push, never the token itself.
+  def push_status(device)
+    return nil unless device
+
+    { platform: device.platform, registered: device.push_token.present? }
+  end
 
   # Same shape as the populated query row, zeroed — visitors with no daily stats never get metrics: null.
   def zero_filled_stats(visitor, prefix, with_platform: false)

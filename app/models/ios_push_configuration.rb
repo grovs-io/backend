@@ -4,6 +4,7 @@ class IosPushConfiguration < ApplicationRecord
   encrypts :certificate_password
 
   after_create_commit :sync_rpush_app
+  after_commit :clear_application_configuration_cache
   has_one_attached :certificate
 
   # Callbacks
@@ -15,6 +16,11 @@ class IosPushConfiguration < ApplicationRecord
   validate :certificate_must_be_p8_extension
 
   private
+
+  # Application#configuration caches the parent config for an hour; a push row changes what it serializes.
+  def clear_application_configuration_cache
+    ios_configuration&.application&.clear_configuration_cache
+  end
 
   def certificate_must_be_attached
     errors.add(:certificate, 'must be attached') unless certificate.attached?
@@ -44,13 +50,8 @@ class IosPushConfiguration < ApplicationRecord
     RpushService.update_ios_rpush_app(id)
   end
 
-  # This method will handle any cleanup necessary before destroying the record
   def cleanup_resources
-    # Example of cleanup logic, modify as needed
-    # For instance, you can delete the attached certificate
     certificate.purge if certificate.attached?
-      
-    # Additional cleanup logic (if needed) can go here
     Rails.logger.info "Cleaning up IosPushConfiguration with ID #{id} before destroying."
 
     instance = ios_configuration.application&.instance
@@ -58,15 +59,8 @@ class IosPushConfiguration < ApplicationRecord
       test = instance.test
       production = instance.production
 
-      test_app = RpushService.app_for_platform(Grovs::Platforms::IOS, test)
-      if test_app
-        test_app.destroy
-      end
-
-      prod_app = RpushService.app_for_platform(Grovs::Platforms::IOS, production)
-      if prod_app
-        prod_app.destroy
-      end
+      RpushService.remove_app(RpushService.app_for_platform(Grovs::Platforms::IOS, test))
+      RpushService.remove_app(RpushService.app_for_platform(Grovs::Platforms::IOS, production))
     end
   end
 end

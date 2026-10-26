@@ -1,0 +1,31 @@
+#!/usr/bin/env ruby
+# Runs RPUSH_PROCESSES rpush daemons (pid files tmp/rpush-N.pid); if one exits, all stop.
+count = Integer(ENV.fetch("RPUSH_PROCESSES", "1")).clamp(1, 16)
+Dir.chdir(File.expand_path("..", __dir__))
+
+pids = []
+stopping = false
+stop = lambda do |signal|
+  stopping = true unless %w[HUP USR2].include?(signal)
+  pids.each do |pid|
+    Process.kill(signal, pid)
+  rescue Errno::ESRCH
+    nil
+  end
+end
+# Before spawning, so a TERM during startup still reaches the daemons already running.
+%w[TERM INT HUP USR2].each { |sig| Signal.trap(sig) { stop.call(sig) } }
+
+count.times do |i|
+  break if stopping
+
+  pids << Process.spawn({ "RPUSH_PID_FILE" => "tmp/rpush-#{i + 1}.pid" }, "bundle", "exec", "rpush", "start", "-f", *ARGV)
+end
+exit 0 if pids.empty? # stopped before the first daemon started
+warn "rpush-cluster: started #{pids.size} daemon(s): #{pids.join(', ')}"
+
+exited, status = Process.wait2
+warn "rpush-cluster: daemon #{exited} exited (#{status.exitstatus.inspect}); stopping the rest"
+stop.call("TERM")
+Process.waitall
+exit(status.success? ? 0 : 1)

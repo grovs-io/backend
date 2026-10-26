@@ -1,4 +1,5 @@
 class SdkPaymentService
+  SYNC_SLOT_TTL = 5.minutes
   def initialize(project:, device:, visitor:, platform:, identifier:)
     @project = project
     @device = device
@@ -95,17 +96,36 @@ class SdkPaymentService
     event.device ||= @device
     event.link_id ||= attributed_link_id
     event.save!
-
-    session_filled = claim_session(event, session_id)
+    changed = event.saved_changes.any?
+    session_filled = claim_session(event, session_id) # update_all: never shows in saved_changes
 
     if event.processed? && device_was_nil && event.device_id.present?
       ReattributePurchaseJob.perform_async(event.id)
-    else
-      enqueue_validation(event)
+      return
     end
 
-    # A processed event skips the pipeline above, so nothing else carries the session to CH.
-    RefreshPurchaseClickhouseRowJob.perform_async(event.id) if session_filled && event.processed?
+    enqueue_validation(event)
+    sync_processed(event, force: changed || session_filled) if event.processed?
+  end
+
+  # Changed report syncs now; identical ones once per slot, released on enqueue failure.
+  def sync_processed(event, force:)
+    key = "purchase:sync:#{event.id}"
+    unless force
+      begin
+        return unless REDIS.set(key, "1", nx: true, ex: SYNC_SLOT_TTL.to_i)
+      rescue Redis::BaseError, RedisClient::Error
+        nil # fail open: an extra sync is idempotent, a missed one is not
+      end
+    end
+    ProcessPurchaseEventJob.perform_async(event.id)
+  rescue StandardError
+    begin
+      REDIS.del(key) unless force
+    rescue Redis::BaseError, RedisClient::Error
+      nil
+    end
+    raise
   end
 
   # The WHERE makes first-writer-wins atomic, so concurrent reports can't race two CH refreshes.

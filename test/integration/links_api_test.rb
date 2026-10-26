@@ -200,6 +200,33 @@ class LinksApiTest < ActionDispatch::IntegrationTest
     assert_no_match(/"link"/, response.body, "404 must not leak link data")
   end
 
+  # --- Smart banner links are system-owned ---
+
+  test "update a smart banner link returns 422 and does not change it" do
+    @link.update_column(:tags, ["smart_banner", "smart_banner:1"])
+
+    patch "#{API_PREFIX}/projects/#{@project.id}/links/#{@link.id}",
+      params: { title: "Hacked" },
+      headers: @headers
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert json.key?("error")
+
+    assert_not_equal "Hacked", @link.reload.title
+  end
+
+  test "delete a smart banner link returns 422 and does not archive it" do
+    @link.update_column(:tags, ["smart_banner", "smart_banner:1"])
+
+    delete "#{API_PREFIX}/projects/#{@project.id}/links/#{@link.id}",
+      headers: @headers
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert json.key?("error")
+
+    assert @link.reload.active
+  end
+
   # --- Duplicate Path ---
 
   test "create link with existing path returns 422" do
@@ -209,8 +236,17 @@ class LinksApiTest < ActionDispatch::IntegrationTest
         headers: @headers
     end
     assert_response :unprocessable_entity
-    json = JSON.parse(response.body)
-    assert json.key?("error"), "422 must include error message"
+    assert_equal({ "error" => "Validation failed: Path There's an existing link for this domain and path" }, JSON.parse(response.body))
+  end
+
+  test "create link without a path returns 422 and creates nothing" do
+    [{ title: "No path" }, { title: "Blank path", path: "  " }].each do |params|
+      assert_no_difference "Link.count" do
+        post "#{API_PREFIX}/projects/#{@project.id}/links", params: params, headers: @headers
+      end
+      assert_response :unprocessable_entity
+      assert_equal({ "error" => "Validation failed: Path can't be blank" }, JSON.parse(response.body))
+    end
   end
 
   # --- Path Availability Edge Cases ---
@@ -251,6 +287,108 @@ class LinksApiTest < ActionDispatch::IntegrationTest
     created = Link.find_by(path: "new-campaign-link-path")
     assert_not_nil created
     assert_equal campaign.id, created.campaign_id, "link must be associated to campaign"
+  end
+
+  test "lookup returns links older than the retention window used by search_v2" do
+    assert @link.created_at < 30.days.ago, "fixture must predate the default 30-day window"
+
+    get "#{API_PREFIX}/projects/#{@project.id}/links/lookup", headers: @headers
+    assert_response :ok
+    json = JSON.parse(response.body)
+    assert_includes json["links"].map { |l| l["id"] }, @link.id
+  end
+
+  test "lookup term filters by name and path case-insensitively" do
+    get "#{API_PREFIX}/projects/#{@project.id}/links/lookup", params: { term: "spring campaign" }, headers: @headers
+    assert_response :ok
+    ids = JSON.parse(response.body)["links"].map { |l| l["id"] }
+    assert_includes ids, @link.id
+
+    get "#{API_PREFIX}/projects/#{@project.id}/links/lookup", params: { term: "TEST-PATH" }, headers: @headers
+    assert_response :ok
+    ids = JSON.parse(response.body)["links"].map { |l| l["id"] }
+    assert_includes ids, @link.id
+  end
+
+  test "lookup treats % and _ in term as literal characters" do
+    domain = domains(:one)
+    redirect_config = redirect_configs(:one)
+    percent_link = Link.create!(domain: domain, redirect_config: redirect_config, path: "percent-link",
+                                 title: "50% off deal", generated_from_platform: "ios", active: true, sdk_generated: false)
+    lookalike_link = Link.create!(domain: domain, redirect_config: redirect_config, path: "lookalike-link",
+                                   title: "50xoffdeal", generated_from_platform: "ios", active: true, sdk_generated: false)
+    underscore_link = Link.create!(domain: domain, redirect_config: redirect_config, path: "ab_cd-underscore",
+                                    generated_from_platform: "ios", active: true, sdk_generated: false)
+    wildcard_lookalike = Link.create!(domain: domain, redirect_config: redirect_config, path: "abXcd-underscore",
+                                       generated_from_platform: "ios", active: true, sdk_generated: false)
+
+    get "#{API_PREFIX}/projects/#{@project.id}/links/lookup", params: { term: "50%" }, headers: @headers
+    ids = JSON.parse(response.body)["links"].map { |l| l["id"] }
+    assert_includes ids, percent_link.id
+    assert_not_includes ids, lookalike_link.id
+
+    get "#{API_PREFIX}/projects/#{@project.id}/links/lookup", params: { term: "ab_cd" }, headers: @headers
+    ids = JSON.parse(response.body)["links"].map { |l| l["id"] }
+    assert_includes ids, underscore_link.id
+    assert_not_includes ids, wildcard_lookalike.id
+  end
+
+  test "lookup excludes inactive links, sdk_generated links, and links from another project" do
+    domain = domains(:one)
+    redirect_config = redirect_configs(:one)
+    sdk_link = Link.create!(domain: domain, redirect_config: redirect_config, path: "sdk-lookup-path",
+                             generated_from_platform: "ios", active: true, sdk_generated: true)
+
+    get "#{API_PREFIX}/projects/#{@project.id}/links/lookup", headers: @headers
+    assert_response :ok
+    ids = JSON.parse(response.body)["links"].map { |l| l["id"] }
+    assert_not_includes ids, links(:inactive_link).id
+    assert_not_includes ids, sdk_link.id
+    assert_not_includes ids, links(:second_link).id, "must not leak links from another project's domain"
+  end
+
+  test "lookup limit defaults to 20 and clamps requested value" do
+    get "#{API_PREFIX}/projects/#{@project.id}/links/lookup", params: { limit: 1 }, headers: @headers
+    assert_response :ok
+    assert_equal 1, JSON.parse(response.body)["links"].size
+
+    domain = domains(:one)
+    redirect_config = redirect_configs(:one)
+    25.times do |i|
+      Link.create!(domain: domain, redirect_config: redirect_config, path: "lookup-limit-#{i}",
+                   generated_from_platform: "ios", active: true, sdk_generated: false)
+    end
+
+    get "#{API_PREFIX}/projects/#{@project.id}/links/lookup", headers: @headers
+    assert_response :ok
+    assert_equal 20, JSON.parse(response.body)["links"].size
+  end
+
+  test "lookup answers 404, not 204, when the project has no domain" do
+    domains(:one).destroy!
+    get "#{API_PREFIX}/projects/#{@project.id}/links/lookup", headers: @headers
+    assert_response :not_found
+    assert_equal "Domain not found", JSON.parse(response.body)["error"]
+  end
+
+  test "lookup without auth returns 401 with no data" do
+    get "#{API_PREFIX}/projects/#{@project.id}/links/lookup", headers: api_headers
+    assert_response :unauthorized
+    assert_no_match(/"links"/, response.body, "401 must not contain link data")
+  end
+
+  test "lookup for a non-member instance returns 403 with no data leak" do
+    get "#{API_PREFIX}/projects/#{@project_two.id}/links/lookup", headers: @headers
+    assert_response :forbidden
+    json = JSON.parse(response.body)
+    assert_equal "Forbidden", json["error"]
+    assert_not json.key?("links"), "403 must not leak link data from other tenant"
+  end
+
+  test "lookup allows a non-admin project member to read" do
+    member_headers = doorkeeper_headers_for(users(:member_user))
+    get "#{API_PREFIX}/projects/#{@project.id}/links/lookup", headers: member_headers
+    assert_response :ok
   end
 
   # --- Cross-Tenant Access ---

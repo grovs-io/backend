@@ -19,6 +19,14 @@ class InstanceSerializerTest < ActiveSupport::TestCase
     assert_equal true,               result["revenue_collection_enabled"]
   end
 
+  test "icon_url comes from the icons handed in, else is resolved for the one instance" do
+    instance = instances(:one)
+    assert_equal "https://x/icon.png", InstanceSerializer.serialize(instance, icons: { instance.id => "https://x/icon.png" })["icon_url"]
+    ProjectIcons.stub(:for, ->(list) { { list.first.id => "https://y/icon.png" } }) do
+      assert_equal "https://y/icon.png", InstanceSerializer.serialize(instance)["icon_url"]
+    end
+  end
+
   test "serializes instance two with correct attribute values" do
     instance = instances(:two)
     result = InstanceSerializer.serialize(instance)
@@ -102,7 +110,8 @@ class InstanceSerializerTest < ActiveSupport::TestCase
   test "top-level keys include expected fields" do
     result = InstanceSerializer.serialize(instances(:one))
 
-    expected_keys = %w[analytics_retention api_key get_started_dismissed hash_id id production quota_exceeded revenue_collection_enabled test updated_at uri_scheme]
+    expected_keys = %w[analytics_retention api_key get_started_dismissed hash_id icon_url id production quota_exceeded
+                       revenue_collection_enabled test updated_at uri_scheme]
     assert_equal expected_keys, result.keys.sort
   end
 
@@ -110,10 +119,13 @@ class InstanceSerializerTest < ActiveSupport::TestCase
     result = InstanceSerializer.serialize(instances(:one))
     retention = result["analytics_retention"]
 
-    assert_equal %w[can_query_cold cold_after_days plan queryable_days], retention.keys.sort
+    assert_equal %w[can_query_cold cold_after_days plan queryable_days raw_counter_max_days raw_max_days].sort,
+                 retention.keys.sort
     assert_includes %w[free paid enterprise], retention["plan"]
     assert_kind_of Integer, retention["queryable_days"]
     assert_kind_of Integer, retention["cold_after_days"]
+    assert_equal 90, retention["raw_max_days"]
+    assert_equal 366, retention["raw_counter_max_days"]
   end
 
   # ---------------------------------------------------------------------------

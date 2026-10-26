@@ -4,18 +4,16 @@ class DownloadableFile < ApplicationRecord
   # Static methods
   
   def self.create_csv_file_with_expiration(content:, filename:, expiration: 24.hours)
+    create_file_with_expiration(content: content, filename: "#{filename}.csv", content_type: "text/csv", expiration: expiration, name: filename)
+  end
+
+  def self.create_file_with_expiration(content:, filename:, content_type:, expiration: 24.hours, name: filename)
     download = DownloadableFile.new
-    download.file.attach(
-      io: StringIO.new(content),
-      filename: "#{filename}.csv",
-      content_type: "text/csv"
-    )
-    download.name = filename
+    # content may be a String or an already-open IO (a large export is spooled to disk, never held in memory).
+    download.file.attach(io: content.is_a?(String) ? StringIO.new(content) : content, filename: filename, content_type: content_type)
+    download.name = name
     download.save!
-
-    # Delete the file in 24 hours
     DeleteFileJob.perform_in(expiration, download.id)
-
     download
   end
 

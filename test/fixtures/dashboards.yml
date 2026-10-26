@@ -1,0 +1,9 @@
+one:
+  project: one
+  name: "Growth"
+  position: 0
+
+two:
+  project: two
+  name: "Other tenant"
+  position: 0

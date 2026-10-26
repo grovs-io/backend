@@ -8,7 +8,7 @@ module Analytics
     PROPAGATED_ERRORS = [ArgumentError, Date::Error, Analytics::QueryTooHeavy,
                          Clickhouse::Unavailable, Clickhouse::Stale, RevenueLedger::Unavailable].freeze
     CH_DATETIME_FMT = '%Y-%m-%d %H:%M:%S.%3N'
-    ALLOWED_CH_TABLES = %w[events events session_events session_summary].freeze
+    ALLOWED_CH_TABLES = %w[events session_events session_summary].push(EventsSource::SOURCE_KEY).freeze
     # Columns allowed to be interpolated as a SELECT/WHERE identifier in the id resolvers.
     RESOLVABLE_ID_COLUMNS = %w[link_id campaign_id].freeze
 
@@ -100,6 +100,7 @@ module Analytics
            .gsub("\r") { '\\r' }
            .gsub("\t") { '\\t' }
     end
+    module_function :sanitize_string
 
     def sanitize_date(value)
       Date.parse(value.to_s).strftime('%Y-%m-%d')
@@ -203,6 +204,8 @@ module Analytics
     end
 
     def build_integer_filter_clause(prefix, field, operator, value)
+      return nil if value.is_a?(Array) && value.empty?
+
       case operator
       when 'is'
         if value.is_a?(Array)
@@ -219,7 +222,7 @@ module Analytics
           "#{prefix}#{field} != #{Integer(value)}"
         end
       end
-    rescue ArgumentError
+    rescue ArgumentError, TypeError
       nil
     end
 
@@ -251,8 +254,9 @@ module Analytics
     # Cursor pagination via last-seen ID.
     # `ch_table` and `ch_final` control which CH table to query.
     def resolve_id_field(pid, col, q: nil, limit: 20, date_clause: '',
-                         cursor: nil, ch_table: 'session_summary', ch_final: true)
+                         cursor: nil, ch_table: 'session_summary', ch_final: true, start_sql: nil)
       raise ArgumentError, "Invalid CH table: #{ch_table}" unless ALLOWED_CH_TABLES.include?(ch_table)
+      raise ArgumentError, 'FINAL is not valid on the union source' if ch_final && ch_table == EventsSource::SOURCE_KEY
       raise ArgumentError, "Invalid CH column: #{col}" unless RESOLVABLE_ID_COLUMNS.include?(col)
 
       pid = Integer(pid) # defensive: pid/col are interpolated into SQL below, never placeholdered
@@ -261,7 +265,7 @@ module Analytics
       model = col == 'campaign_id' ? Campaign : Link
 
       if q.present?
-        scope = model.where(id: ch_id_set(pid, col, date_clause, ch_table: ch_table, ch_final: ch_final))
+        scope = model.where(id: ch_id_set(pid, col, date_clause, ch_table: ch_table, ch_final: ch_final, start_sql: start_sql))
                      .where('LOWER(name) LIKE ?', "%#{ActiveRecord::Base.sanitize_sql_like(q.downcase)}%")
                      .order(:id)
         scope = scope.where('id > ?', cursor.to_i) if cursor.present?
@@ -271,7 +275,7 @@ module Analytics
         cursor_clause = cursor_int ? "AND #{col} > #{cursor_int}" : ''
         rows = with_guard(<<~SQL).to_a
           SELECT DISTINCT #{col} AS id
-          FROM #{ch_table} #{final_kw}
+          FROM #{ch_from(ch_table, pid, start_sql: start_sql)} #{final_kw}
           WHERE project_id = #{pid} AND #{col} > 0
           #{date_clause}
           #{cursor_clause}
@@ -295,8 +299,9 @@ module Analytics
     # Resolve visitor_id as raw integers (matching what the events table shows).
     # Search (q) does exact integer match. Cursor is integer-based.
     def resolve_visitor_field(pid, q: nil, limit: 20, date_clause: '',
-                              cursor: nil, ch_table: 'session_summary', ch_final: true)
+                              cursor: nil, ch_table: 'session_summary', ch_final: true, start_sql: nil)
       raise ArgumentError, "Invalid CH table: #{ch_table}" unless ALLOWED_CH_TABLES.include?(ch_table)
+      raise ArgumentError, 'FINAL is not valid on the union source' if ch_final && ch_table == EventsSource::SOURCE_KEY
 
       pid = Integer(pid) # defensive: pid is interpolated into SQL below, never placeholdered
       fetch_limit = limit + 1
@@ -308,7 +313,7 @@ module Analytics
 
         rows = with_guard(<<~SQL).to_a
           SELECT DISTINCT visitor_id AS id
-          FROM #{ch_table} #{final_kw}
+          FROM #{ch_from(ch_table, pid, start_sql: start_sql)} #{final_kw}
           WHERE project_id = #{pid} AND visitor_id = #{vid}
           #{date_clause}
           LIMIT 1
@@ -321,7 +326,7 @@ module Analytics
       cursor_clause = cursor_int ? "AND visitor_id > #{cursor_int}" : ''
       rows = with_guard(<<~SQL).to_a
         SELECT DISTINCT visitor_id AS id
-        FROM #{ch_table} #{final_kw}
+        FROM #{ch_from(ch_table, pid, start_sql: start_sql)} #{final_kw}
         WHERE project_id = #{pid} AND visitor_id > 0
         #{date_clause}
         #{cursor_clause}
@@ -339,15 +344,24 @@ module Analytics
       { values: ids.map { |id| { id: id, name: id.to_s } }, next_cursor: next_cursor }
     end
 
-    def ch_id_set(pid, col, date_clause, ch_table: 'session_summary', ch_final: true)
+    # The union source is project-scoped SQL, so it is resolved per call rather than named as a table.
+    # start_sql bounds its purchase branch; the caller's date_clause bounds the events branch.
+    def ch_from(ch_table, pid, start_sql: nil)
+      return ch_table unless ch_table == EventsSource::SOURCE_KEY
+
+      EventsSource.sql(final: false, project_id: pid, start_sql: start_sql)
+    end
+
+    def ch_id_set(pid, col, date_clause, ch_table: 'session_summary', ch_final: true, start_sql: nil)
       raise ArgumentError, "Invalid CH table: #{ch_table}" unless ALLOWED_CH_TABLES.include?(ch_table)
+      raise ArgumentError, 'FINAL is not valid on the union source' if ch_final && ch_table == EventsSource::SOURCE_KEY
       raise ArgumentError, "Invalid CH column: #{col}" unless RESOLVABLE_ID_COLUMNS.include?(col)
 
       pid = Integer(pid) # defensive: pid/col are interpolated into SQL below, never placeholdered
       final_kw = ch_final ? 'FINAL' : ''
       with_guard(<<~SQL).to_a.map { |r| r['id'].to_i }
         SELECT DISTINCT #{col} AS id
-        FROM #{ch_table} #{final_kw}
+        FROM #{ch_from(ch_table, pid, start_sql: start_sql)} #{final_kw}
         WHERE project_id = #{pid} AND #{col} > 0
         #{date_clause}
       SQL

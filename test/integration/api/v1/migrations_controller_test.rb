@@ -172,7 +172,7 @@ class Api::V1::MigrationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 1, cf_delete_calls, "CF delete must be called exactly once during rollback"
   end
 
-  test "rollback with CF-delete failure returns 502 and leaves CH suspended for the orphan sweeper" do
+  test "rollback with CF-delete failure returns 424 and leaves CH suspended for the orphan sweeper" do
     cf_delete_calls = 0
     cf_delete_stub  = lambda do |*_|
       cf_delete_calls += 1
@@ -198,7 +198,7 @@ class Api::V1::MigrationsControllerTest < ActionDispatch::IntegrationTest
       end
     end
 
-    assert_response :bad_gateway
+    assert_response :failed_dependency
     body = JSON.parse(response.body)
     assert_match(/cleanup/i, body["error"])
     assert(warnings.any? { |w| w.is_a?(Hash) && w[:message] == "migrations_create_cleanup_failed" },
@@ -291,16 +291,16 @@ class Api::V1::MigrationsControllerTest < ActionDispatch::IntegrationTest
     assert CustomHostname.exists?(project: @other, hostname: "branch.tabkeep.uk")
   end
 
-  test "Cloudflare provisioning failure surfaces as 502 and no source is created" do
+  test "Cloudflare provisioning failure surfaces as 424 and no source is created" do
     bad_result = CustomDomainProvisioningService::Result.new(
-      ok: false, error: "Cloudflare provisioning failed", status: :bad_gateway
+      ok: false, error: "Cloudflare provisioning failed", status: :failed_dependency
     )
     stub_probe do
       CustomDomainProvisioningService.stub(:create, bad_result) do
         json_post url, valid_branch_payload
       end
     end
-    assert_response :bad_gateway
+    assert_response :failed_dependency
     assert_match(/Cloudflare provisioning failed/, response.body)
     assert_equal 0, MigrationSource.where(project: @project).count
   end

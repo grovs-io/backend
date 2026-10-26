@@ -429,7 +429,6 @@ class MergeVisitorEventsJobTest < ActiveSupport::TestCase
     Visitor.create!(device: final_dev, project: @project)
     # to_dev was already merged into final_dev
     to_vis = Visitor.find_by(device: to_dev, project: @project)
-    to_vis.notification_messages.delete_all
     to_vis.delete
     REDIS.set(breadcrumb_key(to_dev), final_dev.id, ex: 86_400)
 

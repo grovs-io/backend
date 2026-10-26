@@ -106,6 +106,13 @@ module McpSchemaHelper
         "mau_limit" => :integer,
         "quota_exceeded" => :boolean,
         "has_subscription" => :boolean
+      },
+      "features" => {
+        "analytics" => :boolean,
+        "segments" => :boolean,
+        "push_campaigns" => :boolean,
+        "in_app" => :boolean,
+        "journeys" => :boolean
       }
     },
 

@@ -130,7 +130,7 @@ module ApiContracts
            request: HOSTNAME_REQUEST,
            responses: {
              201 => custom_domain_envelope.call(nullable: false),
-             402 => ERROR, 422 => ERROR, 409 => ERROR, 502 => ERROR, 404 => ERROR,
+             402 => ERROR, 422 => ERROR, 409 => ERROR, 424 => ERROR, 404 => ERROR,
              429 => ERROR,
              401 => AUTH_ERROR
            }
@@ -163,7 +163,7 @@ module ApiContracts
            request: CUSTOM_DOMAIN_CREATE_V2_REQUEST,
            responses: {
              201 => custom_domain_envelope.call(nullable: false),
-             402 => ERROR, 422 => ERROR, 409 => ERROR, 502 => ERROR, 404 => ERROR,
+             402 => ERROR, 422 => ERROR, 409 => ERROR, 424 => ERROR, 404 => ERROR,
              429 => ERROR,
              401 => AUTH_ERROR
            }
@@ -201,7 +201,7 @@ module ApiContracts
                                         "purpose" => { "type" => "string", "enum" => Grovs::Hostnames::PURPOSES } } },
            responses: {
              201 => admin_custom_domain_response,
-             402 => ERROR, 422 => ERROR, 409 => ERROR, 502 => ERROR, 404 => ERROR,
+             402 => ERROR, 422 => ERROR, 409 => ERROR, 424 => ERROR, 404 => ERROR,
              403 => ERROR
            }
 end

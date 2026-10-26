@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
+class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase # rubocop:disable Metrics/ClassLength -- explorer query catalog
   include ClickhouseTestHelper
 
   fixtures :projects, :instances, :domains, :links, :campaigns
@@ -23,7 +23,7 @@ class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
       end_date: Date.current,
       include_count: true
     )
-    assert result[:data].size > 0
+    assert_not result[:data].empty?
     assert_not_nil result[:total_count]
   end
 
@@ -34,7 +34,7 @@ class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
       start_date: 7.days.ago.to_date,
       end_date: Date.current
     )
-    assert result[:data].size > 0
+    assert_not result[:data].empty?
     assert_nil result[:total_count]
   end
 
@@ -111,7 +111,7 @@ class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
       limit: 3,
       cursor: first_page[:next_cursor]
     )
-    assert second_page[:data].size > 0
+    assert_not second_page[:data].empty?
     # No overlap between pages
     first_ids = first_page[:data].map { |e| e['event_id'] }
     second_ids = second_page[:data].map { |e| e['event_id'] }
@@ -304,7 +304,7 @@ class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
       )
     end
 
-    select_list = captured_sql[/SELECT\s+(.*?)\s+FROM events\b/m, 1]
+    select_list = captured_sql[/\ASELECT\s+(.*?)\s+FROM \(/m, 1]
     assert_includes select_list, 'NULL AS properties'
     assert_no_match(/(?:^|,\s*)properties(?:\s*,|$)/, select_list)
   end
@@ -324,11 +324,12 @@ class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
       )
     end
 
-    assert_match(/FROM events\s+WHERE/m, captured_sql)
-    assert_no_match(/FROM events\s+FINAL/i, captured_sql)
+    assert_includes captured_sql, 'FROM events UNION ALL'
+    assert_no_match(/FROM events FINAL/i, captured_sql)
     assert_includes captured_sql, 'visitor_id = 289171'
-    assert_includes captured_sql, 'event_id IN (SELECT DISTINCT event_id FROM events'
-    assert_includes captured_sql, 'LIMIT 1 BY event_id'
+    assert_includes captured_sql, 'event_id IN (SELECT event_id FROM (SELECT'
+    assert_not_includes captured_sql, 'SELECT DISTINCT event_id'
+    assert_includes captured_sql, 'LIMIT 1 BY event_id LIMIT 1000'
   end
 
   test 'list bounds unfiltered created_at browsing to recent event candidates' do
@@ -347,7 +348,7 @@ class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
       )
     end
 
-    assert_includes captured_sql, 'event_id IN (SELECT event_id FROM events'
+    assert_includes captured_sql, 'event_id IN (SELECT event_id FROM (SELECT'
     assert_includes captured_sql, 'ORDER BY created_at DESC, event_id DESC, ingested_at DESC'
     assert_includes captured_sql, 'LIMIT 1 BY event_id LIMIT 1000'
     assert_includes captured_sql, 'LIMIT 1 BY event_id'
@@ -375,8 +376,83 @@ class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
     end
 
     assert_includes captured_sql, "created_at < '2026-04-10 12:00:00.000'"
-    assert_includes captured_sql, 'event_id IN (SELECT event_id FROM events'
+    assert_includes captured_sql, 'event_id IN (SELECT event_id FROM (SELECT'
     assert_includes captured_sql, 'LIMIT 1 BY event_id LIMIT 1000'
+  end
+
+  test 'list bounds filtered and search candidates with filters and cursor inside the subquery' do
+    captured_sql = nil
+    cursor = Base64.urlsafe_encode64({ t: '2026-04-10 12:00:00.000', id: 'evt_cursor' }.to_json, padding: false)
+
+    Analytics::EventsQueryService.stub(:with_guard, lambda { |sql|
+      captured_sql = sql
+      []
+    }) do
+      Analytics::EventsQueryService.list(
+        @project.id,
+        start_date: Date.new(2026, 4, 1),
+        end_date: Date.new(2026, 4, 18),
+        cursor: cursor,
+        search: 'checkout',
+        filters: [{ 'field' => 'event_name', 'operator' => 'is_not', 'value' => 'buy' }]
+      )
+    end
+
+    candidates = captured_sql[/event_id IN \(SELECT event_id FROM .*?LIMIT 1 BY event_id LIMIT \d+\)/m]
+    assert candidates, 'expected a bounded candidate subquery'
+    assert_not_includes captured_sql, 'SELECT DISTINCT event_id'
+    assert_includes candidates, "event_name != 'buy'"
+    assert_includes candidates, "lower(event_name) LIKE '%checkout%'"
+    assert_includes candidates, "created_at < '2026-04-10 12:00:00.000'"
+    assert_includes candidates, 'ORDER BY created_at DESC, event_id DESC, ingested_at DESC LIMIT 1 BY event_id LIMIT 1000'
+  end
+
+  test 'list bounds non-created_at sorts on the same key the outer query sorts by' do
+    captured_sql = nil
+
+    Analytics::EventsQueryService.stub(:with_guard, lambda { |sql|
+      captured_sql = sql
+      []
+    }) do
+      Analytics::EventsQueryService.list(
+        @project.id, start_date: Date.new(2026, 4, 1), end_date: Date.new(2026, 4, 18),
+                     sort_by: 'platform', sort_order: 'asc'
+      )
+    end
+
+    assert_includes captured_sql,
+                    "ORDER BY #{ClickhouseReadService::NORMALIZED_PLATFORM_SQL} ASC, event_id ASC, ingested_at DESC " \
+                    'LIMIT 1 BY event_id LIMIT 1000'
+  end
+
+  test 'a negated filter returns the newest matching rows and paginates without a full-range id set' do
+    rows = (1..30).map do |i|
+      base_event(event_id: "neg_#{i}", event_name: i.odd? ? 'buy' : 'view_item',
+                 created_at: (@now - 2.hours + i.minutes).utc.strftime('%Y-%m-%d %H:%M:%S.%3N'))
+    end
+    insert_ch_events(rows)
+    filters = [{ 'field' => 'event_name', 'operator' => 'is_not', 'value' => 'buy' }]
+
+    page1 = list_window(limit: 5, filters: filters)
+    assert_equal %w[neg_30 neg_28 neg_26 neg_24 neg_22], page1[:data].map { |r| r['event_id'] }
+    assert page1[:next_cursor]
+    page2 = list_window(limit: 5, filters: filters, cursor: page1[:next_cursor])
+    assert_equal %w[neg_20 neg_18 neg_16 neg_14 neg_12], page2[:data].map { |r| r['event_id'] }
+    assert page1[:data].none? { |r| r['event_name'] == 'buy' }
+  end
+
+  test 'a search returns the newest matching rows and paginates to the end' do
+    rows = (1..12).map do |i|
+      base_event(event_id: "srch_#{i}", event_name: i.even? ? 'checkout_start' : 'home',
+                 created_at: (@now - 2.hours + i.minutes).utc.strftime('%Y-%m-%d %H:%M:%S.%3N'))
+    end
+    insert_ch_events(rows)
+
+    page1 = list_window(limit: 4, search: 'checkout')
+    assert_equal %w[srch_12 srch_10 srch_8 srch_6], page1[:data].map { |r| r['event_id'] }
+    page2 = list_window(limit: 4, search: 'checkout', cursor: page1[:next_cursor])
+    assert_equal %w[srch_4 srch_2], page2[:data].map { |r| r['event_id'] }
+    assert_nil page2[:next_cursor]
   end
 
   test 'list collapses duplicate event deliveries without FINAL' do
@@ -458,6 +534,16 @@ class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
     assert_equal event_id, found['event_id']
   end
 
+  test 'find returns the newest version of an event that was ingested twice' do
+    at = (@now - 1.hour).utc
+    row = { event_id: 'dup_evt', project_id: @project.id, event_type: 'VIEW', event_name: 'old',
+            visitor_id: 1, device_id: 2, platform: 'ios', created_at: at.strftime('%Y-%m-%d %H:%M:%S.%3N') }
+    insert_ch_events(row.merge(ingested_at: at.strftime('%Y-%m-%d %H:%M:%S.%3N')))
+    insert_ch_events(row.merge(event_name: 'new', ingested_at: (at + 5.minutes).strftime('%Y-%m-%d %H:%M:%S.%3N')))
+
+    assert_equal 'new', Analytics::EventsQueryService.find(@project.id, event_id: 'dup_evt')['event_name']
+  end
+
   test 'find returns nil for nonexistent event_id' do
     found = Analytics::EventsQueryService.find(@project.id, event_id: 'nonexistent')
     assert_nil found
@@ -479,7 +565,7 @@ class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
       end_date: Date.current
     )
     assert result[:buckets].respond_to?(:each), 'buckets should be enumerable'
-    assert result[:buckets].size > 0
+    assert_not result[:buckets].empty?
     result[:buckets].each do |bucket|
       assert bucket['count'] > 0
     end
@@ -624,6 +710,37 @@ class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
     ids = result[:data].map { |e| e['event_id'] }
     assert_includes ids, 'platn_win'
     assert_not_includes ids, 'platn_and'
+  end
+
+  test 'list filters by language without exposing it in the row shape' do
+    insert_ch_events([
+      base_event(event_id: 'lang_ro', language: 'ro'),
+      base_event(event_id: 'lang_en', language: 'en')
+    ])
+    result = Analytics::EventsQueryService.list(
+      @project.id,
+      start_date: 7.days.ago.to_date,
+      end_date: Date.current,
+      filters: [{ 'field' => 'language', 'operator' => 'is', 'value' => 'ro' }]
+    )
+    assert_equal ['lang_ro'], result[:data].map { |e| e['event_id'] }
+    assert_not result[:data].first.key?('language')
+  end
+
+  test 'list filters by source category' do
+    insert_ch_events([
+      base_event(event_id: 'src_ref', sdk_generated: 1, link_visitor_id: 7, link_id: 3),
+      base_event(event_id: 'src_api', sdk_generated: 1, link_visitor_id: 0, link_id: 3),
+      base_event(event_id: 'src_org')
+    ])
+    result = Analytics::EventsQueryService.list(
+      @project.id,
+      start_date: 7.days.ago.to_date,
+      end_date: Date.current,
+      filters: [{ 'field' => 'source', 'operator' => 'is', 'value' => 'referrals' }]
+    )
+    assert_equal ['src_ref'], result[:data].map { |e| e['event_id'] }
+    assert_not result[:data].first.key?('sdk_generated')
   end
 
   test 'find normalizes desktop platform to web' do
@@ -889,6 +1006,151 @@ class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
     }.merge(overrides)
   end
 
+  def insert_ch_purchase(attrs = {})
+    at = attrs.delete(:at) || (@now - 30.minutes)
+    stamp = at.utc.strftime('%Y-%m-%d %H:%M:%S.%3N')
+    row = {
+      project_id: @project.id, event_type: 'buy', purchase_type: 'subscription', product_id: 'sku_pro',
+      usd_price_cents: 999, currency: 'USD', quantity: 1, transaction_id: "txn_#{SecureRandom.hex(4)}",
+      original_transaction_id: 'orig_1', store_source: 'apple', device_id: 2000, visitor_id: 1000,
+      link_id: 0, session_id: '', platform: 'ios',
+      purchase_date: stamp, recorded_at: stamp, created_at: stamp
+    }.merge(attrs)
+    Clickhouse.with { |c| c.insert('purchase_events', [row]) }
+    row
+  end
+
+  def list_window(**opts)
+    Analytics::EventsQueryService.list(@project.id, start_date: 7.days.ago.to_date, end_date: Date.current, **opts)
+  end
+
+  test 'purchases appear in the list interleaved by time as purchase/buy rows' do
+    insert_test_events(count: 2)
+    insert_ch_purchase(at: @now - 90.minutes, event_type: 'buy')
+    insert_ch_purchase(at: @now - 10.minutes, event_type: 'cancel', transaction_id: 'txn_c')
+
+    rows = list_window[:data]
+    expected = [%w[VIEW home_screen], %w[purchase cancel], %w[OPEN login_screen], %w[purchase buy]]
+    assert_equal expected, rows.map { |r| [r['event_type'], r['event_name']] }
+  end
+
+  test 'find returns nested purchase properties and the ledger platform' do
+    row = insert_ch_purchase(transaction_id: 'txn_find', platform: '', store_source: 'google')
+    event = Analytics::EventsQueryService.find(@project.id, event_id: Analytics::EventsSource.purchase_event_id('txn_find', 'buy'))
+
+    assert_equal 'purchase', event['event_type']
+    assert_equal 'buy', event['event_name']
+    assert_equal 'android', event['platform']
+    assert_equal 'sku_pro', event['properties']['purchase']['product_id']
+    assert_equal '999', event['properties']['purchase']['usd_price_cents']
+    assert_equal row[:visitor_id], event['visitor_id']
+  end
+
+  test 'count, volume and event_type field values include purchases' do
+    insert_test_events(count: 1)
+    insert_ch_purchase
+
+    assert_equal 2, list_window(include_count: true)[:total_count]
+    buckets = Analytics::EventsQueryService.volume(@project.id, start_date: 7.days.ago.to_date, end_date: Date.current)
+    assert_equal 2, buckets[:buckets].sum { |b| b['count'].to_i }
+    values = Analytics::EventsQueryService.field_values(@project.id, field: 'event_type')[:values]
+    assert_includes values, 'purchase'
+  end
+
+  test 'event_type is_not purchase hides purchases and a purchase property filter finds them' do
+    insert_test_events(count: 1)
+    insert_ch_purchase(product_id: 'sku_gold')
+
+    hidden = list_window(filters: [{ 'field' => 'event_type', 'operator' => 'is_not', 'value' => 'purchase' }])
+    assert hidden[:data].none? { |r| r['event_type'] == 'purchase' }
+    assert_equal 1, hidden[:data].size
+
+    found = list_window(filters: [{ 'field' => 'purchase.product_id', 'operator' => 'is', 'value' => 'sku_gold' }])
+    assert_equal 1, found[:data].size
+    assert_equal 'purchase', found[:data].first['event_type']
+  end
+
+  test 'field_values for a purchase key reads the union and ignores app events' do
+    insert_test_events(count: 1)
+    insert_ch_purchase(product_id: 'sku_a')
+    insert_ch_purchase(product_id: 'sku_b', transaction_id: 'txn_b')
+    values = Analytics::EventsQueryService.field_values(@project.id, field: 'purchase.product_id')[:values]
+    assert_equal %w[sku_a sku_b], values
+  end
+
+  test 'id typeahead honours the requested window and defaults to the field lookback' do
+    insert_ch_events([base_event(visitor_id: 7001, created_at: (@now - 120.days).utc.strftime('%Y-%m-%d %H:%M:%S.%3N'))])
+    insert_ch_purchase(visitor_id: 7002, at: @now - 120.days)
+    insert_ch_purchase(visitor_id: 7003)
+
+    recent = Analytics::EventsQueryService.field_values(@project.id, field: 'visitor_id')[:values].map { |v| v[:id] }
+    assert_equal [7003], recent
+
+    wide = Analytics::EventsQueryService.field_values(
+      @project.id, field: 'visitor_id', start_date: 130.days.ago.to_date, end_date: Date.current
+    )[:values].map { |v| v[:id] }
+    assert_equal [7001, 7002, 7003], wide
+  end
+
+  test 'a purchase with no visitor is excluded' do
+    insert_ch_purchase(visitor_id: 0, device_id: 0)
+    result = list_window(include_count: true)
+    assert_empty result[:data]
+    assert_equal 0, result[:total_count]
+  end
+
+  test 'a purchase re-emitted after its recorded time still appears in the recorded window' do
+    recorded = @now - 3.days
+    insert_ch_purchase(at: recorded, created_at: (@now - 1.hour).utc.strftime('%Y-%m-%d %H:%M:%S.%3N'))
+    result = Analytics::EventsQueryService.list(@project.id, start_date: 4.days.ago.to_date, end_date: 2.days.ago.to_date)
+    assert_equal 1, result[:data].size
+    assert_in_delta recorded.to_f, result[:data].first['created_at'].to_f, 0.001
+  end
+
+  test 'cursor pagination walks a mixed timeline without gaps or repeats' do
+    insert_test_events(count: 3)
+    insert_ch_purchase(at: @now - 30.minutes, transaction_id: 'txn_p1')
+    insert_ch_purchase(at: @now - 90.minutes, transaction_id: 'txn_p2')
+
+    seen = []
+    cursor = nil
+    loop do
+      page = list_window(limit: 2, cursor: cursor)
+      seen.concat(page[:data].map { |r| r['event_id'] })
+      cursor = page[:next_cursor]
+      break unless cursor
+    end
+    assert_equal 5, seen.size
+    assert_equal seen.uniq, seen
+    assert_includes seen, Analytics::EventsSource.purchase_event_id('txn_p1', 'buy')
+    assert_includes seen, Analytics::EventsSource.purchase_event_id('txn_p2', 'buy')
+  end
+
+  test 'fields offers purchase property keys without scanning purchase_events' do
+    captured = []
+    Rails.cache.clear
+    recorder = lambda do |sql|
+      captured << sql
+      []
+    end
+    fields = Analytics::EventsQueryService.stub(:with_guard, recorder) do
+      Analytics::EventsQueryService.fields(@project.id)[:fields]
+    end
+    purchase = fields.select { |f| f[:name].start_with?('purchase.') }
+    expected = Analytics::EventsSource::PURCHASE_PROPERTY_KEYS.map { |k| "purchase.#{k}" }
+    assert_equal expected, purchase.map { |f| f[:name] }
+    assert purchase.all? { |f| f[:type] == 'property' }
+    assert captured.any?
+    assert captured.none? { |sql| sql.include?('purchase_events') }
+  end
+
+  test 'fields hides purchase keys for a tenant without revenue collection' do
+    @project.instance.update!(revenue_collection_enabled: false)
+    Rails.cache.clear
+    names = Analytics::EventsQueryService.fields(@project.id)[:fields].map { |f| f[:name] }
+    assert names.none? { |n| n.start_with?('purchase.') }
+  end
+
   def insert_test_events(count: 3)
     rows = count.times.map do |i|
       {
@@ -906,5 +1168,87 @@ class Analytics::EventsQueryServiceTest < ActiveSupport::TestCase
       }
     end
     insert_ch_events(rows)
+  end
+end
+
+class Analytics::EventsQueryServiceFindPlanTest < ActiveSupport::TestCase
+  include ClickhouseTestHelper
+  include AnalyticsSqlCaptureHelper
+  fixtures :projects
+
+  setup do
+    skip_unless_clickhouse!
+    @project = projects(:one)
+  end
+
+  # FINAL plus a purchase MD5 scan per lookup saturated ClickHouse under parallel load.
+  test 'find reads events without FINAL and skips purchases when the event exists' do
+    at = 1.hour.ago.utc.strftime('%Y-%m-%d %H:%M:%S.%3N')
+    insert_ch_events(event_id: 'plain_evt', project_id: @project.id, event_type: 'VIEW', created_at: at)
+
+    sqls = capture_ch_sql { assert Analytics::EventsQueryService.find(@project.id, event_id: 'plain_evt') }
+
+    assert_equal 1, sqls.size
+    assert_no_match(/\bFINAL\b/, sqls.first)
+    assert_no_match(/purchase_events/, sqls.first)
+  end
+
+  test 'find falls back to purchases when no event has the id' do
+    sqls = capture_ch_sql { assert_nil Analytics::EventsQueryService.find(@project.id, event_id: 'f' * 32) }
+
+    assert_equal 2, sqls.size
+    assert_match(/purchase_events/, sqls.last)
+  end
+end
+
+class Analytics::EventsQueryServiceVisitorClauseTest < ActiveSupport::TestCase
+  include AnalyticsSqlCaptureHelper
+
+  PID = 8_800
+  START_DATE = Date.new(2026, 5, 1)
+  END_DATE = Date.new(2026, 5, 8)
+  # Frozen literal: an always-on predicate added to the unfiltered WHERE must fail here.
+  EXPECTED_WHERE = "project_id = #{PID} AND created_at >= toDateTime64('2026-05-01 00:00:00.000', 3, 'UTC') " \
+                   "AND created_at < toDateTime64('2026-05-09 00:00:00.000', 3, 'UTC')"
+
+  def list_window(**opts)
+    Analytics::EventsQueryService.list(PID, start_date: START_DATE, end_date: END_DATE, **opts)
+  end
+
+  test 'list appends visitor_clause to both the row query and the count query' do
+    clause = 'visitor_id IN (1, 2)'
+    sqls = capture_stubbed_ch_sql { list_window(include_count: true, visitor_clause: clause) }
+    assert_equal 2, sqls.size
+    sqls.each { |sql| assert_includes sql, clause }
+  end
+
+  test 'list with visitor_clause nil matches omitting it, on the frozen unfiltered WHERE, with no segment_results' do
+    baseline = capture_stubbed_ch_sql { list_window(include_count: true) }
+    with_nil = capture_stubbed_ch_sql { list_window(include_count: true, visitor_clause: nil) }
+    assert_equal baseline, with_nil
+    baseline.each { |sql| assert_not_includes sql, 'segment_results' }
+    # The count query has no candidate subquery, so its WHERE can be pinned up to SETTINGS.
+    assert_includes baseline[1], "WHERE #{EXPECTED_WHERE} SETTINGS"
+  end
+
+  test 'volume appends visitor_clause to its query' do
+    clause = 'visitor_id IN (1, 2)'
+    sqls = capture_stubbed_ch_sql do
+      Analytics::EventsQueryService.volume(PID, start_date: START_DATE, end_date: END_DATE, visitor_clause: clause)
+    end
+    assert_equal 1, sqls.size
+    assert_includes sqls.first, clause
+  end
+
+  test 'volume with visitor_clause nil matches omitting it, on the frozen unfiltered WHERE, with no segment_results' do
+    baseline = capture_stubbed_ch_sql do
+      Analytics::EventsQueryService.volume(PID, start_date: START_DATE, end_date: END_DATE)
+    end
+    with_nil = capture_stubbed_ch_sql do
+      Analytics::EventsQueryService.volume(PID, start_date: START_DATE, end_date: END_DATE, visitor_clause: nil)
+    end
+    assert_equal baseline, with_nil
+    assert_not_includes baseline.first, 'segment_results'
+    assert_includes baseline.first, "WHERE #{EXPECTED_WHERE} GROUP BY bucket"
   end
 end

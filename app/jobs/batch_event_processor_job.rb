@@ -186,6 +186,7 @@ class BatchEventProcessorJob # rubocop:disable Metrics/ClassLength
   end
 
   def process_batch(raw_events)
+    @active_pairs = nil
     # Per batch: the builder's geo/alias caches must not survive a batch that raised.
     @ch_row_builder = nil
     parsed = parse_events(raw_events)
@@ -249,14 +250,11 @@ class BatchEventProcessorJob # rubocop:disable Metrics/ClassLength
 
     touch_deduped_views(deduped_view_pairs)
     stamp_device_last_seen(event_rows)
+    JourneyGateway.observe(event_rows, visitors_index)
 
     Rails.logger.info("BatchEventProcessorJob processed #{event_rows.size} events")
 
-    if ch_primary
-      finish_primary_write(visitors_index, devices)
-    elsif ch_enabled
-      dual_write_clickhouse(event_rows, devices, visitors_index, links)
-    end
+    write_clickhouse(event_rows, devices, visitors_index, links, ch_primary, ch_enabled)
     :success
   rescue ActiveRecord::QueryCanceled => e
     Rails.logger.error("BatchEventProcessorJob: DB timeout: #{e.message}")
@@ -556,6 +554,12 @@ class BatchEventProcessorJob # rubocop:disable Metrics/ClassLength
     Rails.logger.warn("BatchEventProcessorJob: failed to touch deduped views: #{e.class} - #{e.message}")
   end
 
+  def server_event?(row) = row[:event] == Grovs::Events::CUSTOM && Grovs::Events::SERVER_EVENT_NAMES.include?(row[:event_name])
+
+  def active_pairs(event_rows)
+    @active_pairs ||= event_rows.reject { |row| server_event?(row) }.map { |row| [row[:project_id], row[:device_id]] }.to_set
+  end
+
   # Newest event per device this batch — the SDK auth endpoint reads this instead of ClickHouse.
   def stamp_device_last_seen(event_rows)
     stamps = {}
@@ -563,7 +567,7 @@ class BatchEventProcessorJob # rubocop:disable Metrics/ClassLength
       device_id = row[:device_id]
       next unless device_id
       # USER_REFERRED carries the REFERRER's device with the installer's time — credit, not activity.
-      next if row[:event] == Grovs::Events::USER_REFERRED
+      next if row[:event] == Grovs::Events::USER_REFERRED || server_event?(row)
 
       pair = [row[:project_id], device_id]
       occurred_at = row[:created_at]
@@ -878,6 +882,16 @@ class BatchEventProcessorJob # rubocop:disable Metrics/ClassLength
     end
   end
 
+  # A person held from a message, or delivered one, did nothing: their profile is not "seen now".
+  def write_clickhouse(event_rows, devices, visitors_index, links, ch_primary, ch_enabled)
+    active = visitors_index.select { |pair, _| active_pairs(event_rows).include?(pair) }
+    if ch_primary
+      finish_primary_write(active, devices)
+    elsif ch_enabled
+      dual_write_clickhouse(event_rows, devices, visitors_index, links, active)
+    end
+  end
+
   # Profiles are deliberately not spilled — self-heal on next event or via backfill.
   def finish_primary_write(visitors_index, devices)
     upsert_user_profiles(visitors_index, devices)
@@ -887,7 +901,7 @@ class BatchEventProcessorJob # rubocop:disable Metrics/ClassLength
     @ch_row_builder = nil
   end
 
-  def dual_write_clickhouse(event_rows, devices, visitors_index, links)
+  def dual_write_clickhouse(event_rows, devices, visitors_index, links, active = visitors_index)
     # A device deleted before crash recovery shifts the fingerprint; worst case is a duplicate CH insert.
     ch_rows = ch_row_builder.build_rows(event_rows, devices, visitors_index, links)
 
@@ -900,7 +914,7 @@ class BatchEventProcessorJob # rubocop:disable Metrics/ClassLength
     # PG stays source of truth — does not move the PG ack.
     delivered = deliver_canonical_with_heartbeat(ch_rows)
 
-    upsert_user_profiles(visitors_index, devices)
+    upsert_user_profiles(active, devices)
     delivered
   rescue StandardError => e
     Rails.logger.error("BatchEventProcessorJob: ClickHouse dual-write failed: #{e.class} - #{e.message}")

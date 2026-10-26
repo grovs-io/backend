@@ -65,6 +65,36 @@ class ClickhouseIdentityMapServiceTest < ActiveSupport::TestCase
     assert_equal({}, ClickhouseIdentityMapService.resolve_many(PROJECT_ID, []))
   end
 
+  test "identity acknowledgment forces a synchronous write and preserves transport failures" do
+    conn = Object.new
+    settings = nil
+    conn.define_singleton_method(:insert) do |_table, _rows, **options|
+      settings = options.fetch(:settings)
+      raise Net::ReadTimeout
+    end
+    Clickhouse.stub(:with, ->(&block) { block.call(conn) }) do
+      assert_raises(Net::ReadTimeout) do
+        ClickhouseWriteService.insert_identity_rows!([{project_id: PROJECT_ID, from_visitor_id: 10, to_visitor_id: 20}])
+      end
+    end
+    assert_equal({async_insert: 0, wait_for_async_insert: 1}, settings)
+  end
+
+  test "alias is immediately visible even when connection defaults request async acknowledgment" do
+    configuration = ClickHouse::Client.configuration
+    original = configuration.databases.fetch(:main)
+    uri = URI(ENV.fetch("CLICKHOUSE_URL", "http://127.0.0.1:8123"))
+    configuration.databases[:main] = ClickHouse::Client::Database.new(
+      database: Clickhouse.default_database, url: "#{uri.scheme}://#{uri.host}:#{uri.port}",
+      username: uri.user || "default", password: uri.password || "",
+      variables: {async_insert: 1, wait_for_async_insert: 0, async_insert_busy_timeout_ms: 10_000}
+    )
+    ClickhouseIdentityMapService.record_merge(PROJECT_ID, 10, 20)
+    assert_equal 20, ClickhouseIdentityMapService.resolve(PROJECT_ID, 10)
+  ensure
+    configuration.databases[:main] = original if original
+  end
+
   private
 
   # Returns {from => to} for a project, reading the deduped (FINAL) latest rows.

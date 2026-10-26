@@ -112,7 +112,7 @@ class CustomDomainProvisioningServiceTest < ActiveSupport::TestCase
       CloudflareCustomHostnameService.stub(:lookup, { success: false }) do
         result = CustomDomainProvisioningService.create(project: projects(:one), hostname: "links.acmeco.com")
         assert_not result.ok
-        assert_equal :bad_gateway, result.status
+        assert_equal :failed_dependency, result.status
       end
     end
     assert_not CustomHostname.exists?(hostname: "links.acmeco.com")
@@ -153,7 +153,7 @@ class CustomDomainProvisioningServiceTest < ActiveSupport::TestCase
       CloudflareCustomHostnameService.stub(:lookup, { success: false }) do
         result = CustomDomainProvisioningService.create(project: projects(:one), hostname: "links.acmeco.com")
         assert_not result.ok
-        assert_equal :bad_gateway, result.status
+        assert_equal :failed_dependency, result.status
       end
     end
     assert_not CustomHostname.exists?(hostname: "links.acmeco.com")

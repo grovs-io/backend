@@ -56,7 +56,7 @@ project: project).call[:visitors][0]
       project = instance.test
     end
 
-    link = Link.includes(:custom_redirects, :domain).find_by(domain_id: project.domain.id, path: path_param)
+    link = LinksService.find_link_preferring_active(project.domain.id, path_param)
     unless link
       render json: {link: nil, metrics: nil}
       return

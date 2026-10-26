@@ -5,7 +5,7 @@ module AnalyticsSqlCaptureHelper
 
   def capture_ch_sql
     statements = []
-    klass = Clickhouse.with { |conn| conn.class }
+    klass = Clickhouse.with(&:class)
     originals = {}
 
     CAPTURED_CH_METHODS.each do |method_name|
@@ -24,6 +24,18 @@ module AnalyticsSqlCaptureHelper
     originals&.each do |method_name, original|
       klass.define_method(method_name, original)
     end
+  end
+
+  # Stubs Clickhouse.with with a fake connection — no live ClickHouse required.
+  def capture_stubbed_ch_sql(&block)
+    captured = []
+    conn = Object.new
+    conn.define_singleton_method(:select_all) do |sql|
+      captured << sql.to_s.squish
+      [{ 'value' => 0 }]
+    end
+    Clickhouse.stub(:with, ->(&blk) { blk.call(conn) }, &block)
+    captured
   end
 
   def explain_captured_selects(sqls)

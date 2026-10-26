@@ -48,6 +48,69 @@ class McpConfigurationsTest < ActionDispatch::IntegrationTest
     assert_equal true, json_response["redirect_config"]["copy_to_clipboard_ios"]
   end
 
+  test "setup_redirects sets in-app browser page toggles standalone" do
+    put "#{MCP_PREFIX}/redirects",
+      params: { project_id: @project.hashid, in_app_browser_page_ios: true, in_app_browser_page_android: false },
+      headers: @admin_headers
+    assert_response :ok
+
+    config = @project.redirect_config.reload
+    assert_equal true, config.in_app_browser_page_ios
+    assert_equal false, config.in_app_browser_page_android
+    assert_equal true, json_response["redirect_config"]["in_app_browser_page_ios"]
+  end
+
+  test "setup_redirects leaves in-app browser page toggles unchanged when omitted" do
+    @project.redirect_config.update_columns(in_app_browser_page_ios: true, in_app_browser_page_android: true)
+
+    put "#{MCP_PREFIX}/redirects",
+      params: { project_id: @project.hashid, copy_to_clipboard_ios: true },
+      headers: @admin_headers
+    assert_response :ok
+
+    config = @project.redirect_config.reload
+    assert_equal true, config.in_app_browser_page_ios
+    assert_equal true, config.in_app_browser_page_android
+  end
+
+  test "setup_redirects treats a null in-app browser page toggle as omitted" do
+    @project.redirect_config.update_columns(in_app_browser_page_ios: true)
+
+    put "#{MCP_PREFIX}/redirects",
+      params: { project_id: @project.hashid, in_app_browser_page_ios: nil, copy_to_clipboard_ios: true },
+      headers: @admin_headers
+    assert_response :ok
+
+    config = @project.redirect_config.reload
+    assert_equal true, config.in_app_browser_page_ios
+    assert_equal true, config.copy_to_clipboard_ios
+  end
+
+  test "setup_redirects treats an empty in-app browser page toggle as omitted" do
+    @project.redirect_config.update_columns(in_app_browser_page_android: true)
+
+    put "#{MCP_PREFIX}/redirects",
+      params: { project_id: @project.hashid, in_app_browser_page_android: "" },
+      headers: @admin_headers
+    assert_response :ok
+
+    assert_equal true, @project.redirect_config.reload.in_app_browser_page_android
+  end
+
+  test "setup_redirects records in-app browser page toggles in the audit change set" do
+    captured = nil
+    record = ->(**kwargs) { captured = kwargs[:changes] }
+
+    Audit.stub(:record, record) do
+      put "#{MCP_PREFIX}/redirects",
+        params: { project_id: @project.hashid, in_app_browser_page_ios: false },
+        headers: @admin_headers
+    end
+    assert_response :ok
+
+    assert_equal "false", captured["after"]["in_app_browser_page_ios"]
+  end
+
   test "setup_redirects sets default fallback with full RedirectConfigSerializer schema" do
     headers = @admin_headers
     assert_no_difference "RedirectConfig.count" do

@@ -88,6 +88,31 @@ class EventIngestionSyncSpillTest < ActiveSupport::TestCase
                  Event.order(id: :desc).first.created_at.iso8601(3)
   end
 
+  test "direct sync fallback across midnight collapses with the queued copy in ClickHouse" do
+    skip_unless_clickhouse!
+    travel_to Time.utc(2026, 7, 20, 23, 59, 59)
+    lpush = lambda do |_key, payload|
+      @lpush_payload = payload
+      travel 2.seconds
+      raise Redis::TimeoutError, "ambiguous: may have been queued"
+    end
+
+    REDIS.stub(:lpush, lpush) do
+      EventIngestionService.log_async(Grovs::Events::OPEN, @project, @device, @data, @link, nil, sidekiq_fallback: false)
+    end
+    job = BatchEventProcessorJob.new
+    job.jid = "sync-midnight-#{SecureRandom.hex(4)}"
+    job.send(:process_batch, [@lpush_payload])
+    REDIS.with { |conn| conn.del("#{BatchEventProcessorJob::HEARTBEAT_PREFIX}:#{job.jid}") }
+    DrainClickhouseSpillJob.new.perform
+
+    rows = Clickhouse.with do |conn|
+      conn.select_all("SELECT event_id, toString(toDate(created_at)) AS day FROM events FINAL " \
+                      "WHERE project_id = #{Integer(@project.id)} AND event_type = 'open'")
+    end
+    assert_equal [{ "event_id" => attempted_payload["event_id"], "day" => "2026-07-20" }], rows.to_a
+  end
+
   test "CH-primary: spill failure rolls back the PG event and reports it dropped" do
     metrics = []
 

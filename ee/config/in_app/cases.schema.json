@@ -1,0 +1,438 @@
+{
+  "$schema": "http://json-schema.org/draft-06/schema#",
+  "$id": "https://grovs.io/schemas/in-app/cases-1.json",
+  "title": "Shared in-app engine cases",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "base_campaign",
+    "base_device",
+    "base_case",
+    "cases",
+    "html_parsing",
+    "link_rule"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "html_parsing": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/html_parsing_case"
+      }
+    },
+    "link_rule": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/link_rule_case"
+      }
+    },
+    "base_campaign": {
+      "type": "object"
+    },
+    "base_device": {
+      "$ref": "#/definitions/device"
+    },
+    "base_case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "global_caps",
+        "synced_at",
+        "not_ready"
+      ],
+      "properties": {
+        "global_caps": {
+          "$ref": "#/definitions/global_caps"
+        },
+        "synced_at": {
+          "type": "string"
+        },
+        "not_ready": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/case"
+      }
+    }
+  },
+  "definitions": {
+    "html_parsing_case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "content",
+        "expect"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "html": {
+              "type": "string"
+            },
+            "layout": {
+              "type": "string"
+            }
+          }
+        },
+        "expect": {
+          "type": "string",
+          "enum": [
+            "valid",
+            "unsupported"
+          ]
+        }
+      }
+    },
+    "link_rule_case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "input",
+        "expect"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {
+          "type": "string"
+        },
+        "expect": {
+          "type": "string",
+          "enum": [
+            "allowed",
+            "refused"
+          ]
+        }
+      }
+    },
+    "global_caps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session",
+        "day"
+      ],
+      "properties": {
+        "session": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "day": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "platform": {
+          "type": "string",
+          "enum": [
+            "ios",
+            "android",
+            "web"
+          ]
+        },
+        "app_version": {
+          "type": "string"
+        },
+        "os_version": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        },
+        "first_seen_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "utc_offset_minutes": {
+          "type": "integer",
+          "minimum": -720,
+          "maximum": 840
+        },
+        "user": {
+          "type": "object"
+        },
+        "unsupported_templates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unsupported_actions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "push_permission": {
+          "type": "string",
+          "enum": [
+            "granted",
+            "denied",
+            "not_asked"
+          ]
+        },
+        "orientation": {
+          "type": "string",
+          "enum": [
+            "portrait",
+            "landscape"
+          ]
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "app_open",
+            "screen_view",
+            "event"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "properties": {
+          "type": "object"
+        }
+      }
+    },
+    "expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "show",
+        "reasons"
+      ],
+      "properties": {
+        "show": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasons": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "stale",
+              "unsupported",
+              "no_trigger",
+              "not_ready",
+              "schedule",
+              "condition",
+              "answered",
+              "cap_session",
+              "cap_day",
+              "cap_week",
+              "cap_lifetime",
+              "cap_global_session",
+              "cap_global_day",
+              "personalization",
+              "unsafe_link",
+              "lower_priority"
+            ]
+          }
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "buttons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "view": {
+          "type": "string"
+        },
+        "delay": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "step": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_start"
+          ],
+          "properties": {
+            "session_start": {
+              "type": "boolean",
+              "enum": [
+                true
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "at",
+            "event",
+            "expect"
+          ],
+          "properties": {
+            "at": {
+              "type": "string"
+            },
+            "event": {
+              "$ref": "#/definitions/event"
+            },
+            "expect": {
+              "$ref": "#/definitions/expect"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sync"
+          ],
+          "properties": {
+            "sync": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "at"
+              ],
+              "properties": {
+                "at": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "answer"
+          ],
+          "properties": {
+            "answer": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "campaigns",
+        "steps"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "off_schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "global_caps": {
+          "$ref": "#/definitions/global_caps"
+        },
+        "synced_at": {
+          "type": "string"
+        },
+        "not_ready": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "device": {
+          "$ref": "#/definitions/device"
+        },
+        "campaigns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object"
+          }
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/step"
+          }
+        }
+      }
+    }
+  }
+}

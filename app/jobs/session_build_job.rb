@@ -178,6 +178,7 @@ class SessionBuildJob < ApplicationJob
       ) se ON se.project_id = e.project_id AND se.event_id = e.event_id
       WHERE e.project_id = #{pid}
         AND e.created_at >= now() - INTERVAL #{lookback_days} DAY
+        AND #{Grovs::Events::NOT_A_SERVER_EVENT_SQL}
     SQL
     Clickhouse.with { |conn| conn.select_all(sql) }.to_a.map { |r| r['visitor_id'].to_i }.to_set
   end
@@ -209,6 +210,7 @@ class SessionBuildJob < ApplicationJob
         ) se ON se.project_id = e.project_id AND se.event_id = e.event_id
         WHERE e.project_id = #{pid}
           AND e.created_at >= now() - INTERVAL #{lookback_days} DAY
+          AND #{Grovs::Events::NOT_A_SERVER_EVENT_SQL}
         GROUP BY e.visitor_id
       ) v
       LEFT JOIN (
@@ -277,6 +279,21 @@ class SessionBuildJob < ApplicationJob
     end
   end
 
+  # LIMIT BY not FINAL (FINAL kills partition pruning on CH 26.x); alias must not shadow created_at.
+  def purchase_join_sql(pid, alias_pairs)
+    <<~SQL
+      SELECT #{visitor_expr(alias_pairs, 'p.visitor_id')} AS visitor_id, p.session_id AS session_id,
+             if(p.recorded_at = toDateTime64(0, 3, 'UTC'), p.created_at, p.recorded_at) AS purchase_at,
+             p.usd_price_cents AS usd_price_cents
+      FROM purchase_events AS p
+      WHERE p.project_id = #{Integer(pid)}
+        AND p.event_type = '#{Grovs::Purchases::EVENT_BUY}'
+        AND p.created_at >= now() - INTERVAL #{lookback_days} DAY
+      ORDER BY p.created_at DESC
+      LIMIT 1 BY p.project_id, p.transaction_id, p.event_type
+    SQL
+  end
+
   # Inline, not a join: a join-derived bucket would stop CH pruning the events scan.
   def visitor_expr(alias_pairs, column)
     return column if alias_pairs.empty?
@@ -312,6 +329,7 @@ class SessionBuildJob < ApplicationJob
       WHERE e.project_id = #{pid}
         AND e.visitor_id IN (#{vid_list})
         AND e.created_at >= now() - INTERVAL #{lookback_days} DAY
+        AND #{Grovs::Events::NOT_A_SERVER_EVENT_SQL}
         #{build_cursor_clause(cursor, eff)}
       ORDER BY #{eff}, e.created_at
       LIMIT #{EVENT_PAGE_SIZE}
@@ -358,32 +376,23 @@ class SessionBuildJob < ApplicationJob
     "AND (#{eff} > #{vid} OR (#{eff} = #{vid} AND e.created_at > '#{ts}'))"
   end
 
-  # Attribution columns take argMin (the click that opened the session), device columns
-  # argMax (the app, not the browser the session may have started in).
+  # Attribution columns take argMin (the opening click); device columns argMax (app, not browser).
   def build_session_summaries(project_id, session_ids, alias_pairs = {})
     pid = Integer(project_id)
-    buy_event = Grovs::Purchases::EVENT_BUY # the stored VALUE "buy", not the literal 'PURCHASE_EVENT_BUY'
 
     session_ids.each_slice(1000) do |batch|
       list = batch.map { |sid| "'#{sanitize_string(sid)}'" }.join(', ')
-      Clickhouse.with { |conn| conn.execute(session_summary_insert_sql(pid, buy_event, list, alias_pairs)) }
+      Clickhouse.with { |conn| conn.execute(session_summary_insert_sql(pid, list, alias_pairs)) }
     end
   end
 
-  # Conversion/revenue via LEFT JOIN + regroup, NOT correlated subqueries —
-  # those fail to plan on CH 25.x ("Cannot clone ReadFromPreparedSource").
-  # Both sides resolve through the identity map: rows written before a merge would otherwise
-  # aggregate as a second session, and purchases under the merged visitor would stop joining.
-  # Purchases match on session_id when they carry one. Resolving the visitor through the map
-  # collapses two join keys into one, so a window-only rule pays a purchase into every
-  # concurrent session of a merged person — double-counted revenue.
-  def session_summary_insert_sql(pid, buy_event, list, alias_pairs = {})
-    eff_pe = visitor_expr(alias_pairs, 'visitor_id')
+  # LEFT JOIN + regroup (correlated subqueries fail to plan on CH 25.x); both sides identity-mapped.
+  def session_summary_insert_sql(pid, list, alias_pairs = {})
     # The id must be one this batch actually rebuilt, or a purchase tagged with a session we
     # are not aggregating matches nothing and drops out of revenue entirely.
     pe_match = "if(pe.session_id != '' AND pe.session_id IN (#{list}), " \
                "pe.session_id = agg.session_id, " \
-               "pe.created_at >= agg.started_at AND pe.created_at <= agg.ended_at)"
+               "pe.purchase_at >= agg.started_at AND pe.purchase_at <= agg.ended_at)"
 
     <<~SQL
             INSERT INTO session_summary (
@@ -429,11 +438,7 @@ class SessionBuildJob < ApplicationJob
             FROM (
       #{session_agg_sql(pid, list, alias_pairs)}      ) agg
             LEFT JOIN (
-              SELECT #{eff_pe} AS visitor_id, session_id, created_at, usd_price_cents
-              FROM purchase_events FINAL
-              WHERE project_id = #{pid}
-                AND event_type = '#{buy_event}'
-                AND created_at >= now() - INTERVAL #{lookback_days} DAY
+      #{purchase_join_sql(pid, alias_pairs)}
             ) pe ON pe.visitor_id = agg.visitor_id
             GROUP BY
                 agg.project_id, agg.session_id, agg.visitor_id, agg.event_date,

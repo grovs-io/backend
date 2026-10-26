@@ -301,20 +301,6 @@ class VisitorTest < ActiveSupport::TestCase
     assert_equal 0, result[:total_entries]
   end
 
-  # === add_notifications_if_needed (after_create_commit callback) ===
-
-  test "creating a visitor calls NotificationMessageService.add_messages_for_new_visitor" do
-    project = projects(:one)
-    device = devices(:ios_device)
-    called = false
-
-    NotificationMessageService.stub(:add_messages_for_new_visitor, ->(_visitor) { called = true }) do
-      Visitor.create!(project: project, device: device, web_visitor: false)
-    end
-
-    assert called, "Expected NotificationMessageService.add_messages_for_new_visitor to be called"
-  end
-
   test "creating a visitor stamps device_last_seens for its project and device" do
     project = projects(:two)
     device = devices(:ios_device)
@@ -337,22 +323,6 @@ class VisitorTest < ActiveSupport::TestCase
     Visitor.create!(project: projects(:two), device: device, web_visitor: false)
 
     assert DeviceLastSeen.exists?(project_id: projects(:two).id, device_id: device.id)
-  end
-
-  # Pins the callback order: a raise in an after_commit halts the rest of the chain.
-  test "a notification failure does not lose the stamp" do
-    project = projects(:two)
-    device = devices(:ios_device)
-    DeviceLastSeen.where(project_id: project.id, device_id: device.id).delete_all
-    Visitor.where(device_id: device.id, project_id: project.id).delete_all
-
-    NotificationMessageService.stub(:add_messages_for_new_visitor, ->(_v) { raise "boom" }) do
-      Visitor.create!(project: project, device: device, web_visitor: false)
-    rescue RuntimeError
-      nil
-    end
-
-    assert DeviceLastSeen.exists?(project_id: project.id, device_id: device.id)
   end
 
   test "a stamping failure does not abort visitor creation" do
@@ -380,5 +350,12 @@ class VisitorTest < ActiveSupport::TestCase
     end
 
     assert_equal 0, calls
+  end
+
+  test "identifier lookups are backed by a partial index on project_id + sdk_identifier" do
+    index = ActiveRecord::Base.connection.indexes(:visitors).find { |i| i.name == "index_visitors_on_project_id_and_sdk_identifier" }
+    assert index, "index missing"
+    assert_equal %w[project_id sdk_identifier], index.columns
+    assert_match(/sdk_identifier IS NOT NULL/i, index.where)
   end
 end

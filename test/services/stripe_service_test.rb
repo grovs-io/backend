@@ -540,12 +540,15 @@ class StripeServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "cancel_subscription swallows StripeError without raising" do
+  test "cancel_subscription returns false on StripeError without raising" do
     fake_cancel = ->(_) { raise Stripe::StripeError, "No such subscription" }
+    result = nil
 
     Stripe::Subscription.stub(:cancel, fake_cancel) do
-      assert_nothing_raised { StripeService.cancel_subscription(@active_sub) }
+      assert_nothing_raised { result = StripeService.cancel_subscription(@active_sub) }
     end
+
+    assert_equal false, result
   end
 
   # ============================================================
@@ -590,13 +593,15 @@ class StripeServiceTest < ActiveSupport::TestCase
   # create_checkout_session_for_product
   # ============================================================
 
-  test "create_checkout_session_for_product creates session and payment intent" do
+  test "create_checkout_session_for_product creates an elements session and payment intent" do
     user = users(:admin_user)
     received_params = nil
+    received_opts = nil
 
     fake_session = OpenStruct.new(id: "cs_test_session_123")
-    fake_create = lambda { |params|
+    fake_create = lambda { |params, opts|
       received_params = params
+      received_opts = opts
       fake_session
     }
 
@@ -608,6 +613,16 @@ class StripeServiceTest < ActiveSupport::TestCase
       assert_equal user.email, received_params[:customer_email]
       assert_equal @instance.id.to_s, received_params[:client_reference_id]
       assert_equal "price_test_123", received_params[:line_items][0][:price]
+      assert_equal 1, received_params[:line_items][0][:quantity]
+      assert_equal({ stripe_version: "2026-09-30.endive" }, received_opts)
+      assert_equal "elements", received_params[:ui_mode]
+      assert_equal %w[card link], received_params[:allowed_payment_method_types]
+      assert_equal({ enabled: true }, received_params[:tax_id_collection])
+      assert_equal "required", received_params[:billing_address_collection]
+      assert_equal({ billing_mode: { type: "classic" } }, received_params[:subscription_data])
+      %i[success_url cancel_url return_url redirect_on_completion custom_text].each do |key|
+        assert_not received_params.key?(key), "#{key} is not allowed in elements mode"
+      end
     end
 
     # Verify payment intent was created

@@ -129,6 +129,23 @@ class DisableQuotasJobTest < ActiveSupport::TestCase
     assert @instance.quota_exceeded?, "Should NOT modify quota when Stripe subscription active"
   end
 
+  test "a paying Stripe customer over the free MAU limit is never quota-disabled" do
+    @instance.update!(quota_exceeded: false)
+    StripeSubscription.create!(
+      instance: @instance, active: true, subscription_id: "sub_paying_#{SecureRandom.hex(4)}",
+      customer_id: "cus_paying", status: "active", stripe_payment_intent: stripe_payment_intents(:one)
+    )
+    create_visitors_with_stats(@instance.production, 11)
+
+    StripeService.stub(:set_usage, ->(_inst) { nil }) do
+      QuotaAlertJob.stub(:perform_async, ->(_id) { nil }) do
+        @job.perform
+      end
+    end
+
+    assert_not @instance.reload.quota_exceeded?
+  end
+
   # --- Free pass ---
 
   test "skips instances in free pass list" do

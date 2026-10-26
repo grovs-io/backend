@@ -1,0 +1,37 @@
+installs_by_country:
+  dashboard: one
+  title: "Installs by country"
+  viz: "bar"
+  size: "md"
+  query: { "metric": "installs", "group_by": "country", "limit": 10, "compare": false }
+  filters: []
+  position: 0
+
+total_opens:
+  dashboard: one
+  title: "Opens"
+  viz: "number"
+  size: "sm"
+  query: { "metric": "opens", "limit": 10, "compare": true }
+  filters: [{ "field": "platform", "operator": "is", "value": "ios" }]
+  position: 1
+
+other_tenant_widget:
+  dashboard: two
+  title: "Other tenant widget"
+  viz: "number"
+  size: "sm"
+  query: { "metric": "opens", "limit": 10, "compare": false }
+  filters: []
+  position: 0
+
+retention_panel:
+  dashboard: two
+  title: "Retention"
+  kind: "panel"
+  panel: "retention"
+  viz: "bar"
+  size: "sm"
+  query: {}
+  filters: []
+  position: 1

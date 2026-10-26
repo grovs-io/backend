@@ -1,10 +1,13 @@
 class Api::V1::PaymentsController < Api::V1::ProjectsBaseController
   include DashboardAuthorization
 
+  # wrap_parameters nests JSON bodies under :payment, breaking the strict request contract.
+  wrap_parameters false
+
   # Stripe-calling actions: admin-only, and disabled when self-hosted. The read
   # endpoints (current_mau/subscription_details/current_usage) are intentionally
   # left open — they serve analytics or 404 without any Stripe call.
-  STRIPE_ACTIONS = %i[create_subscription_session stripe_dashboard_url cancel_subscription].freeze
+  STRIPE_ACTIONS = %i[create_subscription_session stripe_dashboard_url cancel_subscription resume_subscription].freeze
 
   before_action :doorkeeper_authorize!
   before_action :load_instance
@@ -18,8 +21,14 @@ class Api::V1::PaymentsController < Api::V1::ProjectsBaseController
   end
 
   def create_subscription_session
-    result = billing_service.create_checkout_session(user: current_user)
-    render json: { url: result[:url] }, status: :ok
+    unless Billing::Plans.valid?(params[:plan], params[:interval])
+      return render json: { error: "Unknown plan" }, status: :unprocessable_entity
+    end
+
+    result = billing_service.create_checkout_session(user: current_user, plan: params[:plan], interval: params[:interval])
+    render json: { client_secret: result[:client_secret] }, status: :ok
+  rescue StripeService::CheckoutAlreadyCompleted
+    render json: { error: "Your payment is being processed. Refresh in a minute." }, status: :unprocessable_entity
   rescue ArgumentError
     render json: { error: "This project is already subscribed" }, status: :unprocessable_entity
   end
@@ -33,8 +42,21 @@ class Api::V1::PaymentsController < Api::V1::ProjectsBaseController
     result = billing_service.cancel_subscription
     if result.nil?
       render json: { error: "No active subscriptions" }, status: :not_found
+    elsif result == false
+      render json: { error: "Could not cancel the subscription, please try again" }, status: :bad_gateway
     else
-      render json: { result: result }, status: :ok
+      render json: { result: true }, status: :ok
+    end
+  end
+
+  def resume_subscription
+    result = billing_service.resume_subscription
+    if result.nil?
+      render json: { error: "Nothing to resume" }, status: :not_found
+    elsif result == false
+      render json: { error: "Could not resume the subscription, please try again" }, status: :bad_gateway
+    else
+      render json: { result: true }, status: :ok
     end
   end
 

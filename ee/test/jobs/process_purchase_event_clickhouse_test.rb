@@ -20,12 +20,36 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
 
   teardown do
     Rails.application.config.clickhouse_write_enabled = @original_ch_enabled if defined?(@original_ch_enabled)
+    REDIS.scan_each(match: "purchase:sync:*") { |k| REDIS.del(k) }
   end
 
   # --- helpers ---
 
   def ch_purchase_rows(project_id, extra_where: nil)
     ch_query('purchase_events', project_id, extra_where: extra_where)
+  end
+
+  def ch_time(value)
+    value.is_a?(Time) ? value : Time.parse(value.to_s)
+  end
+
+  def ch_final_rows(event)
+    Clickhouse.with do |c|
+      c.select_all("SELECT * FROM purchase_events FINAL WHERE project_id = #{event.project_id} " \
+                   "AND transaction_id = '#{event.transaction_id}' AND event_type = '#{event.event_type}'").to_a
+    end
+  end
+
+  def latest_ch_row(event) = ch_final_rows(event).first
+
+  def ch_final_count(event) = ch_final_rows(event).size
+
+  def ch_rollup_rows(table, where)
+    Clickhouse.with { |c| c.select_all("SELECT * FROM #{table} FINAL WHERE project_id = #{@project.id} AND #{where}").to_a }
+  end
+
+  def pg_revenue(project)
+    DailyProjectMetric.where(project_id: project.id).sum(:revenue)
   end
 
   def ch_purchase_count(project_id)
@@ -49,12 +73,6 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
       store_source: Grovs::Webhooks::APPLE
     }.merge(attrs))
   end
-
-  # ==========================================================================
-  # 1. Full column mapping — verifies EVERY CH column is correctly populated
-  #    from PurchaseEvent. A single test covering all columns means any
-  #    column mapping regression fails immediately.
-  # ==========================================================================
 
   test "all CH columns populated correctly from a buy event with device and link" do
     link = links(:basic_link)
@@ -105,11 +123,6 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
                     "created_at should match event.created_at"
   end
 
-  # ==========================================================================
-  # 2. Null/missing field defaults — verifies CH doesn't choke on missing
-  #    optional fields and that defaults are sensible (0, empty string).
-  # ==========================================================================
-
   test "purchase without device: device_id=0, visitor_id=0, link_id=0" do
     event = create_unprocessed_event(device: nil, link: nil)
 
@@ -145,10 +158,6 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
     assert_equal "", rows.first["store_source"]
   end
 
-  # ==========================================================================
-  # 3. All event types — each purchase event_type lands in CH with correct type
-  # ==========================================================================
-
   test "cancel event lands in CH with correct event_type" do
     event = create_unprocessed_event(event_type: Grovs::Purchases::EVENT_CANCEL)
 
@@ -172,11 +181,6 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
     assert_equal Grovs::Purchases::EVENT_REFUND, rows.first["event_type"]
     assert_equal "one_time", rows.first["purchase_type"]
   end
-
-  # ==========================================================================
-  # 4. PG transaction succeeds regardless of CH — the critical safety property.
-  #    If CH is down, PG stats must still be correct.
-  # ==========================================================================
 
   test "CH failure parks the purchase in the DLQ and does not block PG processing" do
     event = create_unprocessed_event
@@ -217,10 +221,6 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
     REDIS.with { |c| c.del(ClickhouseWriteService::PURCHASE_DLQ_KEY) }
   end
 
-  # ==========================================================================
-  # 5. CH disabled — no CH write attempt at all
-  # ==========================================================================
-
   test "no CH write when clickhouse_write_enabled is false" do
     Rails.application.config.clickhouse_write_enabled = false
     event = create_unprocessed_event
@@ -234,22 +234,20 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
     assert_equal 0, ch_purchase_count(@project.id)
   end
 
-  # ==========================================================================
-  # 6. Already-processed events skip entirely — no duplicate CH rows
-  # ==========================================================================
-
-  test "already processed event produces no CH row" do
+  test "already processed event re-emits its CH row without touching the ledger" do
     event = purchase_events(:buy_event)
-    assert event.processed?, "Precondition: fixture event must be processed"
+    assert event.processed?
+    assert_nil event.accounted_usd_price_cents, "Precondition: legacy null baseline"
+    revenue_before = pg_revenue(@project)
 
     @job.perform(event.id)
 
-    assert_equal 0, ch_purchase_count(@project.id)
+    rows = ch_purchase_rows(@project.id, extra_where: "transaction_id = '#{event.transaction_id}'")
+    assert_equal 1, rows.size
+    assert_equal event.usd_price_cents, rows.first["usd_price_cents"]
+    assert_nil event.reload.accounted_usd_price_cents, "a null baseline is never treated as drift"
+    assert_equal revenue_before, pg_revenue(@project)
   end
-
-  # ==========================================================================
-  # 7. Multiple events from different stores don't cross-contaminate
-  # ==========================================================================
 
   test "Apple and Google purchases produce distinct CH rows" do
     apple_event = create_unprocessed_event(
@@ -280,10 +278,6 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
     assert_equal "one_time", google_row["purchase_type"]
   end
 
-  # ==========================================================================
-  # 8. ReplacingMergeTree dedup — duplicate inserts collapse with FINAL
-  # ==========================================================================
-
   test "duplicate CH insert deduplicates via ReplacingMergeTree" do
     event = create_unprocessed_event
 
@@ -291,7 +285,7 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
 
     # Manually insert the same row again (simulating crash-recovery replay)
     row = ch_purchase_rows(@project.id, extra_where: "transaction_id = '#{event.transaction_id}'").first
-    refute_nil row, "First insert must succeed"
+    assert_not_nil row, "First insert must succeed"
 
     # Re-insert same data with same ORDER BY key (project_id, transaction_id, event_type)
     ClickhouseWriteService.insert_purchase_events([{
@@ -317,10 +311,6 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
     assert_equal 1, count, "ReplacingMergeTree must collapse duplicate on (project_id, transaction_id, event_type)"
   end
 
-  # ==========================================================================
-  # 9. Materialized views — verify the MV pipeline is wired correctly
-  # ==========================================================================
-
   test "purchase_project_daily MV populated with correct aggregates" do
     event = create_unprocessed_event(
       date: Time.utc(2026, 4, 15, 10, 0, 0),
@@ -330,8 +320,8 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
 
     @job.perform(event.id)
 
-    rows = ch_query('purchase_project_daily', @project.id,
-                    extra_where: "event_date = '2026-04-15' AND store_source = 'apple' AND event_type = '#{Grovs::Purchases::EVENT_BUY}'")
+    rows = ch_rollup_rows('purchase_project_daily',
+                          "event_date = '2026-04-15' AND store_source = 'apple' AND event_type = '#{Grovs::Purchases::EVENT_BUY}'")
     assert_equal 1, rows.size, "purchase_project_daily should have one row"
     assert_equal 1500, rows.first["total_revenue_cents"]
     assert_equal 1, rows.first["units"]
@@ -347,8 +337,8 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
 
     @job.perform(event.id)
 
-    rows = ch_query('purchase_product_daily', @project.id,
-                    extra_where: "product_id = 'com.test.mv_check' AND event_type = '#{Grovs::Purchases::EVENT_BUY}'")
+    rows = ch_rollup_rows('purchase_product_daily',
+                          "product_id = 'com.test.mv_check' AND event_type = '#{Grovs::Purchases::EVENT_BUY}'")
     assert_equal 1, rows.size, "purchase_product_daily should have one row"
     assert_equal 2000, rows.first["total_revenue_cents"]
     assert_equal 1, rows.first["units"]
@@ -369,19 +359,13 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
 
     Clickhouse.with { |conn| conn.execute("OPTIMIZE TABLE purchase_product_daily FINAL") }
 
-    rows = ch_query('purchase_product_daily', @project.id,
-                    extra_where: "product_id = 'com.test.multi_agg' AND event_date = '2026-04-20'")
+    rows = ch_rollup_rows('purchase_product_daily', "product_id = 'com.test.multi_agg' AND event_date = '2026-04-20'")
     total_revenue = rows.sum { |r| r["total_revenue_cents"] }
     total_units = rows.sum { |r| r["units"] }
 
     assert_equal 1500, total_revenue, "3 x 500 = 1500 total revenue"
     assert_equal 3, total_units, "3 purchases = 3 units"
   end
-
-  # ==========================================================================
-  # 10. Correction path DOES write to CH — re-inserts the corrected row so the
-  #     signed rollups converge (ReplacingMergeTree keeps the newest version).
-  # ==========================================================================
 
   def ch_purchase_price(event)
     Clickhouse.with { |c| c.execute("OPTIMIZE TABLE purchase_events FINAL") }
@@ -427,4 +411,233 @@ class ProcessPurchaseEventClickhouseTest < ActiveSupport::TestCase
     assert_equal 1499, ch_rollup_revenue(event),
                  "rollup must converge to the corrected price (would stay 999 if it didn't write)"
   end
+
+  test "CH row carries recorded_at (PG created_at) and the ledger platform" do
+    event = create_unprocessed_event(device: devices(:ios_device), store_source: Grovs::Webhooks::GOOGLE)
+    @job.perform(event.id)
+
+    row = ch_purchase_rows(@project.id, extra_where: "transaction_id = '#{event.transaction_id}'").first
+    assert_in_delta event.created_at.to_f, ch_time(row["recorded_at"]).to_f, 0.001
+    assert_equal event.reload.revenue_platform, row["platform"]
+    assert_equal "android", row["platform"]
+  end
+
+  test "recorded_at survives a price correction while the version moves" do
+    event = create_unprocessed_event(device: devices(:ios_device))
+    @job.perform(event.id)
+    event.update_columns(usd_price_cents: 1299)
+    @job.perform(event.id, 999)
+
+    rows = Clickhouse.with do |c|
+      c.select_all("SELECT recorded_at, created_at FROM purchase_events FINAL WHERE project_id = #{@project.id} " \
+                   "AND transaction_id = '#{event.transaction_id}'").to_a
+    end
+    assert_equal 1, rows.size
+    assert_in_delta event.created_at.to_f, ch_time(rows.first["recorded_at"]).to_f, 0.001
+    assert_operator ch_time(rows.first["created_at"]), :>, ch_time(rows.first["recorded_at"])
+  end
+
+  test "price drift on a processed row runs the correction and emits the accounted price" do
+    event = create_unprocessed_event(device: devices(:ios_device), usd_price_cents: 999, price_cents: 999)
+    @job.perform(event.id)
+    assert_equal 999, event.reload.accounted_usd_price_cents
+    pg_before = pg_revenue(@project)
+
+    event.update_columns(usd_price_cents: 1299, price_cents: 1299)
+    @job.perform(event.id)
+
+    assert_equal 1299, event.reload.accounted_usd_price_cents
+    row = latest_ch_row(event)
+    assert_equal 1299, row["usd_price_cents"]
+    assert_equal 1299, ch_rollup_revenue(event)
+    assert_equal 300, pg_revenue(@project) - pg_before, "the PG ledger moved by exactly the delta"
+  end
+
+  test "a refresh during an un-accounted price rewrite publishes the accounted price" do
+    event = create_unprocessed_event(device: devices(:ios_device), usd_price_cents: 999, price_cents: 999)
+    @job.perform(event.id)
+    event.update_columns(usd_price_cents: 1299)
+
+    ProcessPurchaseEventJob.dual_write_clickhouse(event)
+
+    assert_equal 999, latest_ch_row(event)["usd_price_cents"]
+  end
+
+  test "a zero-delta correction on a subscription cancel still re-emits" do
+    event = purchase_events(:cancel_event)
+    assert event.processed?
+    event.update_columns(product_id: "com.test.renamed", usd_price_cents: 777, price_cents: 777)
+
+    @job.perform(event.id, event.usd_price_cents.to_i)
+
+    row = latest_ch_row(event)
+    assert_equal "com.test.renamed", row["product_id"]
+    assert_equal 777, row["usd_price_cents"], "accounted is set even when the delta is zero"
+    assert_equal 777, event.reload.accounted_usd_price_cents
+  end
+
+  test "dual_write builds from a fresh reload so a stale object cannot win" do
+    event = create_unprocessed_event(device: devices(:ios_device))
+    @job.perform(event.id)
+    stale = PurchaseEvent.includes(:device).find(event.id)
+    PurchaseEvent.where(id: event.id).update_all(session_id: "sess-late")
+
+    ProcessPurchaseEventJob.dual_write_clickhouse(stale)
+
+    assert_equal "sess-late", latest_ch_row(event)["session_id"]
+  end
+
+  test "each emit carries a strictly newer version and FINAL keeps the last one" do
+    event = create_unprocessed_event(device: devices(:ios_device))
+    t0 = Time.current.change(usec: 0)
+    travel_to(t0) { @job.perform(event.id) }
+    first = latest_ch_row(event)["created_at"]
+    event.update_columns(usd_price_cents: 1299, price_cents: 1299)
+    travel_to(t0 + 1.second) { @job.perform(event.id) }
+    PurchaseEvent.where(id: event.id).update_all(session_id: "after-correction")
+    travel_to(t0 + 2.seconds) { @job.perform(event.id) }
+
+    row = latest_ch_row(event)
+    assert_operator ch_time(row["created_at"]), :>, ch_time(first)
+    assert_equal "after-correction", row["session_id"]
+    assert_equal 1299, row["usd_price_cents"]
+    assert_equal 1, ch_final_count(event), "FINAL collapses the three versions to the newest"
+  end
+
+  test "a price change between load and claim is accounted exactly once" do
+    event = create_unprocessed_event(device: devices(:ios_device), usd_price_cents: 100, price_cents: 100)
+    pg_before = pg_revenue(@project)
+    @job.stub(:retry_currency_conversion!, ->(e) { PurchaseEvent.where(id: e.id).update_all(usd_price_cents: 200, price_cents: 200) }) do
+      @job.perform(event.id)
+    end
+    assert_equal 200, event.reload.accounted_usd_price_cents, "claim reads the price it locks, not the cached one"
+    assert_equal 200, pg_revenue(@project) - pg_before
+
+    @job.perform(event.id)
+    assert_equal 200, pg_revenue(@project) - pg_before
+    assert_equal 200, latest_ch_row(event)["usd_price_cents"]
+  end
+
+  test "a correction landing in a later month still leaves one row under FINAL" do
+    event = create_unprocessed_event(device: devices(:ios_device), usd_price_cents: 999, price_cents: 999)
+    @job.perform(event.id)
+    event.update_columns(usd_price_cents: 1299, price_cents: 1299)
+
+    travel_to(Time.current + 40.days) { @job.perform(event.id) }
+
+    assert_equal 1, ch_final_count(event)
+    assert_equal 1299, latest_ch_row(event)["usd_price_cents"]
+    months = Clickhouse.with do |c|
+      c.select_value("SELECT uniqExact(toYYYYMM(created_at)) FROM purchase_events " \
+                     "WHERE project_id = #{@project.id} AND transaction_id = '#{event.transaction_id}'")
+    end
+    assert_equal 2, months.to_i, "the two versions really are in different partitions"
+
+    PurchaseEvent.where(id: event.id).update_all(session_id: "after-cross-month")
+    travel_to(Time.current + 41.days) { @job.perform(event.id) } # plain refresh, no drift
+
+    assert_equal 1, ch_final_count(event)
+    assert_equal "after-cross-month", latest_ch_row(event)["session_id"], "refresh outranks the later-month correction"
+  end
+
+  test "a stale DLQ replay cannot overwrite a newer live emit" do
+    event = create_unprocessed_event(device: devices(:ios_device))
+    ClickhouseWriteService.stub(:raw_insert, ->(*) { raise "ch down" }) do
+      @job.perform(event.id)
+    end
+    PurchaseEvent.where(id: event.id).update_all(session_id: "live-after-outage")
+    ProcessPurchaseEventJob.dual_write_clickhouse(event)
+
+    ClickhouseWriteService.drain_purchase_dlq
+
+    assert_equal "live-after-outage", latest_ch_row(event)["session_id"]
+  end
+
+  test "a purchase moved to another project before the claim is processed under the new project" do
+    event = create_unprocessed_event(device: devices(:ios_device), usd_price_cents: 500, price_cents: 500)
+    target = projects(:one_test)
+    before = pg_revenue(target)
+    @job.stub(:retry_currency_conversion!, ->(e) { PurchaseEvent.where(id: e.id).update_all(project_id: target.id) }) do
+      @job.perform(event.id)
+    end
+    assert_equal 500, pg_revenue(target) - before, "aggregates land under the project the claim locked"
+    assert_equal target.id, latest_ch_row(event.reload)["project_id"]
+  end
+
+  test "a PG failure on the reload raises so Sidekiq retries" do
+    event = create_unprocessed_event(device: devices(:ios_device))
+    PurchaseEvent.stub(:includes, ->(*) { raise ActiveRecord::StatementInvalid, "pg down" }) do
+      assert_raises(ActiveRecord::StatementInvalid) { ProcessPurchaseEventJob.dual_write_clickhouse(event) }
+    end
+  end
+
+  test "a redelivery for a purchase deleted meanwhile does nothing" do
+    event = purchase_events(:buy_event)
+    id = event.id
+    PurchaseEvent.where(id: id).delete_all
+    assert_nothing_raised { @job.perform(id) }
+    assert_equal 0, ch_purchase_rows(@project.id, extra_where: "transaction_id = '#{event.transaction_id}'").size
+  end
+
+  test "sync path makes no currency call on a processed row with a nil usd price" do
+    event = purchase_events(:nil_usd_buy)
+    event.update_columns(processed: true, usd_price_cents: nil, accounted_usd_price_cents: nil)
+    CurrencyConversionService.stub(:to_usd_cents, ->(*) { flunk "must not convert on the sync path" }) do
+      @job.perform(event.id)
+    end
+    assert_equal 1, ch_purchase_rows(@project.id, extra_where: "transaction_id = '#{event.transaction_id}'").size
+  end
+
+  test "reattribution after a correction lands the visitor in the CH row and the explorer" do
+    event = create_unprocessed_event(device: nil, usd_price_cents: 999, price_cents: 999)
+    @job.perform(event.id)
+    assert_nil event.reload.visitor_id, "processed deviceless: no visitor snapshot yet"
+    event.update_columns(usd_price_cents: 1299, price_cents: 1299)
+    @job.perform(event.id) # drift -> correction
+    event.update_columns(device_id: devices(:ios_device).id, session_id: "sess-late")
+
+    inline = ->(id, *args) { ProcessPurchaseEventJob.new.perform(id, *args) }
+    ProcessPurchaseEventJob.stub(:perform_async, inline) { ReattributePurchaseJob.new.perform(event.id) }
+
+    visitor = devices(:ios_device).visitor_for_project_id(@project.id)
+    row = latest_ch_row(event)
+    assert_equal visitor.id, row["visitor_id"]
+    assert_equal "sess-late", row["session_id"]
+    assert_equal 1299, row["usd_price_cents"]
+    assert_in_delta event.created_at.to_f, ch_time(row["recorded_at"]).to_f, 0.001, "timeline position is unchanged"
+    assert_operator ch_time(row["created_at"]), :>, ch_time(row["recorded_at"]), "version moved, recorded time did not"
+    shown = Clickhouse.stub(:read_enabled?, true) do
+      Analytics::EventsQueryService.find(@project.id, event_id: Analytics::EventsSource.purchase_event_id(event.transaction_id, event.event_type))
+    end
+    assert_equal visitor.id, shown["visitor_id"], "the explorer shows the post-reattribution visitor"
+    assert_equal "sess-late", shown["session_id"]
+    assert_in_delta event.created_at.to_f, Time.parse(shown["created_at"].to_s).to_f, 1.0, "explorer sorts it at the recorded time"
+  end
+
+  test "an SDK price re-report on a processed purchase corrects PG and CH by the same delta" do
+    device = devices(:ios_device)
+    service = SdkPaymentService.new(project: @project, device: device, visitor: device.visitor_for_project_id(@project.id),
+                                    platform: "ios", identifier: "com.test.app")
+    params = lambda do |price|
+      ActionController::Parameters.new(
+        event_type: Grovs::Purchases::EVENT_BUY, price_cents: price, currency: "USD", store: false,
+        transaction_id: "txn_sdk_drift", original_transaction_id: "orig_sdk_drift",
+        product_id: "com.test.premium", purchase_type: Grovs::Purchases::TYPE_ONE_TIME
+      ).permit!
+    end
+    inline = ->(id, *args) { ProcessPurchaseEventJob.new.perform(id, *args) }
+
+    ProcessPurchaseEventJob.stub(:perform_async, inline) { service.create_or_update(event_params: params.call(999)) }
+    event = PurchaseEvent.find_by!(transaction_id: "txn_sdk_drift")
+    assert event.processed?
+    pg_before = pg_revenue(@project)
+
+    ProcessPurchaseEventJob.stub(:perform_async, inline) { service.create_or_update(event_params: params.call(1299)) }
+
+    assert_equal 1299, event.reload.accounted_usd_price_cents
+    assert_equal 300, pg_revenue(@project) - pg_before
+    assert_equal 1299, ch_rollup_revenue(event)
+    assert_equal 1299, latest_ch_row(event)["usd_price_cents"]
+  end
+
 end

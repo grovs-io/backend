@@ -351,6 +351,106 @@ class PublicLinksHtmlTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "Instagram on iOS with the setting on redirects to the preview page" do
+    @project.redirect_config.update_columns(in_app_browser_page_ios: true)
+
+    stub_external_stores do
+      get "/#{@link.path}", headers: public_host_headers, env: { "HTTP_USER_AGENT" => instagram_ios_ua }
+      assert_response :redirect
+      assert_includes response.headers["Location"], "url="
+      assert_no_match(/gd%3D/, response.headers["Location"])
+    end
+  end
+
+  test "Facebook on Android with the setting on redirects to the preview page" do
+    @project.redirect_config.update_columns(in_app_browser_page_android: true)
+
+    stub_external_stores do
+      get "/#{@link.path}", headers: public_host_headers, env: { "HTTP_USER_AGENT" => facebook_android_ua }
+      assert_response :redirect
+      assert_includes response.headers["Location"], "url="
+    end
+  end
+
+  test "in-app browser gets today's template when PREVIEW_BASE_URL is not configured" do
+    @project.redirect_config.update_columns(in_app_browser_page_ios: true)
+    original = ENV.delete("PREVIEW_BASE_URL")
+
+    stub_external_stores do
+      get "/#{@link.path}", headers: public_host_headers, env: { "HTTP_USER_AGENT" => instagram_ios_ua }
+      assert_response :ok
+      assert Nokogiri::HTML(response.body).at_css("#popup")
+    end
+  ensure
+    ENV["PREVIEW_BASE_URL"] = original if original
+  end
+
+  test "in-app browser with the setting off gets today's template" do
+    stub_external_stores do
+      get "/#{@link.path}", headers: public_host_headers, env: { "HTTP_USER_AGENT" => instagram_ios_ua }
+      assert_response :ok
+      assert Nokogiri::HTML(response.body).at_css("#popup")
+    end
+  end
+
+  test "grovs_redirect bypasses in-app browser routing" do
+    @project.redirect_config.update_columns(in_app_browser_page_ios: true)
+
+    stub_external_stores do
+      get "/#{@link.path}?grovs_redirect=https%3A%2F%2Fexample.com", headers: public_host_headers,
+                                                                    env: { "HTTP_USER_AGENT" => instagram_ios_ua }
+      assert_response :ok
+    end
+  end
+
+  test "go_to_fallback bypasses in-app browser routing" do
+    @project.redirect_config.update_columns(in_app_browser_page_ios: true)
+
+    stub_external_stores do
+      get "/#{@link.path}?go_to_fallback=true", headers: public_host_headers, env: { "HTTP_USER_AGENT" => instagram_ios_ua }
+      assert_response :redirect
+      assert_includes response.headers["Location"], "apps.apple.com"
+    end
+  end
+
+  test "Safari with the setting on is unchanged" do
+    @project.redirect_config.update_columns(in_app_browser_page_ios: true)
+
+    stub_external_stores do
+      get "/#{@link.path}", headers: public_host_headers, env: { "HTTP_USER_AGENT" => iphone_ua }
+      assert_response :ok
+    end
+  end
+
+  test "link-preview crawlers are unchanged with the setting on" do
+    @project.redirect_config.update_columns(in_app_browser_page_ios: true)
+
+    stub_external_stores do
+      get "/#{@link.path}", headers: public_host_headers,
+                            env: { "HTTP_USER_AGENT" => "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)" }
+      assert_response :ok
+    end
+  end
+
+  test "full in-app browser round trip logs exactly one VIEW and one Action" do
+    @project.redirect_config.update_columns(in_app_browser_page_ios: true)
+    views = 0
+    log = ->(type, *_rest, **_kw) { views += 1 if type == Grovs::Events::VIEW }
+
+    EventIngestionService.stub(:log_async, log) do
+      stub_external_stores do
+        assert_difference -> { Action.count }, 1 do
+          get "/#{@link.path}", headers: public_host_headers, env: { "HTTP_USER_AGENT" => instagram_ios_ua }
+          assert_response :redirect
+          get "/#{@link.path}?go_to_fallback=true", headers: public_host_headers, env: { "HTTP_USER_AGENT" => instagram_ios_ua }
+          assert_response :redirect
+        end
+      end
+    end
+
+    assert_equal 1, views
+  end
+
   private
 
   def stub_external_stores(&block)
@@ -361,6 +461,16 @@ class PublicLinksHtmlTest < ActionDispatch::IntegrationTest
 
   def public_host_headers
     { "Host" => "#{@domain.subdomain}.#{@domain.domain}" }
+  end
+
+  def instagram_ios_ua
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 " \
+      "Instagram 342.0.4.27.88 (iPhone15,2; iOS 17_5; en_US; en; scale=3.00; 1179x2556; 626580398)"
+  end
+
+  def facebook_android_ua
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/AP2A.240805.005; wv) AppleWebKit/537.36 (KHTML, like Gecko) " \
+      "Version/4.0 Chrome/127.0.6533.103 Mobile Safari/537.36 [FB_IAB/FB4A;FBAV/477.0.0.49.82;]"
   end
 
   def iphone_ua
