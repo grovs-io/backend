@@ -16,22 +16,27 @@
 </p>
 
 <p align="center">
-  Self-hostable deep linking, attribution, and analytics platform for mobile apps.
+  Deep linking, attribution, analytics and engagement for mobile apps, on your own servers.
   <br />
-  An open-source alternative to Branch.io and AppsFlyer.
+  One open-source platform instead of Branch, AppsFlyer, Amplitude, Braze and OneSignal.
 </p>
 
 <p align="center">
-  <a href="https://grovs.io">Website</a> &middot;
-  <a href="https://docs.grovs.io">Documentation</a> &middot;
-  <a href="https://github.com/grovs-io/backend/issues">Issues</a>
+  <a href="https://github.com/grovs-io/self-host"><b>Self-host in one command</b></a> &middot;
+  <a href="https://app.grovs.io"><b>Try grovs Cloud (free)</b></a> &middot;
+  <a href="https://docs.grovs.io">Docs</a> &middot;
+  <a href="https://grovs.io">Website</a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/grovs.gif" alt="grovs: deep links, analytics, journeys, push and in-app messages" width="900" />
 </p>
 
 ---
 
 ## What is Grovs?
 
-Grovs gives you full control over your mobile app's growth stack:
+Grovs does what an MMP does (deep links, install attribution, campaign analytics) without sharing your users' data with ad networks. No ad-network partnerships, no cross-app tracking, no probabilistic fingerprinting. This repository is the backend: the Rails API, link resolver, SDK endpoints, analytics pipeline and background workers.
 
 - **Deep Linking** — Short links with deferred deep linking across iOS, Android, and web, including clipboard-assisted matching
 - **Attribution** — Track installs, opens, reinstalls, and referrals back to their source
@@ -92,7 +97,9 @@ Events arrive from the SDKs and link clicks, are queued in Redis, and are proces
 
 ## Quick Start
 
-### Docker Compose (recommended)
+The fastest way to run the full stack (backend, dashboard, databases and a TLS proxy) is the **[self-host repository](https://github.com/grovs-io/self-host)**: one installer, or one-click templates for Railway, Render, Coolify, Dokploy and the major clouds. The steps below run the backend on its own.
+
+### Docker Compose (backend only)
 
 No source checkout needed: the stack runs the published Community Edition image.
 
@@ -113,7 +120,7 @@ docker compose up -d
 
 The API listens on `http://localhost:3000` (`WEB_PORT` in `.env` changes it). This starts PostgreSQL, Redis, ClickHouse, the Rails API and the 5 Sidekiq worker processes. Uploaded assets are stored in the `storage` volume and served by the app; set `ACTIVE_STORAGE_SERVICE=amazon` and the `AWS_S3_*` variables to use S3 or MinIO instead.
 
-Pin a release with `GROVS_IMAGE=ghcr.io/grovs-io/backend:1.4.0` in `.env` rather than tracking `latest`. To run from a source checkout instead, `docker build -t grovs-backend .` and set `GROVS_IMAGE=grovs-backend`.
+Pin a release with `GROVS_IMAGE=ghcr.io/grovs-io/backend:3.0.0` in `.env` rather than tracking `latest`. To run from a source checkout instead, `docker build -t grovs-backend .` and set `GROVS_IMAGE=grovs-backend`.
 
 For a real deployment set `SERVER_HOST`, `REACT_HOST`, `DOMAIN_LIVE`, `DOMAIN_TEST`, `S3_ASSET_PREFIX` and `PREVIEW_BASE_URL` to your own domain, and put a TLS-terminating reverse proxy in front of port 3000 that forwards the `api.`, `sdk.`, `go.`, `preview.` and link subdomains to it.
 
