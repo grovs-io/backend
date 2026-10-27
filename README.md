@@ -344,6 +344,8 @@ bundle exec kamal deploy
 | Android | [grovs-io/grovs-android](https://github.com/grovs-io/grovs-android) |
 | React Native | [grovs-io/grovs-react-native](https://github.com/grovs-io/grovs-react-native) |
 | Flutter | [grovs-io/grovs-flutter](https://github.com/grovs-io/grovs-flutter) |
+| Unity | [grovs-io/grovs-unity](https://github.com/grovs-io/grovs-unity) |
+| Web | [grovs-io/grovs-js](https://github.com/grovs-io/grovs-js) |
 
 ## Contributing
 
