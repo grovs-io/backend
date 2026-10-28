@@ -10,7 +10,7 @@ class PushCampaign < ApplicationRecord
   MAX_RECIPIENTS = 10_000
   MAX_DATA_BYTES = 2048
   # Keys that would replace the APNs alert, trigger rpush's flags, or make FCM reject the message.
-  RESERVED_DATA_KEYS = /\A(aps|from|notification|message_type|__rpush_.*|google.*|gcm.*)\z/i
+  RESERVED_DATA_KEYS = /\A(aps|from|notification|message_type|headers|__rpush_.*|google.*|gcm.*)\z/i
   MAX_SCHEDULE = 30.days
   EASTERNMOST_OFFSET = 14.hours
   MAX_LOCAL_TIME_LEAD = 26.hours # a UTC-12 campaign zone

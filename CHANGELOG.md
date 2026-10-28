@@ -4,6 +4,28 @@ All notable changes to the Grovs backend are documented here. Versions follow
 [semantic versioning](https://semver.org/); the matching images are
 `ghcr.io/grovs-io/backend:<version>` (Community Edition).
 
+## [3.0.1] - 2026-10-28
+
+### Fixed
+
+- **Push notifications no longer get stuck for an hour when a connection to
+  Apple or Google drops.** A reset connection made the push daemon lose track
+  of the requests in flight, which then waited for the hourly stale release.
+  Every push the provider never answered is now retried (after 1 s, then
+  10 s), other errors are retried up to 8 times instead of failing at once,
+  idle connections are reopened after 5 minutes, and a push that still fails
+  gives up after a day instead of retrying forever. A silent connection can
+  no longer hang the iOS sender. (Enterprise Edition)
+- A retried push can reach a device twice if the provider accepted the first
+  copy but its answer was lost. Each delivery now carries an APNs
+  `apns-collapse-id` and an Android notification `tag`, so the device shows
+  one notification.
+
+### Changed
+
+- Push campaign `data` may no longer use the key `headers`: it is refused with
+  `422` like `aps`, because it would be sent to Apple as request headers.
+
 ## [3.0.0] - 2026-10-26
 
 ### Upgrade notes

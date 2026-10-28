@@ -37,6 +37,10 @@ class PushCampaignDeliverJobTest < ActiveSupport::TestCase
     assert_equal "sent", @campaign.reload.status
     assert_equal 1, AuditEvent.where(action: "push_campaign.sent").count
     assert_equal 1, Rpush::Apnsp8::Notification.count
+    delivery = @campaign.deliveries.sole
+    rpush = Rpush::Apnsp8::Notification.find(delivery.rpush_notification_id)
+    assert_equal "grovs-#{delivery.id}", rpush.data.dig("headers", "apns-collapse-id")
+    assert_in_delta 1.day.from_now, rpush.fail_after, 60
     assert_nil REDIS.with { |c| c.get(PushCampaignDeliverJob.slot_key(@campaign.id, 0)) }, "slot released"
   end
 

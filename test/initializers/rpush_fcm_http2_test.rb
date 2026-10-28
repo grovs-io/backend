@@ -13,6 +13,7 @@ class RpushFcmHttp2Test < ActiveSupport::TestCase
     end
 
     def each_notification(&) = @notifications.each(&)
+    def settled_ids = (@delivered + @failed.map(&:first) + @retryable.map(&:first)).to_set
     def mark_delivered(note) = @delivered << note.id
     def mark_failed(note, code, description) = @failed << [note.id, code, description]
     def mark_retryable(note, at) = @retryable << [note.id, at]
@@ -115,6 +116,7 @@ class RpushFcmHttp2Test < ActiveSupport::TestCase
 
     assert_equal [1, 2, 3], batch.retryable.map(&:first)
     assert_in_delta 30, batch.retryable.first.last - Time.now, 2
+    assert_in_delta 1, batch.retryable.last.last - Time.now, 1, "a reset stream retries like an unanswered push"
     assert_empty batch.failed
   end
 
@@ -190,7 +192,30 @@ class RpushFcmHttp2Test < ActiveSupport::TestCase
     assert_empty client.requests
   end
 
-  test "an unexpected error fails only the pushes that got no answer" do
+  test "an unexpected error retries the pushes that got no answer, and fails them once the budget is spent" do
+    fresh = Rpush::Fcm::Notification.new(id: 1, device_token: "a", retries: 0)
+    spent = Rpush::Fcm::Notification.new(id: 2, device_token: "b", retries: RpushRetryUnanswered::MAX_RETRIES)
+    batch = RecordingBatch.new([fresh, spent])
+    client = FakeClient.new { |r| r.respond(200) }
+    client.define_singleton_method(:call_async) { |_| raise NoMethodError, "undefined method 'write' for nil" }
+    RpushFcmHttp2.stub(:access_token, "t") do
+      assert_raises(NoMethodError) { RpushFcmHttp2::Delivery.new(app, client, batch).perform }
+    end
+    assert_equal [1], batch.retryable.map(&:first)
+    assert_equal [2], batch.failed.map(&:first)
+  end
+
+  test "a lost connection retries even a push past the budget" do
+    batch = RecordingBatch.new([Rpush::Fcm::Notification.new(id: 1, device_token: "a", retries: RpushRetryUnanswered::MAX_RETRIES)])
+    client = FakeClient.new { |r| r.respond(200) }
+    client.define_singleton_method(:call_async) { |_| raise Errno::ECONNRESET }
+    RpushFcmHttp2.stub(:access_token, "t") do
+      assert_raises(Errno::ECONNRESET) { RpushFcmHttp2::Delivery.new(app, client, batch).perform }
+    end
+    assert_equal [1], batch.retryable.map(&:first)
+  end
+
+  test "an unexpected error never touches the pushes already answered" do
     batch = RecordingBatch.new(notifications(2))
     client = FakeClient.new { |r| r.respond(200) }
     original = client.method(:call_async)

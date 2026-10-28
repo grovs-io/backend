@@ -29,7 +29,7 @@ class PushCampaignTest < ActiveSupport::TestCase
   end
 
   test "data can't use keys that break the APNs or FCM payload" do
-    %w[aps APS from notification message_type __rpush_mdm__ __rpush_content_available__ google.c.a.e gcm.n.e].each do |key|
+    %w[aps APS from notification message_type headers __rpush_mdm__ __rpush_content_available__ google.c.a.e gcm.n.e].each do |key|
       assert_not build(data: { key => "x" }).valid?, key
     end
     assert build(data: { "promo" => "spring", "fromage" => "brie", "screen" => "home" }).valid?

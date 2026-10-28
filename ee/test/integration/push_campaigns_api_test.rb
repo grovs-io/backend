@@ -408,7 +408,8 @@ class PushCampaignsApiTest < ActionDispatch::IntegrationTest
     assert_equal ["sent", 2, 0], [JSON.parse(response.body)["push_campaign"]["status"], report["queued"], report["waiting"]]
     assert_equal %w[b b], c.deliveries.pluck(:variant)
     assert_equal [{ "title" => "Hey", "body" => "Look" }], Rpush::Apnsp8::Notification.all.map(&:alert).uniq
-    assert_equal [{ "title" => "Hey", "body" => "Look" }], Rpush::Fcm::Notification.all.map(&:notification).uniq
+    assert_equal [{ "title" => "Hey", "body" => "Look" }], Rpush::Fcm::Notification.all.map { |n| n.notification.except("tag") }.uniq
+    assert_equal c.deliveries.where(platform: "android").map { |d| "grovs-#{d.id}" }.sort, Rpush::Fcm::Notification.all.map { |n| n.notification["tag"] }.sort
     post "#{base}/#{id}/send_winner", params: { variant: "b" }, headers: @admin, as: :json
     assert_response :conflict
   ensure

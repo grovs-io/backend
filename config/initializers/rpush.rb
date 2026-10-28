@@ -17,6 +17,10 @@ module RpushBatchOutcomes
     Rpush::Daemon::Batch.prepend(self) unless Rpush::Daemon::Batch.ancestors.include?(self)
   end
 
+  def settled_ids
+    @mutex.synchronize { [@delivered, *@failed.values, *@retryable.values].flatten.to_set(&:id) }
+  end
+
   private
 
   def complete_delivered
@@ -210,6 +214,104 @@ module RpushStreamCap
   end
 end
 
+# Retries what the batch never settled: lost connections forever, other errors MAX_RETRIES times.
+module RpushRetryUnanswered
+  FIRST_RETRY_AFTER = 1.second # Apple may have shown the first copy; a fast retry lands before it is dismissed
+  RETRY_AFTER = 10.seconds
+  MAX_RETRIES = 8
+  CONNECTION_ERRORS = [NetHttp2::AsyncRequestTimeout, SystemCallError, IOError, SocketError, OpenSSL::SSL::SSLError,
+                       HTTP2::Error::ConnectionClosed, HTTP2::Error::StreamLimitExceeded].freeze
+
+  private
+
+  # The batch is the only truth: a socket thread killed by close may have recorded nothing it read.
+  def retry_unanswered(error = nil)
+    settled = @batch.settled_ids
+    unanswered = []
+    @batch.each_notification { |notification| unanswered << notification unless settled.include?(notification.id) }
+    spent, retried = unanswered.partition { |notification| gives_up?(error, notification) }
+    spent.each { |notification| @batch.mark_failed(notification, nil, error.to_s) }
+    now = Time.now # one timestamp per batch: rpush writes one UPDATE per distinct deliver_after
+    retried.each { |notification| retry_soon(notification, now) }
+    return if unanswered.empty?
+
+    log_warn("Unanswered notifications: #{retried.size} retried, #{spent.size} failed (#{error&.class || 'connection lost'})")
+  end
+
+  def retry_soon(notification, now = Time.now)
+    mark_retryable(notification, now + (notification.retries.to_i.zero? ? FIRST_RETRY_AFTER : RETRY_AFTER))
+  end
+
+  def gives_up?(error, notification)
+    error && CONNECTION_ERRORS.none? { |klass| error.is_a?(klass) } && notification.retries.to_i >= MAX_RETRIES
+  end
+end
+
+# On a reset net-http2 drops streams unanswered and rpush leaves them claimed; retry them instead.
+module RpushApnsUnanswered
+  include RpushRetryUnanswered
+
+  def self.install!
+    Rpush::Daemon::Apnsp8::Delivery.prepend(self) unless Rpush::Daemon::Apnsp8::Delivery.ancestors.include?(self)
+  end
+
+  def perform
+    @batch.each_notification { |notification| prepare_async_post(notification) }
+    @client.join(timeout: Rpush::Daemon::Apnsp8::Delivery::CLIENT_JOIN_TIMEOUT)
+    retry_unanswered
+  rescue StandardError => e
+    @client.close
+    retry_unanswered(e)
+    raise
+  ensure
+    @batch.all_processed
+  end
+
+  protected
+
+  # Runs on the socket thread; raising there would kill the connection and all its streams.
+  def handle_response(notification, response)
+    return retry_soon(notification) if response[:code].nil? # stream reset, no answer
+
+    super
+  rescue StandardError => e
+    log_error(e)
+    @batch.mark_failed(notification, nil, e.message)
+  end
+
+  # rpush waits for a free stream forever; a connection that went silent would hang the dispatcher.
+  def delayed_push_async(http_request)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + Rpush::Daemon::Apnsp8::Delivery::CLIENT_JOIN_TIMEOUT
+    until streams_available?
+      raise NetHttp2::AsyncRequestTimeout if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+
+      sleep 0.001
+    end
+    @client.call_async(http_request)
+  end
+end
+
+# NATs drop idle connections without a FIN; reconnect rather than write into a dead one.
+module RpushIdleReconnect
+  IDLE = 5.minutes
+
+  def self.install!
+    dispatcher = Rpush::Daemon::Dispatcher::Apnsp8Http2
+    dispatcher.prepend(self) unless dispatcher.ancestors.include?(self)
+  end
+
+  def dispatch(payload)
+    @client.close if @last_dispatch_at && monotonic_now - @last_dispatch_at > IDLE
+    super
+  ensure
+    @last_dispatch_at = monotonic_now
+  end
+
+  private
+
+  def monotonic_now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+end
+
 # rpush 9.2 fails an FCM 429 for good; Google asks senders to back off and retry, so do, boundedly.
 module RpushFcmThrottleRetry
   MAX_RETRIES = 8
@@ -253,6 +355,8 @@ end
 RpushBatchOutcomes.install!
 RpushSkipLocked.install!
 RpushStreamCap.install!
+RpushApnsUnanswered.install!
+RpushIdleReconnect.install!
 RpushFcmThrottleRetry.install!
 RpushDatabaseRetry.install!
 RpushOrphanGuard.install!

@@ -91,7 +91,7 @@ module PushCampaigns
           next if capped.include?(id)
 
           sent << r
-          [id, @payload.build(r["platform"], apps[r["platform"]], tokens[r["device_id"]], r["variant"])]
+          [id, @payload.build(r["platform"], apps[r["platform"]], tokens[r["device_id"]], r["variant"], id)]
         end
       end
       sent

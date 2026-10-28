@@ -36,6 +36,7 @@ module RpushFcmHttp2
   class Dispatcher
     include Rpush::Daemon::Loggable
     include Rpush::Reflectable
+    prepend RpushIdleReconnect
 
     def initialize(app, _delivery_class, _options = {})
       @app = app
@@ -52,12 +53,12 @@ module RpushFcmHttp2
   end
 
   class Delivery < Rpush::Daemon::Delivery
+    include RpushRetryUnanswered
+
     def initialize(app, client, batch)
       @app = app
       @client = client
       @batch = batch
-      @answered = Set.new
-      @lock = Mutex.new
     end
 
     def perform
@@ -68,14 +69,9 @@ module RpushFcmHttp2
       @batch.each_notification { |notification| post(notification, path, token) }
       @client.join(timeout: JOIN_TIMEOUT)
       retry_unanswered
-    rescue NetHttp2::AsyncRequestTimeout, SystemCallError, IOError, SocketError, OpenSSL::SSL::SSLError,
-           HTTP2::Error::ConnectionClosed, HTTP2::Error::StreamLimitExceeded => e
-      @client.close
-      retry_unanswered
-      raise
     rescue StandardError => e
       @client.close
-      each_unanswered { |notification| @batch.mark_failed(notification, e.respond_to?(:code) ? e.code : nil, e.to_s) }
+      retry_unanswered(e)
       raise
     ensure
       @batch.all_processed
@@ -83,11 +79,11 @@ module RpushFcmHttp2
 
     # Runs on the client's socket thread, so it must never raise.
     def handle(notification, response)
-      @lock.synchronize { @answered << notification.id }
       case response[:status]
       when 200 then @batch.mark_delivered(notification)
       when 429 then throttled(notification, response)
-      when nil, 500..599 then retry_later(notification, response)
+      when nil then retry_soon(notification) # stream reset, no answer
+      when 500..599 then retry_later(notification, response)
       else fail_with(notification, response)
       end
     rescue StandardError => e
@@ -108,13 +104,6 @@ module RpushFcmHttp2
         @batch.mark_failed(notification, nil, "FCM access token unavailable: #{e.message}")
       end
       nil
-    end
-
-    # After close; http-2 drops answers after a GOAWAY, so open streams retry (at-least-once).
-    def retry_unanswered = each_unanswered { |notification| mark_retryable(notification, Time.now + 10.seconds) }
-
-    def each_unanswered
-      @batch.each_notification { |notification| yield notification unless @lock.synchronize { @answered.include?(notification.id) } }
     end
 
     def post(notification, path, token)

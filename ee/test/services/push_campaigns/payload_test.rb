@@ -59,6 +59,30 @@ class PushCampaigns::PayloadTest < ActiveSupport::TestCase
     assert_equal 1, n.as_json["aps"]["mutable-content"]
   end
 
+  test "a delivery's APNs push carries its collapse id under rpush's headers key" do
+    n = PushCampaigns::Payload.new(@campaign).build("ios", @apns_app, "tok", nil, 42)
+    assert_equal({ "apns-collapse-id" => "grovs-42" }, n.data["headers"])
+    assert_nil PushCampaigns::Payload.new(@campaign).build("ios", @apns_app, "tok").data["headers"]
+  end
+
+  test "a delivery's FCM push carries the same id as its Android tag" do
+    n = PushCampaigns::Payload.new(@campaign).build("android", @fcm_app, "tok", nil, 42)
+    assert_equal "grovs-42", n.as_json.dig("message", "android", "notification", "tag")
+  end
+
+  test "a campaign saved before headers was refused still cannot set APNs headers" do
+    @campaign.update_columns(data: { "headers" => { "apns-topic" => "com.other.app" } })
+    assert_nil PushCampaigns::Payload.new(@campaign).build("ios", @apns_app, "tok").data["headers"]
+    assert_equal({ "apns-collapse-id" => "grovs-1" }, PushCampaigns::Payload.new(@campaign).build("ios", @apns_app, "tok", nil, 1).data["headers"])
+  end
+
+  test "every push gives up a day after it is built, so endless retries end as a failure" do
+    %w[ios android].each do |platform|
+      app = platform == "ios" ? @apns_app : @fcm_app
+      assert_in_delta 1.day.from_now, PushCampaigns::Payload.new(@campaign).build(platform, app, "tok", nil, 1).fail_after, 5
+    end
+  end
+
   test "unknown platform raises" do
     assert_raises(ArgumentError) { PushCampaigns::Payload.new(@campaign).build("web", @fcm_app, "tok") }
   end
