@@ -21,6 +21,11 @@ All notable changes to the Grovs backend are documented here. Versions follow
   `apns-collapse-id` and an Android notification `tag`, so the device shows
   one notification.
 
+### Security
+
+- Development and deploy tooling: `net-ssh` 7.3.8 (via Kamal) and RuboCop 1.92,
+  which no longer pulls in the `mcp` gem. No runtime dependency changed.
+
 ### Changed
 
 - Push campaign `data` may no longer use the key `headers`: it is refused with
