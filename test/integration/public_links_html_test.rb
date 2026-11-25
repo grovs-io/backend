@@ -2,7 +2,7 @@ require "test_helper"
 require "nokogiri"
 
 class PublicLinksHtmlTest < ActionDispatch::IntegrationTest
-  fixtures :instances, :projects, :domains, :links, :redirect_configs, :redirects,
+  fixtures :instances, :projects, :domains, :links, :redirect_configs, :redirects, :custom_redirects,
            :applications, :ios_configurations, :android_configurations,
            :desktop_configurations
 
@@ -152,6 +152,26 @@ class PublicLinksHtmlTest < ActionDispatch::IntegrationTest
 
       # Top-level fallback comes from DesktopConfiguration fixture (fallback_url: "https://example.com/desktop")
       assert_equal "https://example.com/desktop", desktop_json["fallback"]
+    end
+  end
+
+  test "a custom desktop redirect bypasses the generated page on Linux" do
+    link = links(:basic_link)
+
+    stub_external_stores do
+      get "/#{link.path}", headers: public_host_headers,
+        env: { "HTTP_USER_AGENT" => "Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/140.0" }
+      assert_response :ok
+
+      desktop_view = Nokogiri::HTML(response.body).at_css("#desktop-view")
+      desktop_json = JSON.parse(desktop_view["desktop"])
+      fallback = desktop_json["fallback"]
+
+      assert_nil desktop_json["linksquared"]
+      assert_equal fallback, desktop_json.dig("mac", "fallback")
+      assert_equal fallback, desktop_json.dig("windows", "fallback")
+      assert_equal "/desktop-custom", URI.parse(fallback).path
+      assert_includes URI.decode_www_form(URI.parse(fallback).query), ["utm_campaign", link.tracking_campaign]
     end
   end
 
