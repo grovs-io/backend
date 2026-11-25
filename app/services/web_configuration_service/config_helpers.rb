@@ -154,7 +154,7 @@ module WebConfigurationService::ConfigHelpers
 
     generic_conf = build_configuration(name, image, nil, nil, redirect_url, false, nil, show_preview)
 
-    {"linksquared": generic_conf, "mac": generic_conf, "windows": generic_conf, fallback: generic_conf}
+    {"linksquared": nil, "mac": generic_conf, "windows": generic_conf, fallback: redirect_url}
   end
 
   def clipboard_copy_payload(link, device)
